@@ -37,6 +37,7 @@ from urllib.parse import parse_qs, urlparse
 
 import studio
 from studio import board
+from studio import brain
 from studio import ledger
 from studio import allowlist as al
 from studio import guard as sguard
@@ -206,6 +207,7 @@ class Studio:
         self.calls = 0
         self.refusals = 0
         self.approvals = 0
+        self.turns: dict[str, dict] = {}            # the chat: one entry per turn, read back by polling
         self._lock = threading.Lock()
         # Agtr holds a SECOND secret, native.key (service.py:98), and any request carrying it is treated as having
         # passed Touch ID (service.py:1234, and `uv: bool(native)` in the signed proofs at :315, :338, :949, :969).
@@ -450,6 +452,81 @@ class Studio:
                 rows.append(r)
         return {"rows": rows, "chain": ledger.verify(), "file": str(f)}
 
+    # ------------------------------------------------------------------ the chat: Claude Code, and nothing else
+    def chat(self, text: str, brain_session=None) -> tuple[dict, int]:
+        """Start one turn. It runs in a thread and the window polls it, because a turn can call a pipeline and a
+        held request would be dropped by any proxy long before the pipeline finished.
+
+        The brain is Claude Code. If it is not on this Mac the answer says so and names what to install — it never
+        falls back to another model, because the new system has one brain and a silent substitution would put an
+        unrecorded voice in a system whose claim is that everything is on a signed record."""
+        text = (text or "").strip()
+        if not text:
+            return {"error": "say something"}, 400
+        if len(text) > 32_000:
+            return {"error": "that is longer than a turn takes; say it in less"}, 413
+        tid = secrets.token_hex(12)
+        turn = {"id": tid, "asked": text, "events": [], "state": "running", "started": time.time()}
+        with self._lock:
+            self.turns[tid] = turn
+            for k in list(self.turns)[:-32]:
+                self.turns.pop(k, None)
+
+        def work() -> None:
+            try:
+                s = brain_session if brain_session is not None else brain.session("chat")
+                for e in s.ask(text):
+                    e = dict(e)
+                    if e.get("type") == "tool_result":
+                        e["card"] = self._card_of(e.get("text"))
+                    with self._lock:
+                        turn["events"].append(e)
+                    if e.get("type") in ("result", "fail"):
+                        break
+            except brain.NoClaude as why:
+                with self._lock:
+                    turn["events"].append({"type": "fail", "text": str(why)})
+            except Exception as why:                # noqa: BLE001 - a turn that dies says so; it never half-answers
+                with self._lock:
+                    turn["events"].append({"type": "fail", "text": f"{type(why).__name__}: {why}"[:400]})
+            finally:
+                with self._lock:
+                    turn["state"] = "done"
+                    turn["ended"] = time.time()
+
+        threading.Thread(target=work, name=f"chat-{tid}", daemon=True).start()
+        return {"id": tid}, 200
+
+    def _card_of(self, body) -> dict | None:
+        """A tool answer drawn as a card. The card module is read lazily and its absence is reported on the card,
+        never hidden: a result with no card still shows its data as text."""
+        try:
+            payload = json.loads(body) if isinstance(body, str) else body
+        except (TypeError, ValueError):
+            return None
+        if not isinstance(payload, dict):
+            return None
+        meta = payload.get("meta") or {}
+        value = payload.get("value", payload)
+        try:
+            from studio import cards
+            return cards.card(value, tool=meta.get("tool"), meta=meta)
+        except Exception:                           # noqa: BLE001 - no card module yet, or a shape it cannot read
+            return {"kind": "text", "title": meta.get("tool") or "result",
+                    "provenance": meta.get("provenance") or {}, "verdict": meta.get("verdict"),
+                    "findings": meta.get("findings") or [],
+                    "blocks": [{"type": "text", "text": json.dumps(value, ensure_ascii=False)[:4000]}]}
+
+    def turn_of(self, tid: str, since: int = 0) -> tuple[dict, int]:
+        with self._lock:
+            t = self.turns.get(tid)
+            if t is None:
+                return {"error": "no such turn"}, 404
+            # `state` is read AFTER the slice, so a poll can never see `done` with events still to come.
+            evs = t["events"][max(0, since):]
+            return {"id": tid, "since": since, "events": evs, "next": since + len(evs), "state": t["state"],
+                    "asked": t["asked"]}, 200
+
     def ui_state(self) -> dict:
         """Whether BioQL's window answers, and nothing more. Three outcomes, kept apart: it answered (`up`), it
         refused the connection (`up: false`, with the reason), or we could not tell. A window Studio cannot reach is
@@ -655,6 +732,14 @@ def make_handler(s: Studio):
                     return self._json(s.ledger_rows(limit))
                 if p == "/api/guard":
                     return self._json(s.guard_report())
+                if p == "/api/chat":
+                    tid = (qs.get("id") or [""])[0]
+                    try:
+                        since = int((qs.get("since") or ["0"])[0])
+                    except ValueError:
+                        since = 0
+                    out, code = s.turn_of(tid, since)
+                    return self._json(out, code)
                 if p == "/api/ui":
                     # Is BioQL's own window up? The page cannot ask: `connect-src 'self'` forbids it reaching
                     # another origin, and a page that cannot ask must not guess. Studio asks, and only reports —
@@ -702,6 +787,9 @@ def make_handler(s: Studio):
                     return self._json(out, code)
                 if p == "/api/board":
                     out, code = s.board_write(b)
+                    return self._json(out, code)
+                if p == "/api/chat":
+                    out, code = s.chat(str(b.get("text") or ""))
                     return self._json(out, code)
                 return self._json({"error": "not found"}, 404)
             except Exception as e:

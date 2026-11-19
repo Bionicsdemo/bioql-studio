@@ -46,6 +46,9 @@
     <button class="lens" role="tab" aria-selected="false" aria-controls="drawer" data-lens="guard">
       <span class="lens-name">Guard</span><span class="lens-count" id="count-guard"></span>
     </button>
+    <button class="lens" role="tab" aria-selected="false" aria-controls="drawer" data-lens="bioql">
+      <span class="lens-name">BioQL</span><span class="lens-count" id="count-bioql"></span>
+    </button>
   </nav>
 
   <div class="brow-right">
@@ -55,22 +58,40 @@
 
 <!-- ------------------------------------------------------------------ BioQL itself -->
 <main class="stage">
-  <iframe id="bioql" class="bioql" title="BioQL" src="about:blank"></iframe>
-
-  <!-- Shown only while BioQL's window is not up. Studio never starts it. -->
-  <section class="waiting-room hidden" id="waiting-room">
-    <div class="orbwrap">
-      <div class="orb" role="img" aria-label="instrument state">
-        <div class="orb-sheen" aria-hidden="true"></div>
-        <div class="orb-core" aria-hidden="true"></div>
-        <div class="orb-glint" aria-hidden="true"></div>
+  <!-- The chat is the instrument's surface: you ask, Claude Code works the engine, and every answer arrives as a
+       card carrying its provenance and its verdict. BioQL's own window is a lens away and unchanged. -->
+  <section class="talk" id="talk">
+    <div class="scroll" id="scroll">
+      <div class="opening" id="opening">
+        <div class="orbwrap">
+          <div class="orb" role="img" aria-label="instrument state">
+            <div class="orb-sheen" aria-hidden="true"></div>
+            <div class="orb-core" aria-hidden="true"></div>
+            <div class="orb-glint" aria-hidden="true"></div>
+          </div>
+          <div class="ring" aria-hidden="true"></div>
+        </div>
+        <p class="opening-line">Ask it in words. It works the engine through a closed list and shows you what it
+          actually ran.</p>
+        <div class="seeds" id="seeds"></div>
       </div>
-      <div class="ring" aria-hidden="true"></div>
     </div>
-    <p class="waiting-why" id="waiting-why">looking for BioQL's window…</p>
-    <p class="fine">Studio never starts, stops or restarts BioQL. Bring its window up yourself and this panel fills:</p>
-    <p class="cmd"><code id="waiting-cmd">./start_frontend_local.sh</code></p>
-    <button class="go" id="waiting-retry">Look again</button>
+    <form class="ask" id="ask">
+      <input class="ask-in" id="ask-in" autocomplete="off" spellcheck="false"
+             placeholder="Describe a molecule, paste a SMILES, or name a target…" aria-label="ask">
+      <button class="ask-go" id="ask-go" type="submit" aria-label="send">Send</button>
+    </form>
+  </section>
+
+  <!-- BioQL's own window, whole and untouched, behind the BioQL lens. -->
+  <section class="bioql-wrap hidden" id="bioql-wrap">
+    <iframe id="bioql" class="bioql" title="BioQL" src="about:blank"></iframe>
+    <section class="waiting-room hidden" id="waiting-room">
+      <p class="waiting-why" id="waiting-why">looking for BioQL's window…</p>
+      <p class="fine">Studio never starts, stops or restarts BioQL. Bring its window up yourself and this fills:</p>
+      <p class="cmd"><code id="waiting-cmd">./start_frontend_local.sh</code></p>
+      <button class="go" id="waiting-retry">Look again</button>
+    </section>
   </section>
 </main>
 
