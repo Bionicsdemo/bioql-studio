@@ -36,6 +36,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import studio
+from studio import board
 from studio import ledger
 from studio import allowlist as al
 from studio import guard as sguard
@@ -52,9 +53,14 @@ STATIC = {"/": ("index.html", "text/html; charset=utf-8"),
           "/app.js": ("app.js", "text/javascript; charset=utf-8"),
           "/app.css": ("app.css", "text/css; charset=utf-8")}
 
-# Agtr's CSP (agtrcore/app.py:607-612) allows 'unsafe-inline' styles and localhost frames, because its window embeds
-# VS Code and sandboxed canvases. Studio's window has neither, so nothing is inline and nothing is framed.
+# Agtr's CSP (agtrcore/app.py:607-612) allows 'unsafe-inline' styles and frames from ANY localhost port, because its
+# window embeds VS Code and sandboxed canvases. Studio keeps the strict half — nothing inline, nothing loaded from
+# outside — and opens exactly one door: BioQL's own window on port 3000, which the Studio window wraps as its main
+# panel. That is the whole shape of the product: BioQL's interface is not replaced, it is framed, and the Agtr
+# machinery (the orb, the findings, the board, the notebook) is added around it.
+BIOQL_UI = os.environ.get("BIOQL_UI_URL", "http://127.0.0.1:3000").rstrip("/")
 CSP = ("default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; "
+       f"frame-src {BIOQL_UI} http://localhost:3000; "
        "base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'")
 
 TOKEN_MIN = 32              # secrets.token_urlsafe(32) is 43 characters; anything shorter is a broken file
@@ -65,6 +71,9 @@ PENDING_MAX = 32
 PENDING_TRIES = 3           # wrong codes before the offer is void: the page holds the token, so guessing is bounded
 RUN_MAX = 64
 ID = re.compile(r"^[0-9a-f]{24}$")
+# A board id is `uuid4().hex[:12]`, shorter than a pending or run id. Checking it against ID refused every board
+# that exists, with a message about letters and digits that was true and useless.
+BOARD_ID = re.compile(r"^[0-9a-f]{8,32}$")
 
 
 class Empty(RuntimeError):
@@ -226,7 +235,8 @@ class Studio:
         with self._lock:
             pend = [p.public() for p in self.pending.values() if not p.used and not p.expired()]
         return {"name": PING_NAME, "version": VERSION, "port": self.port, "home": str(self.home),
-                "bioql": self.adapter.base, "up_seconds": round(time.time() - self.started, 1),
+                "bioql": self.adapter.base, "bioql_ui": BIOQL_UI,
+                "up_seconds": round(time.time() - self.started, 1),
                 "calls": self.calls, "refusals": self.refusals, "approvals": self.approvals,
                 "pending": pend, "runs": [r.public() for r in list(self.runs.values())[-RUN_MAX:]]}
 
@@ -440,6 +450,56 @@ class Studio:
                 rows.append(r)
         return {"rows": rows, "chain": ledger.verify(), "file": str(f)}
 
+    def ui_state(self) -> dict:
+        """Whether BioQL's window answers, and nothing more. Three outcomes, kept apart: it answered (`up`), it
+        refused the connection (`up: false`, with the reason), or we could not tell. A window Studio cannot reach is
+        never reported as a window that is not there."""
+        req = urllib.request.Request(BIOQL_UI + "/", method="GET")
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        try:
+            with opener.open(req, timeout=3) as r:
+                return {"url": BIOQL_UI, "up": 200 <= r.status < 400, "http": r.status}
+        except urllib.error.HTTPError as e:
+            return {"url": BIOQL_UI, "up": e.code < 400, "http": e.code}
+        except (urllib.error.URLError, TimeoutError, OSError) as why:
+            return {"url": BIOQL_UI, "up": False, "why": f"{getattr(why, 'reason', why)}"[:120]}
+
+    def board_write(self, b: dict) -> tuple[dict, int]:
+        """One route, four acts: new, node, link, evidence. Everything the board refuses — an unknown kind, a link
+        to a node that is not there, an evidence node with no ledger line behind it — comes back as the board's own
+        reason, never softened. The window cannot invent evidence: `evidence` names a ledger HASH, and the row is
+        read from the record, not from the request body."""
+        act = str(b.get("act") or "")
+        try:
+            if act == "new":
+                made = board.new(str(b.get("title") or ""), str(b.get("question") or ""))
+                return {"board": made["id"]}, 200
+            bid = str(b.get("id") or "")
+            if not BOARD_ID.match(bid):
+                return {"error": "a board id is 8 to 32 hex characters"}, 400
+            r = board.load(bid)
+            if not r.resolved:
+                return {"state": r.state, "detail": r.detail}, 404 if r.absent else 500
+            bd = r.value
+            if act == "node":
+                node = board.add(bd, str(b.get("kind") or ""), str(b.get("label") or ""))
+            elif act == "link":
+                board.link(bd, str(b.get("from") or ""), str(b.get("edge") or ""), str(b.get("to") or ""))
+                node = {"ok": True}
+            elif act == "evidence":
+                want = str(b.get("ledger_hash") or "")
+                row = next((x for x in self.ledger_rows(400)["rows"] if x.get("hash") == want), None)
+                if row is None:
+                    return {"error": "that line is not on the hash-chained record"}, 404
+                node = board.evidence_from(bd, row, about=(str(b.get("about")) if b.get("about") else None),
+                                           contradicts=bool(b.get("contradicts")))
+            else:
+                return {"error": f"unknown act {act!r}"}, 400
+            board.save(bd)
+            return {"node": node, "report": board.report(bd)}, 200
+        except ValueError as why:
+            return {"error": str(why)}, 400
+
     def guard_report(self) -> dict:
         """The two most recent saved guard snapshots, compared. It takes NO snapshot: a GET changes nothing.
 
@@ -595,6 +655,24 @@ def make_handler(s: Studio):
                     return self._json(s.ledger_rows(limit))
                 if p == "/api/guard":
                     return self._json(s.guard_report())
+                if p == "/api/ui":
+                    # Is BioQL's own window up? The page cannot ask: `connect-src 'self'` forbids it reaching
+                    # another origin, and a page that cannot ask must not guess. Studio asks, and only reports —
+                    # it never starts, stops or restarts BioQL's frontend.
+                    return self._json(s.ui_state())
+                if p == "/api/boards":
+                    return self._json({"boards": board.boards()})
+                if p == "/api/board":
+                    bid = (qs.get("id") or [""])[0]
+                    if not BOARD_ID.match(bid or ""):
+                        return self._json({"error": "a board id is 8 to 32 hex characters"}, 400)
+                    r = board.load(bid)
+                    if not r.resolved:
+                        # ABSENT and UNRESOLVABLE are different answers and the window shows them differently: a
+                        # board that cannot be read is never drawn as an empty one.
+                        return self._json({"state": r.state, "detail": r.detail}, 404 if r.absent else 500)
+                    b = r.value
+                    return self._json({"board": b, "report": board.report(b), "markdown": board.markdown(b)})
                 if p == "/api/run":
                     rid = (qs.get("id") or [""])[0]
                     run = s.runs.get(rid) if ID.match(rid or "") else None
@@ -621,6 +699,9 @@ def make_handler(s: Studio):
                     return self._json(out, code)
                 if p == "/api/approve":
                     out, code = s.approve(str(b.get("id") or ""), str(b.get("code") or ""))
+                    return self._json(out, code)
+                if p == "/api/board":
+                    out, code = s.board_write(b)
                     return self._json(out, code)
                 return self._json({"error": "not found"}, 404)
             except Exception as e:

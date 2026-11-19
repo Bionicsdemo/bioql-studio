@@ -6,67 +6,104 @@
 <title>BioQL Studio</title>
 <link rel="stylesheet" href="app.css">
 </head>
-<body>
-<!-- The token is never written into this file, and this file holds no placeholder for one. Agtr substitutes its own
-     token placeholder into any .html it serves (service.py:1255); here app.js reads the token from the URL
-     fragment, which a browser never sends to a server, and
-     clears it from the address bar immediately. No CDN, no framework: the CSP is default-src 'none' plus 'self'. -->
-<header>
-  <h1>BioQL Studio</h1>
-  <p id="state" class="state">reading the service…</p>
+<!-- BioQL's own window is the main panel, loaded whole and untouched. Nothing of its workflow is replaced: the chat,
+     the sidebar, the health panel, the budget, every tab stays exactly as it is. What Studio adds is the frame
+     around it — the orb that says what the instrument is doing, and the lenses that open over it: Findings, Board,
+     Notebook, Tools, Guard.
+
+     No secret is written into this file and it holds no placeholder for one. Agtr substitutes its token into every
+     .html it serves (service.py:1255); here app.js reads it from the URL fragment, which a browser never sends to a
+     server, and clears it from the address bar at once.
+
+     No framework, no CDN, no web font: the CSP is default-src 'none' with 'self' and exactly one door — BioQL's
+     window on 3000. The type is what every Mac already has. -->
+<body data-ring="idle">
+
+<div class="grain" aria-hidden="true"></div>
+
+<!-- ------------------------------------------------------------------ the brow -->
+<header class="brow">
+  <div class="brow-left">
+    <span class="orb-mini" id="orb-mini" role="img" aria-label="instrument state">
+      <span class="orb-mini-sheen" aria-hidden="true"></span>
+    </span>
+    <h1 class="mark">BioQL<span class="mark-thin"> Studio</span></h1>
+  </div>
+
+  <nav class="rail" role="tablist" aria-label="lenses">
+    <button class="lens" role="tab" aria-selected="false" aria-controls="drawer" data-lens="findings">
+      <span class="lens-name">Findings</span><span class="lens-count" id="count-findings"></span>
+    </button>
+    <button class="lens" role="tab" aria-selected="false" aria-controls="drawer" data-lens="board">
+      <span class="lens-name">Board</span><span class="lens-count" id="count-board"></span>
+    </button>
+    <button class="lens" role="tab" aria-selected="false" aria-controls="drawer" data-lens="ledger">
+      <span class="lens-name">Notebook</span><span class="lens-count" id="count-ledger"></span>
+    </button>
+    <button class="lens" role="tab" aria-selected="false" aria-controls="drawer" data-lens="tools">
+      <span class="lens-name">Tools</span><span class="lens-count" id="count-tools"></span>
+    </button>
+    <button class="lens" role="tab" aria-selected="false" aria-controls="drawer" data-lens="guard">
+      <span class="lens-name">Guard</span><span class="lens-count" id="count-guard"></span>
+    </button>
+  </nav>
+
+  <div class="brow-right">
+    <p id="engine" class="engine">asking BioQL…</p>
+  </div>
 </header>
 
-<section class="engine">
-  <h2>Engine</h2>
-  <p id="engine" class="engine-line">asking BioQL…</p>
-  <p class="muted">Studio never starts, stops or restarts BioQL. It reads it through the allowlist.</p>
-</section>
+<!-- ------------------------------------------------------------------ BioQL itself -->
+<main class="stage">
+  <iframe id="bioql" class="bioql" title="BioQL" src="about:blank"></iframe>
 
-<nav class="tabs" role="tablist">
-  <!-- Findings first, and selected on load: the easy path is the verified one. -->
-  <button id="tab-findings" class="tab on" role="tab" aria-selected="true" aria-controls="panel-findings">Findings</button>
-  <button id="tab-ledger" class="tab" role="tab" aria-selected="false" aria-controls="panel-ledger">Ledger</button>
-  <button id="tab-tools" class="tab" role="tab" aria-selected="false" aria-controls="panel-tools">Tools</button>
-  <button id="tab-guard" class="tab" role="tab" aria-selected="false" aria-controls="panel-guard">Guard</button>
-</nav>
-
-<main>
-  <section id="panel-findings" class="panel" role="tabpanel" aria-labelledby="tab-findings">
-    <p class="muted">Every verdict the verifier recorded, newest first. A row whose line recorded no verdict says
-      <em>not recorded</em> — it is never read as clean.</p>
-    <div id="findings"></div>
-  </section>
-
-  <section id="panel-ledger" class="panel hidden" role="tabpanel" aria-labelledby="tab-ledger">
-    <p id="chain" class="muted"></p>
-    <div id="ledger"></div>
-  </section>
-
-  <section id="panel-tools" class="panel hidden" role="tabpanel" aria-labelledby="tab-tools">
-    <p class="muted">The closed list Studio may call. An entry marked <strong>needs a person</strong> is refused from
-      this window; it offers an approval instead. Anything that could reach real quantum hardware is not offered here
-      at all — that stays with <code>python3 -m studio call … --approve "&lt;name&gt;"</code>.</p>
-    <div id="tools"></div>
-  </section>
-
-  <section id="panel-guard" class="panel hidden" role="tabpanel" aria-labelledby="tab-guard">
-    <p class="muted">The two most recent saved snapshots of BioQL's source trees, compared. Opening this page takes no
-      new snapshot. Take one with <code>python3 -m studio guard snapshot &lt;name&gt;</code>.</p>
-    <div id="guard"></div>
+  <!-- Shown only while BioQL's window is not up. Studio never starts it. -->
+  <section class="waiting-room hidden" id="waiting-room">
+    <div class="orbwrap">
+      <div class="orb" role="img" aria-label="instrument state">
+        <div class="orb-sheen" aria-hidden="true"></div>
+        <div class="orb-core" aria-hidden="true"></div>
+        <div class="orb-glint" aria-hidden="true"></div>
+      </div>
+      <div class="ring" aria-hidden="true"></div>
+    </div>
+    <p class="waiting-why" id="waiting-why">looking for BioQL's window…</p>
+    <p class="fine">Studio never starts, stops or restarts BioQL. Bring its window up yourself and this panel fills:</p>
+    <p class="cmd"><code id="waiting-cmd">./start_frontend_local.sh</code></p>
+    <button class="go" id="waiting-retry">Look again</button>
   </section>
 </main>
 
-<section id="pending-box" class="pending hidden">
-  <h2>Waiting for a person</h2>
-  <p class="muted">The code for a pending call is in Studio's log and in <code>HOME/pending/&lt;id&gt;</code>. It was
+<!-- ------------------------------------------------------------------ waiting for a person -->
+<section id="pending-box" class="summons hidden" aria-live="assertive">
+  <h2 class="summons-title">Waiting for a person</h2>
+  <p class="fine">The code for a pending call is in Studio's log and in <code>HOME/pending/&lt;id&gt;</code>. It was
     never sent to this page. Pasting it is an explicit, single-use, call-bound act — <strong>not</strong> a proof that
-    a human is present (see <code>app/README.md</code>).</p>
+    a human is present (<code>app/README.md</code>).</p>
   <div id="pending"></div>
 </section>
 
-<footer>
-  <p id="footer" class="muted"></p>
+<!-- ------------------------------------------------------------------ the lenses -->
+<section id="drawer" class="drawer" role="tabpanel" aria-hidden="true">
+  <div class="drawer-grip">
+    <h2 id="drawer-title" class="drawer-title">Findings</h2>
+    <p id="drawer-note" class="fine"></p>
+    <button id="drawer-close" class="shut" aria-label="close">Close</button>
+  </div>
+  <div class="drawer-body">
+    <div id="panel-findings" class="panel"></div>
+    <div id="panel-board" class="panel hidden"></div>
+    <div id="panel-ledger" class="panel hidden"></div>
+    <div id="panel-tools" class="panel hidden"></div>
+    <div id="panel-guard" class="panel hidden"></div>
+  </div>
+</section>
+
+<footer class="plate">
+  <p id="state" class="vitals">reading the service…</p>
+  <p id="footer" class="fine"></p>
 </footer>
+
 <script src="app.js"></script>
 </body>
 </html>
