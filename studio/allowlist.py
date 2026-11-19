@@ -55,7 +55,11 @@ DEFAULTS: dict[str, dict] = {
                   "why": "A 2D depiction of a molecule."},
 }
 
-ID = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
+# A path segment Studio will put in a URL. It must contain a letter or a digit and may not be all dots: `..` matched
+# the old pattern, and `urllib.parse.quote` does not escape a dot even with `safe=""`, so `pipeline_job(job_id="..")`
+# built `/api/pipeline/job/..` — which the server normalises to a DIFFERENT route than the allowlist named. The whole
+# point of the closed list is that the caller cannot choose the route.
+ID = re.compile(r"^(?=.*[A-Za-z0-9])[A-Za-z0-9_.-]{1,128}$")
 PARAM = re.compile(r"\{([a-z_][a-z0-9_]*)\}")
 
 

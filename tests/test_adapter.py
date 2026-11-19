@@ -258,3 +258,17 @@ def test_a_mac_that_cannot_sign_still_records_the_call(fake_bioql, studio_home, 
     row = json.loads(ledger.path_file().read_text().splitlines()[-1])
     assert row["tool"] == "backend_health" and "NoCrypto" in row["unsigned_because"]
     assert notebook.verify()["unsigned"] == 1
+
+
+@pytest.mark.parametrize("bad", ["..", ".", "...", "..-.", "../x", "a/b", "j1?x=1", "", "%2e%2e"])
+def test_a_path_segment_can_never_change_the_route(fake_bioql, bad):
+    """`..` matched the old id pattern, and quote() does not escape a dot even with safe="": job_id=".." built
+    /api/pipeline/job/.. , which a server normalises to a DIFFERENT route than the allowlist named. The whole point
+    of a closed list is that the caller cannot choose the route."""
+    a = ad(fake_bioql)
+    with pytest.raises(Refused):
+        a.call("pipeline_job", {"job_id": bad})
+
+
+def test_an_ordinary_job_id_still_works(fake_bioql):
+    assert ad(fake_bioql).call("pipeline_job", {"job_id": "j1"}).state == RESOLVED
