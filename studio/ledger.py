@@ -1,11 +1,30 @@
 """The run ledger: one line per call to BioQL, chained by hashes (each line carries the previous line's hash).
 
-Phase 1 chains; Phase 2 signs each line with Ed25519 (the lab notebook). A line records what was asked, what came
-back (its sha256, not the payload), the state (RESOLVED / ABSENT / UNRESOLVABLE) and the provenance BioQL itself
-reported — real-or-null, never inferred.
+`studio/notebook.py` signs each line with Ed25519 on top of this; the chain here is what the signature protects.
+A line records what was asked, what came back (its sha256, not the payload), the state, the verifier's verdict and
+the provenance BioQL itself reported — real-or-null, never inferred.
+
+The ledger is the one thing in Studio that must keep working when everything else is going wrong, because its job is
+to say what happened. Six ways it stopped doing that, all found by review and each reproduced before it was fixed:
+
+1. A torn last line — a write cut short by a crash or a full disk — made `verify` raise instead of reporting it.
+2. The same torn line bricked `append` FOREVER: every later call raised, so the ledger quietly stopped recording.
+3. One line over 64 KB bricked `append` the same way, because `_last_hash` seeked to `size - 65536` and parsed the
+   last line in that window, which for a longer final line is a fragment. Not hypothetical with 96 KB result bodies
+   in play: the rows hold a sha256, but `args` and `detail` are unbounded.
+4. A missing or emptied file answered `{"ok": True, "lines": 0}` — no `broken_at`, no `why`, a different shape from
+   every failure path, and truncation reading as success.
+5. `append` did not create its parent directory.
+6. The lock was per-process, so the MCP server and the window could read the same `prev` and fork the chain.
+
+What replaces them: the tail is found by scanning backwards for a real line boundary, with no size assumption; a
+tail that was never finished is quarantined into `<name>.damaged-<ts>` and a `ledger_repair` line records its digest,
+so recording continues and nothing is thrown away; `verify` always returns the same four keys and reports damage
+instead of raising; and the lock is an `flock` on the file itself, which holds across processes.
 """
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
@@ -15,7 +34,13 @@ from pathlib import Path
 
 from . import home
 
-_LOCK = threading.Lock()
+try:
+    import fcntl
+except ImportError:                       # not POSIX: the in-process lock is all there is, and verify() says so
+    fcntl = None                          # type: ignore[assignment]
+
+_LOCK = threading.RLock()
+READ_BACK = 8192                          # the first window to look back for a line boundary; it grows as needed
 
 
 def canon(obj) -> bytes:
@@ -30,38 +55,158 @@ def path_file() -> Path:
     return home() / "runs.jsonl"
 
 
-def _last_hash(f: Path) -> str:
-    if not f.exists() or f.stat().st_size == 0:
-        return "0" * 64
+def _tail_line(f: Path) -> tuple[bytes, bool]:
+    """(the last line's bytes, whether the file ends with a newline).
+
+    Scans backwards in growing windows for a real line boundary, so a last line of any length is read whole. The
+    fixed 64 KB window this replaces turned a long final line into a fragment and bricked every later append.
+    """
+    size = f.stat().st_size
+    if size == 0:
+        return b"", True
     with f.open("rb") as fh:
-        fh.seek(max(0, f.stat().st_size - 65536))
-        tail = fh.read().splitlines()
-    return json.loads(tail[-1])["hash"]
+        back = READ_BACK
+        while True:
+            start = max(0, size - back)
+            fh.seek(start)
+            chunk = fh.read(size - start)
+            ended = chunk.endswith(b"\n")
+            body = chunk[:-1] if ended else chunk
+            i = body.rfind(b"\n")
+            if i != -1:
+                return body[i + 1:], ended
+            if start == 0:
+                return body, ended        # the whole file is one line
+            back *= 4                     # no boundary in this window: look further back
 
 
-def append(row: dict, file: Path | None = None) -> dict:
-    f = file or path_file()
-    with _LOCK:
-        body = {**row, "t": round(time.time(), 3), "prev": _last_hash(f)}
-        body["hash"] = digest(body)
-        fd = os.open(f, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-        with os.fdopen(fd, "ab") as fh:
-            fh.write(canon(body) + b"\n")
+def _quarantine(f: Path, keep: int, why: str) -> dict:
+    """Move the unfinished tail aside and record what was moved. Nothing is deleted: the bytes go to a `.damaged`
+    file next to the ledger, and the next line names their digest, so a reader can see that something was there."""
+    with f.open("rb") as fh:
+        fh.seek(keep)
+        bad = fh.read()
+    hurt = f.with_name(f"{f.name}.damaged-{int(time.time())}")
+    fd = os.open(hurt, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    with os.fdopen(fd, "ab") as out:
+        out.write(bad)
+    with f.open("r+b") as fh:
+        fh.truncate(keep)
+    return {"bytes": len(bad), "sha256": hashlib.sha256(bad).hexdigest(), "moved_to": hurt.name, "why": why}
+
+
+def _state(f: Path) -> tuple[str, dict | None]:
+    """(the hash to chain onto, a repair record when the tail had to be moved aside)."""
+    if not f.exists() or f.stat().st_size == 0:
+        return "0" * 64, None
+    line, ended = _tail_line(f)
+    try:
+        row = json.loads(line)
+        if not isinstance(row, dict) or not isinstance(row.get("hash"), str):
+            raise ValueError("a ledger line must be an object carrying its hash")
+        if ended:
+            return row["hash"], None
+    except ValueError as why:
+        row, _ = None, None
+        if ended:
+            # A complete line that does not parse is corruption, not an interrupted write. It is moved aside too —
+            # refusing instead would brick the ledger, which is the defect this whole module exists to avoid — and
+            # the repair line says what it was.
+            keep = f.stat().st_size - len(line) - 1
+            rec = _quarantine(f, max(0, keep), f"the last line did not parse: {why}"[:160])
+            return _state(f)[0], rec
+    # the tail is not newline-terminated: a write that never finished
+    keep = f.stat().st_size - len(line)
+    rec = _quarantine(f, keep, "the last line was never finished (no newline): a write cut short")
+    return _state(f)[0], rec
+
+
+def _write(f: Path, row: dict) -> dict:
+    body = {**row, "t": round(time.time(), 3)}
+    body["prev"] = _PREV[0]
+    body["hash"] = digest(body)
+    fd = os.open(f, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    with os.fdopen(fd, "ab") as fh:
+        fh.write(canon(body) + b"\n")
+    _PREV[0] = body["hash"]
     return body
 
 
-def verify(file: Path | None = None) -> dict:
-    """{ok, lines, broken_at, why}: every line's hash recomputed and every link checked."""
+_PREV = [""]                              # the hash the next line chains onto, held only inside a locked section
+
+
+def append(row: dict, file: Path | None = None) -> dict:
+    """Add one line. Takes an flock on the ledger itself, so two PROCESSES — the window and the MCP server — cannot
+    read the same `prev` and fork the chain."""
     f = file or path_file()
-    prev, n = "0" * 64, 0
+    f.parent.mkdir(parents=True, exist_ok=True)      # (5) a ledger that cannot be created records nothing
+    with _LOCK:
+        lock = os.open(f, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            if fcntl is not None:
+                try:
+                    fcntl.flock(lock, fcntl.LOCK_EX)
+                except OSError as why:               # a filesystem without locks: the in-process lock still holds
+                    if why.errno not in (errno.ENOLCK, errno.EOPNOTSUPP, errno.EINVAL):
+                        raise
+            prev, repair = _state(f)
+            _PREV[0] = prev
+            if repair:
+                _write(f, {"tool": "ledger_repair", "state": "REPAIRED", "detail": repair["why"],
+                           "damaged": repair, "by": "ledger"})
+            return _write(f, row)
+        finally:
+            os.close(lock)
+
+
+def verify(file: Path | None = None) -> dict:
+    """{ok, lines, broken_at, why} — always those four keys, whatever happened.
+
+    Damage is REPORTED, never raised: a verifier that dies on a damaged file cannot tell you the file is damaged.
+    """
+    f = file or path_file()
+    out = {"ok": True, "lines": 0, "broken_at": None, "why": None}
     if not f.exists():
-        return {"ok": True, "lines": 0}
-    for n, line in enumerate(f.read_bytes().splitlines(), 1):
-        row = json.loads(line)
-        h = row.pop("hash", None)
-        if row.get("prev") != prev:
-            return {"ok": False, "lines": n, "broken_at": n, "why": "link to the previous line does not match"}
-        if digest(row) != h:
-            return {"ok": False, "lines": n, "broken_at": n, "why": "line content does not match its hash"}
+        return {**out, "ok": False, "why": f"no ledger at {f}"}
+    try:
+        raw = f.read_bytes()
+    except OSError as why:
+        return {**out, "ok": False, "why": f"cannot read it: {type(why).__name__}: {why}"[:200]}
+    if not raw:
+        return {**out, "ok": False, "why": "the ledger is empty: nothing recorded, or it was truncated"}
+    prev, n = "0" * 64, 0
+    lines = raw.split(b"\n")
+    ended = raw.endswith(b"\n")
+    if ended:
+        lines = lines[:-1]
+    for n, line in enumerate(lines, 1):
+        last = n == len(lines)
+        try:
+            rowdict = json.loads(line)
+            if not isinstance(rowdict, dict):
+                raise ValueError("not an object")
+        except ValueError as why:
+            tail = " (the last line was never finished: a write cut short)" if last and not ended else ""
+            return {**out, "ok": False, "lines": n, "broken_at": n,
+                    "why": f"line {n} is not valid JSON: {why}{tail}"[:200]}
+        h = rowdict.pop("hash", None)
+        if rowdict.get("prev") != prev:
+            return {**out, "ok": False, "lines": n, "broken_at": n,
+                    "why": f"line {n} does not link to the one before it"}
+        if digest(rowdict) != h:
+            return {**out, "ok": False, "lines": n, "broken_at": n,
+                    "why": f"line {n} does not match its own hash"}
         prev = h
-    return {"ok": True, "lines": n}
+    return {**out, "lines": n}
+
+
+def damaged(file: Path | None = None) -> list[dict]:
+    """The tails moved aside by a repair, newest first. They are kept, not deleted."""
+    f = file or path_file()
+    out = []
+    for p in sorted(f.parent.glob(f"{f.name}.damaged-*"), reverse=True):
+        try:
+            out.append({"file": p.name, "bytes": p.stat().st_size, "at": p.name.rsplit("-", 1)[-1]})
+        except OSError:
+            continue
+    return out

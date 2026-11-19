@@ -59,8 +59,10 @@ CSP = ("default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' 
 
 TOKEN_MIN = 32              # secrets.token_urlsafe(32) is 43 characters; anything shorter is a broken file
 MAX_POST = 1 << 20          # Agtr reads Content-Length and parses whatever arrives (service.py:1392-1394)
+MAX_ARGS = 32 * 1024        # how much of a call may go on the hash-chained record (see `too_big`)
 PENDING_TTL = 600.0         # an approval offer that nobody takes expires in ten minutes
 PENDING_MAX = 32
+PENDING_TRIES = 3           # wrong codes before the offer is void: the page holds the token, so guessing is bounded
 RUN_MAX = 64
 ID = re.compile(r"^[0-9a-f]{24}$")
 
@@ -86,6 +88,29 @@ def dotdot(entry: dict, args: dict) -> str:
         if v in (".", "..") or "." * 2 in v:
             return f"{k!r} must look like an id, and {v!r} is a dot-path that would climb out of {entry['path']}"
     return ""
+
+
+def too_big(args: dict) -> str:
+    """An empty string if these arguments are small enough to be put on the record, else why they are refused.
+
+    A second hole in the sealed adapter. `studio/ledger.py::_last_hash` finds the previous line's hash by reading
+    only the FINAL 64 KB of runs.jsonl — so a single line longer than that makes the next `append` parse a fragment
+    and raise, and the chain stops taking lines for ever. `studio/adapter.py::_note` writes `args` whole, with no
+    bound, and `/api/call` accepts a 1 MB body: one request with a 100 KB `smiles` would brick the ledger. The window
+    refuses at the door instead. `studio/` may not be edited here, so the CLI and the MCP server are still exposed.
+    """
+    n = len(ledger.canon(args or {}))
+    if n > MAX_ARGS:
+        return (f"these arguments are {n} bytes; at most {MAX_ARGS} can go on the hash-chained record, and a line "
+                f"longer than 64 KB would break the chain for every line after it")
+    return ""
+
+
+def trim(args: dict) -> dict:
+    """What goes on the record. Already bounded by `too_big` on the way in; bounded again here, because a refusal is
+    recorded for arguments that were refused precisely for being too large."""
+    raw = ledger.canon(args or {})
+    return args if len(raw) <= MAX_ARGS else {"args_omitted": {"bytes": len(raw), "keys": sorted(map(str, args))[:40]}}
 
 
 def read_secret(home: Path, name: str = "ui.token") -> str:
@@ -124,12 +149,13 @@ class Pending:
     why: str
     created: float = field(default_factory=time.time)
     used: bool = False
+    tries: int = 0              # wrong codes; the offer is void at PENDING_TRIES
 
     def expired(self, now: float | None = None) -> bool:
         return (now or time.time()) - self.created > PENDING_TTL
 
     def public(self) -> dict:
-        return {"id": self.id, "tool": self.tool, "args": self.args, "why": self.why,
+        return {"id": self.id, "tool": self.tool, "args": self.args, "why": self.why, "tries_left": max(0, PENDING_TRIES - self.tries),
                 "created": round(self.created, 3), "expires_in": round(PENDING_TTL - (time.time() - self.created), 1),
                 "used": self.used}
 
@@ -182,8 +208,9 @@ class Studio:
         return read_secret(self.home, name)
 
     def matches_token(self, given: str | bytes | None) -> bool:
-        """Constant-time, on BYTES. Agtr compares str (service.py:1229): a header with a non-ASCII character makes
-        secrets.compare_digest raise, which in Agtr becomes a 500 from the catch-all at service.py:1465."""
+        """Constant-time, on BYTES. Agtr compares str (service.py:1229), and secrets.compare_digest raises TypeError
+        on a non-ASCII str — and `_guard` is called OUTSIDE the try in both of Agtr's handlers (service.py:1293,
+        :1390), so that raise is not caught at all: the request dies with no answer, not even its 500."""
         if not self._token or len(self._token) < TOKEN_MIN:         # belt and braces: never open on an empty secret
             return False
         if given is None:
@@ -211,24 +238,28 @@ class Studio:
             return {"state": "REFUSED", "detail": "a call is {name: str, args: object}"}, 400
         try:
             e = self.adapter.check(name, args)      # makes no HTTP call and writes no ledger row
-            bad = dotdot(e, args)
+            bad = dotdot(e, args) or too_big(args)
             if bad:
                 raise Refused(bad)
         except Refused as why:
-            self.refusals += 1
             out = {"state": "REFUSED", "detail": str(why)}
             offer = self._offer(name, args)         # would a person's approval change this answer?
             if offer:
                 out["pending"] = offer
                 out["how"] = ("This call needs a person. The code for it was written to Studio's log and to "
                               "HOME/pending/<id>; paste it into Approve. It is single-use and bound to this call.")
+            else:
+                # A refusal is a line of the record, as it is for Claude Code through the MCP server (where
+                # studio.adapter.call writes it). The adapter's `check` deliberately writes nothing, so the window
+                # writes its own — otherwise a refusal from the window would leave no trace at all.
+                self._refused(name, args, str(why), event="call")
             return out, 403
         try:
             # `check` passes but `call` can still refuse: a `{job_id}` segment is filled only from an argument that
             # looks like an id, so `job_id: "../../api/scripts/execute"` is refused where the path is built, not here.
             res = self.adapter.call(name, args, approved_by=None, by="window")
         except Refused as why:
-            self.refusals += 1
+            self._refused(name, args, str(why), event="call")
             return {"state": "REFUSED", "detail": str(why)}, 403
         self.calls += 1
         self._note(name, res, by="window", event="call")
@@ -254,7 +285,8 @@ class Studio:
                     del self.pending[p.id]
             if len(self.pending) >= PENDING_MAX:
                 return None
-            p = Pending(id=secrets.token_hex(12), code=secrets.token_hex(4), tool=name, args=dict(args),
+            # 128 bits of code, not 32: a guess has to be hopeless on its own, not merely rate-limited.
+            p = Pending(id=secrets.token_hex(12), code=secrets.token_hex(16), tool=name, args=dict(args),
                         why=f"{e['kind']} entry {name!r} ({e['method']} {e['path']})")
             self.pending[p.id] = p
         # The code is NOT returned to the caller: it goes to this service's own log and to a 0600 file, so taking the
@@ -262,7 +294,7 @@ class Studio:
         # written out in app/README.md and in approve() below.
         studio.write_private(self.home / "pending" / p.id, p.code + "\n")
         self.log(f"approval needed for {name}: id {p.id} code {p.code} (expires in {int(PENDING_TTL)}s)")
-        ledger.append({"tool": name, "args": args, "state": "PENDING", "by": "window",
+        ledger.append({"tool": name, "args": trim(args), "state": "PENDING", "by": "window",
                        "window_event": "approval_offered", "pending_id": p.id, "detail": p.why[:300]})
         return p.public()
 
@@ -289,14 +321,21 @@ class Studio:
                 bad = "that approval was already used (it is single-use)"
             elif p.expired(now):
                 bad = "that approval expired"
+            elif p.tries >= PENDING_TRIES:
+                bad = f"that approval was voided after {PENDING_TRIES} wrong codes"
             elif not secrets.compare_digest(code.encode("utf-8", "replace"), p.code.encode()):
-                bad = "wrong code"
+                # A wrong code BURNS a try, under the same lock. The page already holds the token, so an offer that
+                # could be guessed at for ten minutes would weaken the one thing this mechanism does claim: that the
+                # call was not started by the page on its own.
+                p.tries += 1
+                bad = ("wrong code" if p.tries < PENDING_TRIES
+                       else f"wrong code; this approval is now void after {PENDING_TRIES} tries")
             else:
                 bad = ""
                 p.used = True                        # consumed here, under the lock: a replay finds `used`
         if bad:
             self.refusals += 1
-            ledger.append({"tool": p.tool if p else None, "state": "REFUSED", "by": "window",
+            ledger.append({"tool": p.tool if p else None, "state": "REFUSED", "by": "window", "verdict": None,
                            "window_event": "approval_denied", "pending_id": pid[:64], "detail": bad})
             self.log(f"approval denied ({bad}) for {pid[:12]}")
             return {"state": "REFUSED", "detail": bad}, 403
@@ -307,7 +346,7 @@ class Studio:
         self.approvals += 1
         # `approved_by` names the MECHANISM, not a person and not a biometric: "window:<pending id>".
         who = f"window:{p.id}"
-        ledger.append({"tool": p.tool, "args": p.args, "state": "APPROVED", "by": "window",
+        ledger.append({"tool": p.tool, "args": trim(p.args), "state": "APPROVED", "by": "window",
                        "window_event": "approval_granted", "pending_id": p.id, "approved_by": who,
                        "detail": "explicit single-use code; not a proof of human presence"})
         run = Run(id=p.id, tool=p.tool)
@@ -322,25 +361,37 @@ class Studio:
                 "note": "started; follow it on /api/run?id=…"}, 200
 
     def _run(self, run: Run, p: Pending, who: str) -> None:
+        # `run.state` is written LAST, every way out of this function. /api/run is read without a lock, so a state
+        # published before the verdict and the hash would let a reader see a finished run whose verdict is still
+        # missing — and read that absence as "nothing was found", which is the failure this whole layer exists to
+        # prevent. While it is "RUNNING" nothing about it is claimed at all.
         try:
             res = self.adapter.call(p.tool, p.args, approved_by=who, by="window")
         except Refused as why:                       # the allowlist changed under us, or the entry was disabled
-            run.state, run.detail = "REFUSED", str(why)[:300]
             self.refusals += 1
+            run.detail = str(why)[:300]
+            run.state = "REFUSED"
             return
         except Exception as e:                       # never a plausible result: the cause, named
-            run.state, run.detail = "UNRESOLVABLE", f"{type(e).__name__}: {e}"[:300]
+            run.detail = f"{type(e).__name__}: {e}"[:300]
+            run.state = "UNRESOLVABLE"
             return
         self.calls += 1
-        run.state, run.detail = res.state, (res.detail or "")[:300]
+        run.detail = (res.detail or "")[:300]
         run.verdict = res.meta.get("verdict")
         run.findings = res.meta.get("findings") or []
         run.provenance = res.meta.get("provenance")
         run.seconds = res.meta.get("seconds")
         run.result_sha256 = ledger.digest(res.value) if res.resolved else None
         self._note(p.tool, res, by="window", event="approved_call", approved_by=who, pending_id=p.id)
+        run.state = res.state
 
     # ------------------------------------------------------------------ the record
+    def _refused(self, name, args: dict, why: str, event: str) -> None:
+        self.refusals += 1
+        ledger.append({"tool": name if isinstance(name, str) else None, "args": trim(args), "state": "REFUSED",
+                       "by": "window", "window_event": event, "verdict": None, "detail": why[:300]})
+
     def _note(self, name: str, res, by: str, event: str, **extra) -> None:
         """The verifier's verdict and findings, on the record.
 

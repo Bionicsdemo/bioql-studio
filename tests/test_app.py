@@ -553,3 +553,106 @@ def test_the_app_never_imports_bioql_and_never_names_it_as_a_place_to_write():
                 for arg in ast.walk(node):
                     if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
                         assert not any(m in arg.value for m in ("Spectrix_BioQL", "/opt/bioql", ".bioql", "AGTR"))
+
+
+# ------------------------------------------------------------------ added after review: the gaps the tests missed
+def test_a_refusal_from_the_window_is_on_the_record(svc):
+    """For Claude Code a refusal is a REFUSED line (studio.adapter.call writes it). `Adapter.check` deliberately
+    writes nothing, so without a row of its own a refusal from the window would leave no trace at all."""
+    svc.j("/api/call", {"name": "hw", "args": {}})                       # hardware: no offer, so a plain refusal
+    svc.j("/api/call", {"name": "no_such_tool", "args": {}})
+    svc.j("/api/call", {"name": "smiles_to_3d", "args": {"endpoint": "/api/exec"}})
+    rows = [r for r in svc.j("/api/ledger?limit=200")[1]["rows"] if r.get("window_event") == "call"]
+    refused = [r for r in rows if r["state"] == "REFUSED"]
+    assert [r["tool"] for r in refused] == ["hw", "no_such_tool", "smiles_to_3d"]
+    assert all(r["by"] == "window" and r["detail"] and r["verdict_recorded"] for r in refused)
+    assert all(r["verdict"] is None for r in refused)                    # a refusal has no verdict, and says so
+    assert svc.j("/api/ledger")[1]["chain"]["ok"]
+
+
+def test_arguments_too_large_for_the_record_are_refused_and_the_chain_survives(svc):
+    """studio/ledger.py::_last_hash reads only the final 64 KB of runs.jsonl to find the previous hash, and
+    studio/adapter.py::_note writes `args` whole: one 100 KB argument would make every later append raise."""
+    from app.service import MAX_ARGS, too_big
+    big = {"smiles": "C" * 70_000}
+    assert too_big(big) and not too_big({"smiles": "CCO"})
+    code, body, _ = svc.j("/api/call", {"name": "smiles_to_3d", "args": big})
+    assert code == 403 and "on the hash-chained record" in body["detail"]
+    assert svc.rec.urls == []                                            # it never left for BioQL
+    raw = ledger.path_file().read_bytes()
+    assert b"C" * 70_000 not in raw and all(len(x) < 65_536 for x in raw.splitlines())
+    # and the very next call still works, which is the thing a broken chain would take away
+    assert svc.j("/api/call", {"name": "smiles_to_3d", "args": {"smiles": "CCO"}})[1]["state"] == "RESOLVED"
+    assert svc.j("/api/ledger")[1]["chain"]["ok"]
+    assert MAX_ARGS < 64 * 1024
+
+
+def test_run_starts_on_a_free_port_refuses_a_second_copy_and_shuts_down(studio_home, fake_bioql):
+    """`run()`'s own happy path, which nothing else here exercises."""
+    from app.service import run
+    import socket
+    with socket.socket() as probe:                       # a port nobody holds right now
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    out = run(home=studio_home, port=port, block=False,
+              adapter=Adapter(fake_bioql, entries(), opener=Recorder(), poll_every=0.05))
+    assert out is not None
+    s, srv = out
+    try:
+        assert srv.server_address == ("127.0.0.1", port)                 # the loopback address, and only it
+        seen = who_answers(port)
+        assert seen["ok"] is True and seen["name"] == PING_NAME and seen["port"] == port
+        assert s.port == port and s.allowed_hosts == {f"127.0.0.1:{port}", f"localhost:{port}"}
+        assert run(home=studio_home, port=port) is None                  # a second copy does not start
+    finally:
+        srv.shutdown()
+        srv.server_close()
+    assert who_answers(port, timeout=0.4) is None
+
+
+def test_the_guard_route_does_not_go_through_guard_load(svc, monkeypatch):
+    """studio.guard.load joins a name into a path. If the route used it, a `name` in the query would reach it."""
+    def boom(*a, **k):
+        raise AssertionError("guard.load must not be on this path")
+    monkeypatch.setattr("studio.guard.load", boom)
+    d = svc.s.home / "guard"
+    d.mkdir(parents=True, exist_ok=True)
+    snap = {"t": 1.0, "roots": {"r": {"path": "/x", "exists": True, "files": {}}}}
+    (d / "a.json").write_text(json.dumps(snap))
+    time.sleep(0.02)
+    (d / "b.json").write_text(json.dumps(snap))
+    for q in ("", "?name=../../ui.token", "?name=a", "?name=" + "x" * 300):
+        code, body, _ = svc.j("/api/guard" + q)
+        assert code == 200 and body["state"] == "RESOLVED", q
+        assert "ui.token" not in json.dumps(body)
+
+
+def test_an_approval_is_void_after_three_wrong_codes(svc, fake_log):
+    from app.service import PENDING_TRIES
+    p = _pending(svc)
+    real = (svc.s.home / "pending" / p["id"]).read_text().strip()
+    assert len(real) == 32                                # 128 bits: a guess is hopeless on its own, not just slow
+    for _ in range(PENDING_TRIES):
+        assert svc.j("/api/approve", {"id": p["id"], "code": "0" * 32})[0] == 403
+    st, body, _ = svc.j("/api/approve", {"id": p["id"], "code": real})    # even the RIGHT code now
+    assert st == 403 and "void" in body["detail"]
+    assert fake_log.submits == []
+
+
+def test_a_finished_run_never_appears_without_its_verdict(svc):
+    """/api/run is read without a lock, so `state` is published last: a reader must never see a finished run whose
+    verdict is still missing and read that absence as "nothing was found"."""
+    p = _pending(svc, args={"which": "j1"})
+    real = (svc.s.home / "pending" / p["id"]).read_text().strip()
+    assert svc.j("/api/approve", {"id": p["id"], "code": real})[0] == 200
+    seen = []
+    end = time.time() + 10
+    while time.time() < end:
+        body = svc.j("/api/run?id=" + p["id"])[1]
+        seen.append(body)
+        if body["state"] != "RUNNING":
+            break
+    done = seen[-1]
+    assert done["state"] == "RESOLVED" and done["verdict"] is not None and done["result_sha256"]
+    for b in seen:
+        assert b["state"] == "RUNNING" or b["verdict"] is not None

@@ -45,8 +45,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let problem = self?.service.start()
             DispatchQueue.main.async {
-                if let problem = problem { self?.fail(problem) } else { self?.restarts = 0; self?.load() }
+                guard let self = self else { return }
+                if let problem = problem { return self.fail(problem) }
+                // The restart counter is NOT cleared here. A service that starts and then dies a second later would
+                // reset it on every start and restart for ever — a loop that looks like recovery and is not. It is
+                // cleared only after the service has stayed up for a while (`settle`).
+                self.settle()
+                self.load()
             }
+        }
+    }
+
+    /// Five minutes of a service that keeps answering is what counts as recovered.
+    private func settle() {
+        let mark = restarts
+        DispatchQueue.main.asyncAfter(deadline: .now() + 300) { [weak self] in
+            guard let self = self, self.restarts == mark, self.service.isAlive else { return }
+            self.restarts = 0
         }
     }
 
@@ -158,7 +173,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         case "openHome":
             NSWorkspace.shared.open(Service.home)
         case "restartService":
-            service.stop()                                   // the exit handler brings it back
+            service.restart()                                // stop(), used here, would clear the exit handler
         default:
             // No `verify`, no `approve`, no page-chosen path. Agtr's `verify` (AppDelegate.swift:189-191, 257-278)
             // let the page name the POST path and marked the call as biometrically verified; neither exists here.
@@ -187,7 +202,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     @objc func reload(_ sender: Any?) { load() }
     @objc func openLog(_ sender: Any?) { NSWorkspace.shared.open(Service.logURL) }
     @objc func openHome(_ sender: Any?) { NSWorkspace.shared.open(Service.home) }
-    @objc func restartService(_ sender: Any?) { service.stop() }
+    @objc func restartService(_ sender: Any?) { service.restart() }
 
     private func buildMenus() {
         let main = NSMenu()

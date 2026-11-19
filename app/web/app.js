@@ -161,24 +161,44 @@ async function drawTools() {
     row.appendChild(el("span", "pill " + (t.kind === "status" || t.kind === "local" ? "clean" : "warn"), t.kind));
     if (t.approval || t.kind === "hardware") row.appendChild(el("span", "pill high", "needs a person"));
     row.appendChild(el("span", "why", `${t.method} ${t.path} — ${t.why || ""}`));
-    if (!t.approval && t.kind !== "hardware") {
-      const b = el("button", null, "Call");
-      b.addEventListener("click", () => call(t));
+    // Inline inputs, never window.prompt(): WKWebView does not implement the prompt panel unless the host app
+    // provides runJavaScriptTextInputPanelWithPrompt, and this app deliberately does not — so prompt() returns null
+    // there and every tool with a required argument would silently do nothing.
+    const fields = {};
+    for (const k of (t.required || []).concat(t.optional || [])) {
+      const i = el("input");
+      i.placeholder = k + ((t.required || []).includes(k) ? "" : " (optional)");
+      i.setAttribute("aria-label", `${t.name}: ${k}`);
+      fields[k] = i;
+      row.appendChild(i);
+    }
+    if (t.kind === "hardware") {
+      // Not even an approval offer from here: that stays with the command line and a named person.
+      row.appendChild(el("span", "muted", "command line only"));
+    } else {
+      const b = el("button", null, t.approval ? "Request" : "Call");
+      b.addEventListener("click", () => call(t, fields));
       row.appendChild(b);
     }
     box.appendChild(row);
   }
 }
 
-async function call(t) {
+// One door for both: a tool that needs nobody runs, and a tool that needs a person comes back REFUSED with a pending
+// offer, which appears in the box below. The window never sends an approval of its own.
+async function call(t, fields) {
   const args = {};
-  for (const k of t.required || []) {
-    const v = prompt(`${t.name}: ${k}`);
-    if (v === null) return;
-    args[k] = v;
+  for (const [k, i] of Object.entries(fields || {})) {
+    const v = (i.value || "").trim();
+    if (v) args[k] = v;
   }
+  const missing = (t.required || []).filter((k) => !(k in args));
+  if (missing.length) { alert(`${t.name} needs: ${missing.join(", ")}`); return; }
   const { body } = await api("/api/call", { name: t.name, args });
-  alert(`${body.state || body.error}\n${body.detail || ""}${body.verdict ? "\nverdict: " + body.verdict : ""}`);
+  const lines = [body.state || body.error || "no answer", body.detail || ""];
+  if (body.verdict) lines.push("verdict: " + body.verdict);
+  if (body.pending) lines.push("A person is needed. " + (body.how || ""));
+  alert(lines.filter(Boolean).join("\n"));
   refresh();
 }
 

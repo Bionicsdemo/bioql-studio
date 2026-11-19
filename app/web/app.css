@@ -80,3 +80,10 @@ main { background: var(--panel); border: 1px solid var(--line); border-radius: 0
   border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
 
 footer { padding-top: 14px; }
+
+/* the inline inputs in the tool list: never window.prompt(), which WKWebView does not implement here */
+.row input { font: inherit; font-size: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  padding: 4px 7px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--ink);
+  width: 11em; }
+.row button { font: inherit; font-size: 12px; padding: 4px 11px; border-radius: 6px; cursor: pointer;
+  border: 1px solid var(--line); background: var(--bg); color: var(--ink); }

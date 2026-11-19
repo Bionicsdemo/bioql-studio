@@ -116,8 +116,14 @@ final class Service {
     }
 
     /// Blocking; call off the main thread. Returns nil when the service is up, else what is wrong.
+    ///
+    /// A failed `start()` can leave a child that is running but not yet answering ("did not answer in time"), and
+    /// Agtr's "Try Again" (AppDelegate.swift:65-69) calls `start()` again on top of it: a second child, the first
+    /// orphaned on the port — which FIX 1 then correctly refuses as "not ours", so the app can never recover. Any
+    /// child of ours is stopped before a new one is spawned.
     func start() -> String? {
         if isAlive { return nil }
+        if isMine { stop() }
         if let other = pingName() {
             if other == Service.pingName {
                 // FIX 1, continued: this one is NOT ours. Agtr would adopt it and hand it the token.
@@ -174,6 +180,7 @@ final class Service {
     /// Called on the main thread when the child exits on its own.
     var onExit: ((Int32) -> Void)?
 
+    /// Stop the child for good: the exit handler is cleared, so nothing restarts it. Used when the app quits.
     func stop() {
         lock.lock()
         let p = process
@@ -181,6 +188,20 @@ final class Service {
         lock.unlock()
         p?.terminationHandler = nil
         if p?.isRunning == true { p?.terminate() }
+        p?.waitUntilExit()
+    }
+
+    /// Stop the child and let the exit handler bring it back. "Restart the Service" in the menu uses this: calling
+    /// `stop()` there would clear the handler and leave nothing running at all.
+    func restart() {
+        lock.lock()
+        let p = process
+        process = nil
+        lock.unlock()
+        p?.terminationHandler = nil          // cleared, so the handler cannot also fire: exactly one restart
+        if p?.isRunning == true { p?.terminate() }
+        p?.waitUntilExit()
+        DispatchQueue.main.async { [weak self] in self?.onExit?(0) }
     }
 
     /// POST to this app's own service, on a path this app chose.

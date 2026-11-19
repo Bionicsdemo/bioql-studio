@@ -22,5 +22,10 @@
        (Agtr learned this the hard way; see AppDelegate.swift:19-22 of the original). -->
   <key>NSSupportsAutomaticTermination</key><false/>
   <key>NSSupportsSuddenTermination</key><false/>
+  <!-- Agtr's working original carries this (its Info.plist), and the window talks to 127.0.0.1 over plain HTTP.
+       macOS exempts loopback from App Transport Security, so this should not be needed — kept because the original
+       that is known to work has it. UNTESTED HERE: nothing was compiled or launched. -->
+  <key>NSAppTransportSecurity</key>
+  <dict><key>NSAllowsLocalNetworking</key><true/></dict>
 </dict>
 </plist>
