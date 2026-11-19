@@ -30,8 +30,14 @@ METHODS = ("GET", "POST")
 VIA = ("direct", "submit")
 SUBMIT_PATH = "/api/pipeline/submit"
 
-DENY = re.compile(r"(^|/)(ssh|scripts|exec|execute|repl|shell|terminal|localllm|auth|admin|login|secrets?|keys?|"
+DENY = re.compile(r"(^|/)(ssh|scripts|exec|execute|repl|shell|terminal|auth|admin|login|secrets?|keys?|"
                   r"cancel_queued|delete|remove|purge|reset|kill|restart|shutdown|deploy|upload)(/|$|_)", re.I)
+
+# BioQL's own language models. The new system has ONE brain — Claude Code — so these are not reached at all: not
+# refused as dangerous, simply replaced. Routing a question through BioQL's default model would put a second,
+# unaccountable model in a system whose whole claim is that every call is on a signed record.
+MODELS = re.compile(r"(^|/)(localllm|llm|openrouter|marie|deepseek|ollama|vmlx|chat/completions|v1/models|"
+                    r"embeddings|audio/(speech|transcriptions))(/|$|_)", re.I)
 
 DEFAULTS: dict[str, dict] = {
     "backend_health": {"method": "GET", "path": "/health", "kind": "status", "timeout": 15,
@@ -96,6 +102,8 @@ def problems(e: dict) -> list[str]:
         why.append("bad path")
     if DENY.search(p):
         why.append("route is never callable from Studio (runs code, holds credentials or destroys state)")
+    if MODELS.search(p):
+        why.append("that is one of BioQL's own language models; this system has one brain, Claude Code")
     return why
 
 
