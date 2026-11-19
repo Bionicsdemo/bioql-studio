@@ -58,6 +58,24 @@ Verified rather than asserted:
 - an argument the entry does not declare is refused, and a route on the never-callable list stays refused even when
   written into the owner's own allowlist file.
 
+Two claims were corrected during the phase, because a first version of each would have passed its own test while
+being wrong about BioQL:
+
+- **Hardware could not be recognised from the registry.** The first `from_registry` classed an entry as `hardware`
+  when its `cost_tier` said "qpu" or "hardware" — and BioQL's tiers only ever say `high` (47) or `medium` (16). The
+  rule would never have fired, and its test passed only because the fake registry used a tier BioQL does not emit.
+  Now no entry is auto-classed hardware and **every** `compute` entry asks for a person; the owner relaxes one by
+  hand. The real parameter is `real_qpu` (BioQL's own name), which the first hardware-name list also missed.
+- **The job and streaming shapes were guesses.** They are now taken from BioQL's own UI
+  (`src/frontend/src/components/chat/ChatInterface.tsx`): submit returns `{job_id, poll_url}`, polling
+  `/api/pipeline/job/<id>` returns `{status, progress, result, result_url, error}` with `completed`, `failed` and
+  `error`, and the body can carry a BOM and NUL bytes that must be stripped before parsing — Studio now strips them
+  as the UI does. A state Studio does not recognise is UNRESOLVABLE, never a result.
+
+Still unproven, and it blocks allowing the first heavy pipeline rather than Phase 1: no job has actually been
+submitted. The shapes are read from the UI's code, not observed from a run. The first allowed pipeline is also the
+first real test of them.
+
 **Open question for the owner, before Phase 2:** the 37 registry pipelines with no endpoint (`admet_standalone`,
 `peptide_discovery`, `antibody_discovery`, the `quantum_*` family…) are dispatched inside the backend by kind. The
 frontend reaches them through a route map in `src/frontend/src/services/MCPClient.ts` (e.g. `admet_standalone` →
@@ -105,3 +123,12 @@ the science.
   without the owner saying so, and the adapter refuses hardware without a person's approval by construction.
 - `~/Documents` is iCloud-managed. Studio lives in `~/Developer/bioql-studio` and its data in
   `~/Library/Application Support/BioQL Studio`, so no launchd job has to read an iCloud path at login.
+
+## Known limits of the guard, to close before the phase that needs them
+
+- It skips folders named `runtime`, so it does not watch `~/.bioql/runtime/frontend-v2` (the copy actually served on
+  :3000) or `~/.bioql/runtime/agents/launch.sh`. Those are rsynced by BioQL's own startup, so watching them needs a
+  rule that separates BioQL's own sync from an outside edit. **Phase 2 touches the UI: close this first.**
+- It fingerprints source extensions only. A change to a `.pdb`, `.sdf` or other data file is not seen.
+- It reports the file, not the author. On its first day it caught another session's edit to the monolith (see
+  `BASELINE-2026-11-19.txt`), which is the behaviour, not a fault.

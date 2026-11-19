@@ -115,9 +115,12 @@ def from_registry(tool: dict, kind: str | None = None) -> dict:
         raise ValueError(f"{tool.get('name')}: not an HTTP entry with an endpoint in BioQL's registry")
     s = tool.get("schema") or {}
     tier = str(s.get("cost_tier") or "").lower()
-    k = kind or ("hardware" if any(w in tier for w in ("qpu", "hardware")) else "compute")
+    # BioQL's own tiers are only "high" and "medium" (63 of 63 pipelines, checked 2026-11-19): nothing in the registry
+    # says whether a pipeline can reach a real QPU. So no entry is auto-classed "hardware" from the tier, and every
+    # `compute` entry needs a person's approval. The owner relaxes a specific entry by hand, never this function.
+    k = kind or "compute"
     return {"method": "POST", "path": tool["endpoint"], "kind": k,
             "required": list(s.get("required") or []), "optional": list(s.get("optional") or []),
-            "approval": bool(s.get("confirmation_required")) or k == "hardware", "timeout": 43200,
+            "approval": k in ("compute", "hardware") or bool(s.get("confirmation_required")), "timeout": 43200,
             "why": (s.get("notes") or "")[:300], "from_registry": {"name": tool.get("name"), "version": s.get("version"),
                                                                    "cost_tier": tier or None}}

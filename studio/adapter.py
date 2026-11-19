@@ -34,7 +34,10 @@ MAX_BODY = 64 * 1024 * 1024
 RUNNING = {"queued", "pending", "submitted", "running", "started", "in_progress", "processing"}
 DONE = {"completed", "complete", "done", "success", "succeeded", "finished"}
 FAILED = {"failed", "error", "errored", "cancelled", "canceled", "timeout", "timed_out"}
-HARDWARE_KEYS = {"use_real_hardware", "real_hardware", "hardware", "use_hardware", "qpu", "use_qpu", "run_on_hardware"}
+# `real_qpu` and `backend` are BioQL's own parameter names, read from its live registry (2026-11-19); the rest are
+# spellings guarded against in advance. A name this set misses is caught by the kind: every `compute` entry asks.
+HARDWARE_KEYS = {"real_qpu", "use_real_hardware", "real_hardware", "hardware", "use_hardware", "qpu", "use_qpu",
+                 "run_on_hardware", "on_hardware"}
 BACKEND_KEYS = {"backend", "quantum_backend", "ibm_backend", "backend_name", "device"}
 HARDWARE_WORDS = re.compile(r"\b(ibm_|ibmq|fez|kingston|marrakesh|torino|heron|iqm|garnet|ionq|quantinuum|rigetti|aws_braket)", re.I)
 
@@ -180,7 +183,9 @@ class Adapter:
         if len(raw) > MAX_BODY:
             return unresolvable(SOURCE, "answer larger than 64 MB", http=status), status
         try:
-            out = json.loads(raw.decode("utf-8"))
+            # BioQL's streaming keepalive can leave a BOM and NUL bytes in the body; its own UI strips both before
+            # parsing (src/frontend/src/components/chat/ChatInterface.tsx), so Studio does the same.
+            out = json.loads(raw.decode("utf-8-sig").replace("\0", "").strip())
         except (UnicodeDecodeError, ValueError):
             return unresolvable(SOURCE, f"answer is not JSON ({len(raw)} bytes)", http=status), status
         if isinstance(out, dict) and out.get("error") and out.get("ok") is not True and out.get("success") is not True:
@@ -209,6 +214,9 @@ class Adapter:
                 return resolved(cur, SOURCE, f"job {jid} {s}", job_id=jid)
             if s in FAILED:
                 return unresolvable(SOURCE, f"job {jid} {s}: {str(cur.get('error') or '')[:300]}", job_id=jid)
+            if s and s not in RUNNING:
+                # A state Studio does not know is not a result: it is reported, never read as success.
+                return unresolvable(SOURCE, f"job {jid} reports an unknown state {s!r}", job_id=jid)
         return unresolvable(SOURCE, f"job {jid} still running at the deadline", job_id=jid)
 
     def _note(self, name, e, args, state, detail, http, res, began, by, approved_by) -> None:

@@ -8,3 +8,16 @@ M  src/backend/tests/test_qnn_property_registry.py
 untracked-count: 11316
 backend-5035: pid 97028 started 2026-11-19 10:26:50 (not by this session)
 frontend-3000: down
+
+--- what the guard saw while Phase 1 was built (it watches; it does not attribute) ---
+10:43:05  baseline above taken. HEAD 6b16a62.
+10:44:02  commit f4207c7 "fix(api): proveedor JSON tolerante a numpy, y el 502 de full_analysis"
+          (qnn_property_registry.py, script_executor_server.py, test_qnn_property_registry.py).
+          Not this session: Studio has no route that writes, and its ledger for the period holds
+          10 lines, all reads or refusals.
+~10:45    guard snapshot "e2e-before" taken (HEAD already f4207c7).
+10:46     live end-to-end check: 9/9, guard clean over 46,819 files.
+10:51:45  guard check "e2e-before": DIRTY. src/backend/script_executor_server.py changed again,
+          uncommitted, after the snapshot. Another session is still editing the monolith.
+Reading: the guard did its job. It reports the file by name and leaves the attribution to a person
+— which is exactly its stated limit, met on its first real day.

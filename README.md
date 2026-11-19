@@ -13,7 +13,7 @@ around it, and reaches BioQL only through the HTTP entries BioQL already serves.
 | Studio never imports a BioQL module | `tests/test_guard_and_contract.py::test_studio_never_imports_bioql` — an AST walk over every file of `studio/`, docstrings stripped |
 | Studio never writes inside BioQL's folders | `…::test_studio_never_writes_into_bioql` — no BioQL path appears as a string in code, and `guard.py` (which names them to read them) calls no write function |
 | Only entries the owner approved are reachable | `studio/allowlist.py` — a closed list; the path comes from the list, never from the caller. Routes that run code, hold credentials or destroy state are refused even if the owner's own file lists them |
-| Nothing can reach a real QPU without a person | `studio/adapter.py` — a `hardware` entry, an entry marked for approval, or arguments naming real hardware are refused unless the call carries `approved_by`. The MCP server always calls with no approval, so Claude cannot supply one |
+| Nothing expensive runs without a person | `studio/adapter.py` — every `compute` or `hardware` entry, anything the owner marked for approval, and any argument naming real hardware (`real_qpu`, a `backend` of `ibm_*`…) is refused unless the call carries `approved_by`. The MCP server always calls with no approval, so Claude cannot supply one. BioQL's registry never states whether a pipeline reaches a QPU — its tiers only say `high` or `medium` — so Studio assumes it may and asks |
 | A failure never looks like a result | `studio/resolution.py` — RESOLVED / ABSENT / UNRESOLVABLE, the third never degrading into the second (BioQL's own invariant, re-implemented, not imported) |
 | Provenance is BioQL's, never inferred | `adapter.provenance` — `is_real_hardware`, IBM job ids and backends are copied when BioQL states them and stay `null` when it does not |
 | A session leaves BioQL as it found it | `studio/guard.py` — a sha256 fingerprint of BioQL's source trees before and after; the session fails if anything changed |
@@ -33,8 +33,11 @@ python3 -m studio call smiles_to_3d '{"smiles":"CC(=O)Nc1ccc(O)cc1"}'
 python3 -m studio ledger verify
 ```
 
-Measured on this Mac, 2026-11-19: the live check passed 9/9 with the guard clean over 46,819 BioQL files (~35 s, most
-of it the two fingerprints).
+Measured on this Mac, 2026-11-19: 24 unit tests pass, and the live check passed 9/9 with the guard clean over 46,819
+BioQL files (~35 s, most of it the two fingerprints).
+
+What is **not** proven yet: no pipeline job has been submitted. The submit-and-poll shapes are read from BioQL's own
+UI, not observed from a run, and the first pipeline the owner allows is also the first real test of them.
 
 ## Layout
 

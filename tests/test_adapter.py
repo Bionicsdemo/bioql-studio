@@ -152,12 +152,35 @@ def test_ledger_detects_tampering(fake_bioql):
 
 
 # ------------------------------------------------------------------ registry → allowlist
-def test_from_registry():
-    tools = {"peptide_design": {"name": "peptide_design", "kind": "http", "endpoint": "/api/quantum/peptide_design",
-                                "schema": {"required": ["target"], "cost_tier": "high", "confirmation_required": True}},
-             "q": {"name": "q", "kind": "http", "endpoint": "/api/quantum/q", "schema": {"cost_tier": "qpu"}}}
-    e = al.from_registry(tools["peptide_design"])
-    assert e["path"] == "/api/quantum/peptide_design" and e["approval"] and e["required"] == ["target"]
-    assert al.from_registry(tools["q"])["kind"] == "hardware"
+def test_from_registry_uses_bioqls_real_tiers():
+    """BioQL's registry only ever says cost_tier high or medium (63/63 pipelines, 2026-11-19): it never states whether
+    a pipeline can reach a QPU. So every pipeline added from the registry asks for a person, whatever its tier."""
+    hi = {"name": "peptide_design", "kind": "http", "endpoint": "/api/quantum/peptide_design",
+          "schema": {"required": ["target"], "cost_tier": "high", "confirmation_required": True}}
+    med = {"name": "xtb", "kind": "http", "endpoint": "/api/chem/xtb_single_point",
+           "schema": {"required": ["smiles"], "cost_tier": "medium"}}
+    for t in (hi, med):
+        e = al.from_registry(t)
+        assert e["kind"] == "compute" and e["approval"], e
+    e = al.from_registry(med, kind="local")                 # only the owner, by hand, can make one cheap
+    assert e["kind"] == "local" and not e["approval"]
     with pytest.raises(ValueError):
         al.from_registry({"name": "admet", "kind": "smiles", "endpoint": None})
+
+
+def test_real_qpu_is_bioqls_own_parameter_name():
+    """`real_qpu` and `backend` are the names BioQL's registry actually uses."""
+    assert wants_hardware({"real_qpu": True})
+    assert not wants_hardware({"real_qpu": False})
+    assert wants_hardware({"backend": "ibm_kingston"})
+
+
+def test_bom_and_nul_in_a_streamed_body_still_parse(fake_bioql):
+    a = ad(fake_bioql, b={"method": "POST", "path": "/api/bom", "kind": "local"})
+    assert a.call("b").value == {"ok": 1}
+
+
+def test_unknown_job_state_is_not_a_result(fake_bioql):
+    a = ad(fake_bioql, s={"method": "POST", "path": "/api/submit", "kind": "local", "optional": ["which"]})
+    res = a.call("s", {"which": "j4"})
+    assert res.state == UNRESOLVABLE and "unknown state" in res.detail

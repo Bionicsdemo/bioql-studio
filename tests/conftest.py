@@ -51,6 +51,8 @@ class FakeBioQL(BaseHTTPRequestHandler):
                                     "result": {"is_real_hardware": True, "ibm_job_id": "d0abc123"}})
         if p == "/api/pipeline/job/j3":
             return self._send(200, {"job_id": "j3", "status": "failed", "error": "boom"})
+        if p == "/api/pipeline/job/j4":
+            return self._send(200, {"job_id": "j4", "status": "partially_degraded"})
         return self._send(404, {"error": "not found"})
 
     def do_POST(self):
@@ -66,6 +68,8 @@ class FakeBioQL(BaseHTTPRequestHandler):
             return self._send(500, {"error": "kaboom"})
         if p == "/api/notjson":
             return self._send(200, b"<html>hi</html>", "text/html")
+        if p == "/api/bom":                      # what a streaming keepalive can leave in the body
+            return self._send(200, b"\xef\xbb\xbf{\"ok\": 1}\x00\n")
         if p == "/api/err":
             return self._send(200, {"error": "no pocket found"})
         if p == "/api/submit":
