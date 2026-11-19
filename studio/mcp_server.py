@@ -3,14 +3,52 @@
 Claude gets one tool per enabled allowlist entry, with BioQL's parameters, and nothing else: no code, no files, no
 route it can name. A call goes through Adapter.call with `by="claude"` and no approval, so anything that could reach a
 real QPU, or that the owner marked for approval, is refused here by construction.
+
+Two things make a run of independent work take the time of its slowest step instead of the sum of all of them:
+
+- **`run_many`**, one extra tool: a list of calls that do not need each other's answers, run at the same time, each
+  with its own gate, state, verdict and line on the record (`studio/fanout.py`).
+- **A concurrent loop.** Every `tools/call` is served in its own thread and the answer is written when it is ready.
+  JSON-RPC matches answers by `id`, so arriving out of order is correct. Serving them one at a time meant a
+  submitted pipeline held the pipe for as long as it ran — with a 12-hour ceiling, Claude could not even ask whether
+  the backend was alive while one was going.
 """
 from __future__ import annotations
 
 import json
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 from . import NAME, VERSION
 from .adapter import Adapter, Refused
+from .fanout import MAX_CALLS, run_many
+
+IN_FLIGHT = 8          # how many of Claude's calls may be in BioQL at once, over all its turns
+
+RUN_MANY = {
+    "name": "run_many",
+    "description": ("[batch] Run several BioQL tools AT THE SAME TIME. Use it whenever the next calls do not need "
+                    "each other's answers — a depiction, a conformer, a health read and a descriptor are four "
+                    "independent questions and take one wait, not four. Each call keeps its own approval gate, its "
+                    "own state (RESOLVED / ABSENT / UNRESOLVABLE / REFUSED), its own verdict and its own line on "
+                    f"the record; one failing does not touch the others. At most {MAX_CALLS} per batch. A call that "
+                    "needs an earlier answer goes in a LATER batch — this never reorders or waits for you."),
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "calls": {
+                "type": "array", "minItems": 1, "maxItems": MAX_CALLS,
+                "description": "The independent calls, in the order you want them reported back.",
+                "items": {"type": "object",
+                          "properties": {"name": {"type": "string", "description": "a tool from this server"},
+                                         "args": {"type": "object", "description": "that tool's arguments"}},
+                          "required": ["name"]},
+            },
+        },
+        "required": ["calls"], "additionalProperties": False,
+    },
+}
 
 
 def _schema(e: dict) -> dict:
@@ -27,7 +65,25 @@ def tool_list(ad: Adapter) -> list[dict]:
     for e in ad.tools():
         note = " Needs a person's approval; Claude cannot run it." if e["approval"] or e["kind"] == "hardware" else ""
         out.append({"name": e["name"], "description": f"[{e['kind']}] {e['why']}{note}".strip(), "inputSchema": _schema(e)})
+    out.append(dict(RUN_MANY))
     return out
+
+
+def _called(ad: Adapter, p: dict) -> tuple[str, bool]:
+    """(the text Claude sees, whether it is an error)."""
+    name = str(p.get("name"))
+    args = p.get("arguments") or {}
+    try:
+        if name == "run_many":
+            out = run_many(ad, args.get("calls"))
+            # The batch is an error only if NOTHING in it resolved: a batch where four of five answered is not a
+            # failure, and reporting it as one would hide the four.
+            bad = not any(r.get("state") == "RESOLVED" for r in out["runs"])
+            return json.dumps(out, ensure_ascii=False, default=str), bad
+        res = ad.call(name, args, approved_by=None, by="claude")
+        return json.dumps(res.as_dict(), ensure_ascii=False, default=str), not res.resolved and not res.absent
+    except Refused as why:
+        return json.dumps({"state": "REFUSED", "detail": str(why)}), True
 
 
 def handle(ad: Adapter, msg: dict) -> dict | None:
@@ -41,12 +97,7 @@ def handle(ad: Adapter, msg: dict) -> dict | None:
         elif method == "tools/list":
             result = {"tools": tool_list(ad)}
         elif method == "tools/call":
-            p = msg.get("params") or {}
-            try:
-                res = ad.call(str(p.get("name")), p.get("arguments") or {}, approved_by=None, by="claude")
-                text, err = json.dumps(res.as_dict(), ensure_ascii=False, default=str), not res.resolved and not res.absent
-            except Refused as why:
-                text, err = json.dumps({"state": "REFUSED", "detail": str(why)}), True
+            text, err = _called(ad, msg.get("params") or {})
             result = {"content": [{"type": "text", "text": text[:200_000]}], "isError": err}
         elif method == "ping":
             result = {}
@@ -59,19 +110,39 @@ def handle(ad: Adapter, msg: dict) -> dict | None:
 
 def main() -> None:
     ad = Adapter()
-    for line in sys.stdin:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            msg = json.loads(line)
-        except ValueError:
-            out = {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "parse error"}}
-        else:
-            out = handle(ad, msg)
-        if out is not None:
-            sys.stdout.write(json.dumps(out, ensure_ascii=False, default=str) + "\n")
+    out_lock = threading.Lock()
+    pool = ThreadPoolExecutor(max_workers=IN_FLIGHT, thread_name_prefix="mcp")
+
+    def answer(msg: dict) -> None:
+        out = handle(ad, msg)
+        if out is None:
+            return
+        line = json.dumps(out, ensure_ascii=False, default=str) + "\n"
+        with out_lock:                                # one writer at a time: two interleaved lines are neither
+            sys.stdout.write(line)
             sys.stdout.flush()
+
+    try:
+        for raw in sys.stdin:
+            raw = raw.strip()
+            if not raw:
+                continue
+            try:
+                msg = json.loads(raw)
+            except ValueError:
+                with out_lock:
+                    sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": None,
+                                                 "error": {"code": -32700, "message": "parse error"}}) + "\n")
+                    sys.stdout.flush()
+                continue
+            # `initialize` and `tools/list` are cheap and the session is built on them, so they are answered on this
+            # thread, in order. Only the work fans out.
+            if msg.get("method") == "tools/call":
+                pool.submit(answer, msg)
+            else:
+                answer(msg)
+    finally:
+        pool.shutdown(wait=True)
 
 
 if __name__ == "__main__":

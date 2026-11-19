@@ -506,6 +506,15 @@ class Studio:
             return None
         if not isinstance(payload, dict):
             return None
+        if isinstance(payload.get("runs"), list) and payload.get("group"):
+            # A fan-out: several independent calls that ran at the same time. One card per call, under a head that
+            # says what the batch did — never one merged card, which would lose which answer came from which call.
+            return {"kind": "group", "title": f"{len(payload['runs'])} call(s), run together",
+                    "subtitle": (payload.get("note") or "") + f"  ·  {payload.get('seconds')}s",
+                    "group": payload["group"], "counts": payload.get("counts") or {},
+                    "cards": [self._card_of({**r, "meta": {**(r.get("meta") or {}), "tool": r.get("name")}})
+                              for r in payload["runs"]],
+                    "provenance": {}, "verdict": None, "findings": [], "blocks": []}
         meta = payload.get("meta") or {}
         value = payload.get("value", payload)
         try:

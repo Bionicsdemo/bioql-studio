@@ -169,7 +169,11 @@ class Adapter:
         return e
 
     # ------------------------------------------------------------------ calling
-    def call(self, name: str, args: dict | None = None, approved_by: str | None = None, by: str = "owner") -> Resolution:
+    def call(self, name: str, args: dict | None = None, approved_by: str | None = None, by: str = "owner",
+             group: str | None = None) -> Resolution:
+        """`group` names a fan-out this call belongs to (see `studio/fanout.py`): several independent calls run at
+        the same time. It goes on the line and changes nothing else — the gate, the verifier and the record are
+        the same whether a call runs alone or beside five others."""
         args = dict(args or {})
         began = time.time()
         try:
@@ -179,7 +183,7 @@ class Adapter:
                 # BioQL's own async door; the endpoint is this entry's, from the allowlist, never from the caller.
                 url, body = self.base + al.SUBMIT_PATH, {"endpoint": e["path"], "params": body}
         except Refused as why:
-            self._note(name, None, args, "REFUSED", str(why), None, None, began, by, approved_by)
+            self._note(name, None, args, "REFUSED", str(why), None, None, began, by, approved_by, group)
             raise
         res, http = self._http(e["method"], url, body if e["method"] == "POST" else None, e["timeout"], e["absent_on_404"])
         if e["via"] == "submit" and res.resolved and isinstance(res.value, dict):
@@ -193,7 +197,7 @@ class Adapter:
         res = Resolution(res.state, res.source, res.detail, res._value,
                          {**res.meta, "provenance": prov, "tool": name, "seconds": round(time.time() - began, 3),
                           "verdict": verify.verdict(checked) if res.resolved else None, "findings": checked})
-        self._note(name, e, args, res.state, res.detail, http, res, began, by, approved_by)
+        self._note(name, e, args, res.state, res.detail, http, res, began, by, approved_by, group)
         return res
 
     def _http(self, method: str, url: str, body: dict | None, timeout: float, absent_on_404: bool) -> tuple[Resolution, int | None]:
@@ -276,6 +280,11 @@ class Adapter:
             return Resolution(got.state, got.source, f"job {jid} result: {got.detail}", None, {"job_id": jid})
         return resolved({**job, "result": got.value}, SOURCE, f"job {jid} completed", job_id=jid)
 
+    def record(self, row: dict) -> dict | None:
+        """Write one line that is not a call: a fan-out's summary, for instance. It goes through the same signed
+        notebook, with the same fallback, and is skipped entirely when this adapter does not log (the tests')."""
+        return self._record(row) if self.log else None
+
     def _record(self, row: dict) -> dict:
         """Write one line. Signed when this Mac can sign — that is the lab notebook — and plainly chained when it
         cannot, which is reported by `notebook.verify` as UNSIGNED rather than passed off as signed. A signing
@@ -286,7 +295,7 @@ class Adapter:
         except Exception as why:                 # noqa: BLE001 - no crypto, no key, a broken key: all land here
             return ledger.append({**row, "unsigned_because": f"{type(why).__name__}: {why}"[:160]})
 
-    def _note(self, name, e, args, state, detail, http, res, began, by, approved_by) -> None:
+    def _note(self, name, e, args, state, detail, http, res, began, by, approved_by, group=None) -> None:
         if not self.log:
             return
         self._record({"tool": name, "method": e and e["method"], "path": e and e["path"], "args": args,
@@ -303,4 +312,5 @@ class Adapter:
                                                              if res is not None and res.resolved
                                                              and isinstance(res.value, dict) else None))
                                  if res is not None else None,
-                       "seconds": round(time.time() - began, 3), "by": by, "approved_by": approved_by or None})
+                       "seconds": round(time.time() - began, 3), "by": by, "approved_by": approved_by or None,
+                       "group": group})

@@ -308,3 +308,9 @@ body[data-ring=alarm] .ring{border-color:var(--red);animation:breathe 1.3s ease-
   nav button{width:36px;justify-content:center;padding:0}
   .side{align-items:center;padding:0 4px}
 }
+
+/* a fan-out: several independent calls that ran at the same time, one card each under one head */
+.group-card{display:flex;flex-direction:column;gap:8px;padding:10px;border-radius:16px;background:var(--fill-3);
+  box-shadow:inset 0 0 0 .5px var(--sep)}
+.group-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:2px 4px 0}
+.group-head .card-sub{flex-basis:100%;margin-top:2px}

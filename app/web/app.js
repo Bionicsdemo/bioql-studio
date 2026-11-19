@@ -787,6 +787,20 @@ const SEEDS = ["Is the engine up and what did it actually run?",
                "Show me the findings the verifier recorded today"];
 
 function cardNode(card) {
+  // A fan-out: several independent calls that ran AT THE SAME TIME. One card each, under a head that counts the
+  // states — merging them into one card would lose which answer came from which call.
+  if (card.kind === "group") {
+    const wrap = el("div", "group-card");
+    const head = el("div", "group-head");
+    head.appendChild(el("h3", "card-title", card.title || "run together"));
+    Object.keys(card.counts || {}).forEach((s) => head.appendChild(chip(s.toLowerCase() + " " + card.counts[s],
+                                                                       s.toLowerCase())));
+    head.appendChild(el("span", "hash", "group " + String(card.group || "").slice(0, 8)));
+    if (card.subtitle) head.appendChild(el("p", "card-sub", card.subtitle));
+    wrap.appendChild(head);
+    (card.cards || []).forEach((c) => { if (c) wrap.appendChild(cardNode(c)); });
+    return wrap;
+  }
   const box = el("div", "card" + (card.verdict === "contradicted" ? " contradicted" : ""));
   const head = el("div", "card-head");
   head.appendChild(el("h3", "card-title", card.title || card.kind || "result"));

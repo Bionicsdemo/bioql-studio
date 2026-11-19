@@ -108,7 +108,16 @@ def test_mcp_exposes_only_the_allowlist_and_refuses_hardware(fake_bioql):
     a = Adapter(fake_bioql, ents)
     tools = handle(a, {"jsonrpc": "2.0", "id": 1, "method": "tools/list"})["result"]["tools"]
     names = {t["name"] for t in tools}
-    assert names == set(ents) and all(t["inputSchema"]["additionalProperties"] is False for t in tools)
+    # The allowlist, and ONE tool that is not a route: `run_many` runs several of these at the same time and
+    # reaches BioQL only through Adapter.call, so it cannot name a route the list does not hold.
+    assert names == set(ents) | {"run_many"}
+    assert all(t["inputSchema"]["additionalProperties"] is False for t in tools)
+    batch = handle(a, {"jsonrpc": "2.0", "id": 9, "method": "tools/call",
+                       "params": {"name": "run_many", "arguments": {"calls": [
+                           {"name": "q", "args": {}},                       # the hardware entry, inside a batch
+                           {"name": "/api/mixed", "args": {}}]}}})["result"]  # and a raw route, named directly
+    runs = json.loads(batch["content"][0]["text"])["runs"]
+    assert [r["state"] for r in runs] == ["REFUSED", "REFUSED"]
     out = handle(a, {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "q", "arguments": {}}})["result"]
     assert out["isError"] and json.loads(out["content"][0]["text"])["state"] == "REFUSED"
     ok = handle(a, {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
