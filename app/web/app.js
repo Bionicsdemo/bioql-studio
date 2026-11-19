@@ -167,7 +167,15 @@ const SECTIONS = {
   screening:{ group: "Discovery", label: "Screening & SAR", icon: "find", kind: "tools", panel: "Screening panel",
               pick: (t) => AREA_OF(t) === "screening", lead: "Docking, virtual screening, SAR." },
   targets:  { group: "Discovery", label: "Targets", icon: "cross", kind: "tools", panel: "Targets panel",
-              pick: (t) => AREA_OF(t) === "targets" && !/targetradar/.test(t.path) },
+              // It used to be `area === targets` minus TargetRadar, and BioQL files every target route it HAS
+              // under targetradar — so the section drew "no route answers to this section". An empty section is
+              // not an honest absence here: the routes exist, they are filed elsewhere.
+              pick: (t) => !/targetradar/.test(t.path) &&
+                (AREA_OF(t) === "targets" ||
+                 /^\/api\/(pathways|protein|databases\/(cosmic|kegg|reactome)|quantum\/offtarget|quantum_cell\/gene)/
+                   .test(t.path)),
+              lead: "The target itself: pathways, off-targets, protein features, and BioQL's database reads " +
+                    "(COSMIC, KEGG, Reactome). TargetRadar has its own section." },
   radar:    { group: "Discovery", label: "TargetRadar", icon: "eye", kind: "frame", which: "radar", route: "",
               routes: (t) => /targetradar/.test(t.path),
               lead: "TargetRadar's own application, whole. Its routes are under Routes." },
@@ -702,7 +710,9 @@ async function drawServers(box) {
   box.appendChild(g2);
 
   all.addEventListener("click", async () => { all.disabled = true; for (const r of rows) await r.ask(); all.disabled = false; });
-  for (const r of rows.slice(0, first.length)) await r.ask();
+  // The four BioQL watches ask themselves once the page is on screen. Awaiting them here held the whole section
+  // behind five network reads, and a server that times out held it for the timeout.
+  setTimeout(async () => { for (const r of rows.slice(0, first.length)) await r.ask(); }, 0);
 }
 
 async function drawUsage(box) {
@@ -711,52 +721,81 @@ async function drawUsage(box) {
   const rows = body.rows || [];
   clear(box);
   const st = lastState || {};
-  const g0 = el("div", "group pad");
-  g0.appendChild(el("p", null, `${st.calls || 0} call(s) · ${st.refusals || 0} refused · ` +
-    `${st.approvals || 0} approved · ${rows.length} line(s) read from the record`));
-  box.appendChild(g0);
 
-  const byState = {}, byTool = {}, byVerdict = {};
+  const tiles = el("div", "tiles");
+  [["calls", st.calls], ["refused", st.refusals], ["approved", st.approvals],
+   ["lines read", rows.length]].forEach(([k, v]) => {
+    const t = el("div", "tile");
+    t.appendChild(el("div", "tile-n", v === undefined || v === null ? "—" : String(v)));
+    t.appendChild(el("div", "fact-k", k));
+    tiles.appendChild(t);
+  });
+  box.appendChild(tiles);
+  if (!rows.length) {
+    box.appendChild(el("p", "empty", "nothing on the record yet."));
+    return;
+  }
+
+  const byState = {}, byTool = {}, byVerdict = {}, byDay = {};
   rows.forEach((r) => {
     byState[r.state || "—"] = (byState[r.state || "—"] || 0) + 1;
     byTool[r.tool || "—"] = (byTool[r.tool || "—"] || 0) + 1;
-    if (r.verdict) byVerdict[r.verdict] = (byVerdict[r.verdict] || 0) + 1;
+    byVerdict[r.verdict || "not recorded"] = (byVerdict[r.verdict || "not recorded"] || 0) + 1;
+    const d = r.t ? new Date(r.t * 1000).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : "—";
+    byDay[d] = (byDay[d] || 0) + 1;
   });
-  const table = (title, obj) => {
+
+  // A count beside a name is a list; a count against the largest is a reading. The bar is drawn to the biggest
+  // value in ITS OWN table, and the number stays, because a bar without its number cannot be checked.
+  const table = (title, obj, chips) => {
+    const keys = Object.keys(obj).sort((a, b) => obj[b] - obj[a]).slice(0, 20);
+    if (!keys.length) return;
     box.appendChild(el("h3", "sect", title));
+    const top = Math.max(...keys.map((k) => obj[k])) || 1;
     const g = el("div", "group");
-    Object.keys(obj).sort((a, b) => obj[b] - obj[a]).slice(0, 25).forEach((k) => {
-      const row = el("div", "row");
+    keys.forEach((k) => {
+      const row = el("div", "row meter");
       const head = el("div", "row-head");
-      head.appendChild(el("span", "row-tool", k));
-      head.appendChild(el("span", "hash", String(obj[k])));
+      head.appendChild(chips ? chip(k, String(k).toLowerCase()) : el("span", "row-tool", k));
+      const n = el("span", "count", String(obj[k]));
+      head.appendChild(n);
       row.appendChild(head);
+      const track = el("div", "track");
+      const fill = el("div", "fill");
+      fill.style.width = Math.max(2, Math.round((obj[k] / top) * 100)) + "%";
+      track.appendChild(fill);
+      row.appendChild(track);
       g.appendChild(row);
     });
     box.appendChild(g);
   };
-  table("by state", byState);
-  table("by verdict", byVerdict);
-  table("by tool", byTool);
+  table("by state", byState, true);
+  table("by verdict", byVerdict, true);
+  table("by day", byDay, false);
+  table("by tool", byTool, false);
 }
+
 
 function drawSettings(box) {
   const st = lastState || {};
   clear(box);
-  const g = el("div", "group pad");
+  const g = el("div", "group");
+  // Label left, value right, one line each — the same grouped list the rest of the window uses, instead of two
+  // grey captions side by side with nothing telling them apart.
   [["version", st.version], ["service", "127.0.0.1:" + st.port], ["data", st.home],
-   ["BioQL's window", uiUrl], ["tools in the allowlist", String(TOOLS.length)],
+   ["BioQL's engine", st.bioql], ["BioQL's window", uiUrl], ["TargetRadar", radarUrl],
+   ["tools in the allowlist", TOOLS.length ? String(TOOLS.length) : "—"],
    ["tools that ask a person", String(TOOLS.filter((t) => t.approval).length)],
-   ["the brain", "Claude Code, and nothing else — BioQL's own model routes are not in the allowlist"]]
+   ["the brain", "Claude Code, and nothing else"]]
     .forEach(([k, v]) => {
-      const row = el("div", "row");
-      const head = el("div", "row-head");
-      head.appendChild(el("span", "fact-k", k));
-      head.appendChild(el("span", "hash", v === undefined || v === null ? "—" : String(v)));
-      row.appendChild(head);
+      const row = el("div", "row pair");
+      row.appendChild(el("span", "pair-k", k));
+      row.appendChild(el("span", "pair-v", v === undefined || v === null ? "—" : String(v)));
       g.appendChild(row);
     });
   box.appendChild(g);
+  box.appendChild(el("p", "fine", "BioQL's own model routes — vMLX, DeepSeek, openrouter, localllm — are not in " +
+    "the allowlist, so nothing here can reach one."));
   box.appendChild(el("p", "fine", "Studio never writes inside BioQL's folders. The Guard section compares the two " +
     "most recent snapshots of its source trees and names every file that moved."));
 }
@@ -781,12 +820,13 @@ function drawChats(box) {
 }
 
 // ------------------------------------------------------------------ BioQL's own window
-async function showFrame(s) {
+async function showFrame(s, mine) {
   const frame = $("bioql"), room = $("waiting-room");
   const which = s.which || "bioql";
   // Which window is up is asked of Studio's service: `connect-src 'self'` forbids this page reaching another
   // origin, and a page that cannot ask must not guess.
   const { body } = await api("/api/ui?which=" + encodeURIComponent(which));
+  if (mine !== undefined && mine !== seq) return false;   // another section was opened while this one asked
   const base = (body && body.url) || (which === "radar" ? radarUrl : uiUrl);
   const up = body && body.up === true;
   const want = base + "/" + (s.route || "");
@@ -1034,30 +1074,42 @@ function drawTabs() {
 // localhost:3000" is the whole point; the routes are what Studio adds.
 const half = {};
 
+// Every section is drawn under a number. Two clicks in a row used to leave the SLOWER draw writing into the page
+// of the section that had already replaced it — a blank frame, or one section's rows under another's title. A draw
+// that is no longer the open one is dropped.
+let seq = 0;
+
 async function draw() {
   const s = SECTIONS[view];
   if (s.kind === "chat") return;
-  if (s.kind === "frame" && half[view] !== "routes") return void (await showFrame(s));
-  const box = $("pageBody");
-  if (s.kind === "frame") return drawToolsSection(box, s.routes);
+  const mine = seq;
+  if (s.kind === "frame" && half[view] !== "routes") return void (await showFrame(s, mine));
+  // Built DETACHED and swapped in whole, so a half-drawn page is never on screen and a stale one never lands.
+  const box = el("div");
   switch (s.kind) {
-    case "tools": return drawToolsSection(box, s.pick);
-    case "pipes": return drawPipes(box);
-    case "findings": return await drawFindings(box);
-    case "results": return await drawResults(box);
-    case "board": return await drawBoard(box);
-    case "ledger": return await drawLedger(box);
-    case "guard": return await drawGuard(box);
-    case "servers": return await drawServers(box);
-    case "usage": return await drawUsage(box);
-    case "settings": return drawSettings(box);
-    case "chats": return drawChats(box);
+    case "frame": drawToolsSection(box, s.routes); break;
+    case "tools": drawToolsSection(box, s.pick); break;
+    case "pipes": drawPipes(box); break;
+    case "findings": await drawFindings(box); break;
+    case "results": await drawResults(box); break;
+    case "board": await drawBoard(box); break;
+    case "ledger": await drawLedger(box); break;
+    case "guard": await drawGuard(box); break;
+    case "servers": await drawServers(box); break;
+    case "usage": await drawUsage(box); break;
+    case "settings": drawSettings(box); break;
+    case "chats": drawChats(box); break;
   }
+  if (mine !== seq) return;                       // a later click already took this page
+  const host = $("pageBody");
+  clear(host);
+  while (box.firstChild) host.appendChild(box.firstChild);
 }
 
 async function open_(k) {
   const s = SECTIONS[k];
   if (!s) return;
+  seq += 1;
   view = k;
   document.body.setAttribute("data-view", k);
   if (!openTabs.includes(k)) openTabs.push(k);
