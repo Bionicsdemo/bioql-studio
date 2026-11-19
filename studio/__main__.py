@@ -67,7 +67,19 @@ def main(argv: list[str] | None = None) -> int:
             res = Adapter().call(ns.name, args, approved_by=ns.approve, by="cli")
         except Refused as why:
             print(json.dumps({"state": "REFUSED", "detail": str(why)})); return 3
-        print(json.dumps(res.as_dict(), indent=1, ensure_ascii=False, default=str)[:20000])
+        d = res.as_dict()
+        d["verdict"], d["findings"] = res.meta.get("verdict"), res.meta.get("findings")
+        d["provenance"] = res.meta.get("provenance")
+        text = json.dumps(d, indent=1, ensure_ascii=False, default=str)
+        if len(text) > 20000:          # never print half a JSON document: a cut object is not readable data
+            v = d.pop("value", None)
+            d["value_omitted"] = {"bytes": len(json.dumps(v, default=str)),
+                                  "keys": sorted(v)[:40] if isinstance(v, dict) else type(v).__name__,
+                                  "note": "too large to print; read it from the ledger or call it from Python"}
+            text = json.dumps(d, indent=1, ensure_ascii=False, default=str)
+        print(text)
+        for f in res.meta.get("findings") or []:
+            print(f"  [{f['severity']}] {f['code']}: {f['detail']}", file=sys.stderr)
         return 0 if res.resolved else 1
     if ns.cmd == "guard":
         if ns.action == "snapshot":

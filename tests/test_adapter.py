@@ -131,13 +131,43 @@ def test_provenance_is_copied_never_inferred(fake_bioql):
 
 
 # ------------------------------------------------------------------ jobs
-def test_job_is_followed_on_bioqls_own_route(fake_bioql):
-    a = ad(fake_bioql, s={"method": "POST", "path": "/api/submit", "kind": "local", "optional": ["which"]})
-    res = a.call("s", {"which": "j2"})
+def job(url, **extra):
+    return ad(url, s={"method": "POST", "path": "/api/quantum/thing", "via": "submit", "kind": "local",
+                      "optional": ["which"]}, **extra)
+
+
+def test_a_receipt_is_never_a_result(fake_bioql):
+    """BioQL answers a submit with {job_id, status: "accepted", poll_url} and no science in it. The real run of
+    2026-11-19 came back as a receipt and an earlier version of this adapter reported it RESOLVED — the exact
+    "produce a plausible value instead of stopping" defect the three-state invariant exists to prevent."""
+    res = job(fake_bioql).call("s", {"which": "j2"})
     assert res.state == RESOLVED and res.value["status"] == "completed"
+    assert res.value.get("result") or res.value.get("job_id") == "j2"
+    assert "accepted" not in str(res.value.get("status"))
     assert res.meta["provenance"] == {"is_real_hardware": True, "ibm_job_ids": ["d0abc123"], "quantum_backends": []}
-    failed = a.call("s", {"which": "j3"})
-    assert failed.state == UNRESOLVABLE and "boom" in failed.detail
+
+
+def test_a_receipt_with_no_job_id_is_unresolvable(fake_bioql):
+    res = job(fake_bioql).call("s", {"which": "j7"})
+    assert res.state == UNRESOLVABLE and "no job id" in res.detail
+
+
+def test_a_failed_job_is_unresolvable(fake_bioql):
+    res = job(fake_bioql).call("s", {"which": "j3"})
+    assert res.state == UNRESOLVABLE and "boom" in res.detail
+
+
+def test_the_result_is_fetched_from_the_jobs_own_route(fake_bioql):
+    """A large result is not in the status body: BioQL keeps it at /api/pipeline/job/<id>/result (95 988 bytes for
+    one real ADMET run). The route is built from the job id, never from the `result_url` the answer names."""
+    res = job(fake_bioql).call("s", {"which": "j5"})
+    assert res.state == RESOLVED and res.value["result"] == {"admet": {"logp": 1.2}, "is_real_hardware": False}
+    assert res.meta["provenance"]["is_real_hardware"] is False
+
+
+def test_completed_with_nothing_in_it_is_unresolvable(fake_bioql):
+    res = job(fake_bioql).call("s", {"which": "j6"})
+    assert res.state == UNRESOLVABLE and "no result" in res.detail
 
 
 def test_via_submit_uses_bioqls_async_door_with_the_allowlists_own_endpoint(fake_bioql, fake_log):
@@ -204,6 +234,5 @@ def test_bom_and_nul_in_a_streamed_body_still_parse(fake_bioql):
 
 
 def test_unknown_job_state_is_not_a_result(fake_bioql):
-    a = ad(fake_bioql, s={"method": "POST", "path": "/api/submit", "kind": "local", "optional": ["which"]})
-    res = a.call("s", {"which": "j4"})
+    res = job(fake_bioql).call("s", {"which": "j4"})
     assert res.state == UNRESOLVABLE and "unknown state" in res.detail

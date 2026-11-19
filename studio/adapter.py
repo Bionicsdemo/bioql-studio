@@ -27,11 +27,12 @@ from typing import Any, Callable
 from . import NAME, VERSION, bioql_url
 from . import allowlist as al
 from . import ledger
+from . import verify
 from .resolution import Resolution, absent, resolved, unresolvable
 
 SOURCE = "BioQL backend"
 MAX_BODY = 64 * 1024 * 1024
-RUNNING = {"queued", "pending", "submitted", "running", "started", "in_progress", "processing"}
+RUNNING = {"accepted", "queued", "pending", "submitted", "running", "started", "in_progress", "processing"}
 DONE = {"completed", "complete", "done", "success", "succeeded", "finished"}
 FAILED = {"failed", "error", "errored", "cancelled", "canceled", "timeout", "timed_out"}
 # `real_qpu` and `backend` are BioQL's own parameter names, read from its live registry (2026-11-19); the rest are
@@ -158,11 +159,17 @@ class Adapter:
             self._note(name, None, args, "REFUSED", str(why), None, None, began, by, approved_by)
             raise
         res, http = self._http(e["method"], url, body if e["method"] == "POST" else None, e["timeout"], e["absent_on_404"])
-        if res.resolved and isinstance(res.value, dict):
+        if e["via"] == "submit" and res.resolved and isinstance(res.value, dict):
             res = self._follow(res, began + e["timeout"])
         prov = provenance(res.value) if res.resolved else {"is_real_hardware": None, "ibm_job_ids": [], "quantum_backends": []}
-        res = Resolution(res.state, res.source, res.detail, res._value, {**res.meta, "provenance": prov, "tool": name,
-                                                                          "seconds": round(time.time() - began, 3)})
+        # A result is not finished when it arrives, only when it has been checked. The findings travel beside the
+        # science; nothing in the answer is altered.
+        # Every answer, with no exempt kind: the science of a finished job arrives through a *status* route
+        # (/api/pipeline/job/<id>/result), so exempting status reads would skip exactly the body that matters.
+        checked = verify.check(res.value, prov) if res.resolved else []
+        res = Resolution(res.state, res.source, res.detail, res._value,
+                         {**res.meta, "provenance": prov, "tool": name, "seconds": round(time.time() - began, 3),
+                          "verdict": verify.verdict(checked) if res.resolved else None, "findings": checked})
         self._note(name, e, args, res.state, res.detail, http, res, began, by, approved_by)
         return res
 
@@ -198,29 +205,50 @@ class Adapter:
         return resolved(out, SOURCE, f"HTTP {status}", http=status), status
 
     def _follow(self, res: Resolution, deadline: float) -> Resolution:
-        """A submitted job is followed on BioQL's own job route until it ends. Only that route, never a URL the
-        answer names."""
+        """A submitted job is followed on BioQL's own job route until it ends, and its result is then fetched from
+        that job's own result route. Both paths are built from the job id — never from a URL the answer names.
+
+        A submit is answered with a RECEIPT (`{job_id, status: "accepted", poll_url}`), which carries no science at
+        all. So the receipt is never a result: a body with a job id is followed unless its state is already final,
+        and a job id that cannot be followed is UNRESOLVABLE rather than passed back as if it were an answer.
+        """
         job = res.value
-        state = str(job.get("status") or job.get("state") or "").lower()
         jid = job.get("job_id")
-        if not (isinstance(jid, str) and al.ID.match(jid) and state in RUNNING):
-            return res
-        url = f"{self.base}/api/pipeline/job/{urllib.parse.quote(jid, safe='')}"
-        while time.time() < deadline:
+        if not isinstance(jid, str) or not al.ID.match(jid):
+            return unresolvable(SOURCE, f"submitted, but the answer carries no job id to follow: {sorted(job)[:8]}")
+        quoted = urllib.parse.quote(jid, safe="")
+        url = f"{self.base}/api/pipeline/job/{quoted}"
+        state = str(job.get("status") or job.get("state") or "").lower()
+        cur = job
+        while True:
+            if state in DONE:
+                return self._result_of(cur, jid, quoted)
+            if state in FAILED:
+                return unresolvable(SOURCE, f"job {jid} {state}: {str(cur.get('error') or '')[:300]}", job_id=jid)
+            if state and state not in RUNNING:
+                # A state Studio does not know is not a result: it is reported, never read as success.
+                return unresolvable(SOURCE, f"job {jid} reports an unknown state {state!r}", job_id=jid)
+            if time.time() >= deadline:
+                return unresolvable(SOURCE, f"job {jid} still {state or 'running'} at the deadline", job_id=jid)
             time.sleep(self.poll_every)
             nxt, _ = self._http("GET", url, None, 60, absent_on_404=True)
             if not nxt.resolved:
                 return Resolution(nxt.state, nxt.source, f"job {jid}: {nxt.detail}", None, {"job_id": jid})
-            cur = nxt.value
-            s = str(cur.get("status") or cur.get("state") or "").lower() if isinstance(cur, dict) else ""
-            if s in DONE:
-                return resolved(cur, SOURCE, f"job {jid} {s}", job_id=jid)
-            if s in FAILED:
-                return unresolvable(SOURCE, f"job {jid} {s}: {str(cur.get('error') or '')[:300]}", job_id=jid)
-            if s and s not in RUNNING:
-                # A state Studio does not know is not a result: it is reported, never read as success.
-                return unresolvable(SOURCE, f"job {jid} reports an unknown state {s!r}", job_id=jid)
-        return unresolvable(SOURCE, f"job {jid} still running at the deadline", job_id=jid)
+            cur = nxt.value if isinstance(nxt.value, dict) else {}
+            state = str(cur.get("status") or cur.get("state") or "").lower()
+
+    def _result_of(self, job: dict, jid: str, quoted: str) -> Resolution:
+        """A finished job's science. BioQL keeps a large result on the job's own result route and leaves `result`
+        out of the status body (95 988 bytes for one ADMET run, 2026-11-19), so it is fetched from the route built
+        from the job id — as BioQL's own UI does."""
+        if job.get("result") not in (None, {}, []):
+            return resolved(job, SOURCE, f"job {jid} completed", job_id=jid)
+        if not (job.get("result_available") or job.get("result_url")):
+            return unresolvable(SOURCE, f"job {jid} completed but reports no result", job_id=jid)
+        got, _ = self._http("GET", f"{self.base}/api/pipeline/job/{quoted}/result", None, 300, absent_on_404=True)
+        if not got.resolved:
+            return Resolution(got.state, got.source, f"job {jid} result: {got.detail}", None, {"job_id": jid})
+        return resolved({**job, "result": got.value}, SOURCE, f"job {jid} completed", job_id=jid)
 
     def _note(self, name, e, args, state, detail, http, res, began, by, approved_by) -> None:
         if not self.log:

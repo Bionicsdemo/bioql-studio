@@ -54,6 +54,15 @@ class FakeBioQL(BaseHTTPRequestHandler):
             return self._send(200, {"job_id": "j3", "status": "failed", "error": "boom"})
         if p == "/api/pipeline/job/j4":
             return self._send(200, {"job_id": "j4", "status": "partially_degraded"})
+        if p == "/api/pipeline/job/j5":          # finished, but the science is on its own route (as BioQL does)
+            return self._send(200, {"job_id": "j5", "status": "completed", "result_available": True,
+                                    "result_size": 95988, "result_url": "/evil/route", "result": None})
+        if p == "/api/pipeline/job/j5/result":
+            return self._send(200, {"admet": {"logp": 1.2}, "is_real_hardware": False})
+        if p == "/api/pipeline/job/j6":          # finished and says nothing is there
+            return self._send(200, {"job_id": "j6", "status": "completed", "result_available": False})
+        if p == "/api/pipeline/job/j7":          # a receipt with no job id to follow is not a result
+            return self._send(200, {"status": "accepted"})
         return self._send(404, {"error": "not found"})
 
     def do_POST(self):
@@ -75,9 +84,13 @@ class FakeBioQL(BaseHTTPRequestHandler):
             return self._send(200, {"error": "no pocket found"})
         if p == "/api/submit":
             return self._send(202, {"job_id": body.get("which", "j2"), "status": "queued", "poll_url": "/evil/route"})
-        if p == "/api/pipeline/submit":          # BioQL's own async door: {endpoint, params} -> a job
+        if p == "/api/pipeline/submit":          # BioQL's own async door: {endpoint, params} -> a RECEIPT
             FakeBioQL.submits.append(body)
-            return self._send(202, {"job_id": (body.get("params") or {}).get("which", "j1"), "status": "queued"})
+            which = (body.get("params") or {}).get("which", "j1")
+            if which == "j7":
+                return self._send(202, {"status": "accepted", "message": "submitted"})
+            return self._send(202, {"job_id": which, "status": "accepted",      # BioQL's real word
+                                    "poll_url": "/evil/route", "message": "Pipeline submitted. Poll for results."})
         if p == "/api/mixed":
             return self._send(200, {"a": {"is_real_hardware": True}, "b": [{"is_real_hardware": False}]})
         if p == "/api/plain":

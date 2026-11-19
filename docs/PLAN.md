@@ -142,6 +142,31 @@ and the hash of the result.
 Starts with: the identity changes above; `claude --mcp-config` pointed at `python3 -m studio mcp`; the owner's Claude
 account, as in Agtr.
 
+### The verifier, brought forward out of Phase 3 · done 2026-11-19
+
+`studio/verify.py` is Lauren Tan's first mechanism — a result is not finished when it arrives, only when it has been
+checked — and the owner's own audits turned into code. It reads a pipeline's answer and reports where the ENVELOPE
+contradicts the work. It never judges the science: BioQL's numbers are BioQL's.
+
+| Check | From |
+|---|---|
+| `quantum_label_vs_execution` | a quantum-named field holding output the run itself calls classical |
+| `quantum_twin` | `x_quantum` and `x_classical` carrying an identical payload |
+| `counter_vs_execution` | a summary counting a quantum success where execution says fallback |
+| `hardware_without_job` / `job_without_hardware` / `hardware_mixed` | provenance contradicting itself (real-or-null) |
+| `subspace_fraction_missing` | determinant selection with no `dim/dim_FCI` (CLAUDE.md 2026-10-07) |
+| `weak_arm_missing` | an advantage claim with no classical arm beside it (CLAUDE.md 2026-10-07) |
+
+Every finding names its JSON path. Keys are matched by whole token, never substring — `"kd" in path` also matches
+`score_breakdown`, which once inflated an audit from 60% to 94%.
+
+**It fires on real data and it also stays quiet.** On the real ADMET run it returned `contradicted` with four high
+findings; on an honest classical result, on each local computation, and on a backend health read it returns an empty
+list. A guard that never fires is the same defect it prevents, so both directions are tested.
+
+What it cannot do: it reads labels, not chemistry. A number that is simply wrong, with consistent labels, passes.
+Phase 3's campaign auditor is what re-derives a claim from the raw data.
+
 ## Phase 3 — campaigns, verification, claim audit · 2 weeks
 
 Agtr's agent engine, with the unit of work changed from a code task to a campaign: criteria, parallel BioQL runs each

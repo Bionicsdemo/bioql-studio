@@ -17,7 +17,8 @@ around it, and reaches BioQL only through the HTTP entries BioQL already serves.
 | A failure never looks like a result | `studio/resolution.py` — RESOLVED / ABSENT / UNRESOLVABLE, the third never degrading into the second (BioQL's own invariant, re-implemented, not imported) |
 | Provenance is BioQL's, never inferred | `adapter.provenance` — `is_real_hardware`, IBM job ids and backends are copied when BioQL states them and stay `null` when it does not |
 | A session leaves BioQL as it found it | `studio/guard.py` — a sha256 fingerprint of BioQL's source trees before and after; the session fails if anything changed |
-| Every call is on the record | `studio/ledger.py` — one hash-chained line per call, refusals included |
+| A result is checked, not just received | `studio/verify.py` — every answer is read for labels that contradict the work (a quantum name over classical output, a counter that disagrees with the execution mode, `is_real_hardware` with no job id, determinant selection with no `dim/dim_FCI`, an advantage claim with no classical arm). Findings travel beside the science; nothing in the answer is altered |
+| Every call is on the record | `studio/ledger.py` — one hash-chained line per call, refusals and findings included |
 
 What the guard does **not** claim: it sees *that* a file changed, not *who* changed it. BioQL's own running services, or
 another person working in the repository at the same time, show up too — so it lists every file by name.
@@ -43,9 +44,19 @@ Measured on this Mac, 2026-11-19: 26 unit tests pass; the live check passes 9/9 
 BioQL files; and 61 of BioQL's 63 registered pipelines are routed and verified live (`docs/PLAN.md` says how, and
 which two are not).
 
-What is **not** proven yet: no pipeline job has actually been submitted. The submit-and-poll path is tested against a
-stand-in, and its shapes are read from BioQL's own UI, but the first real run needs an approval only the owner can
-give — which is the design working, not a gap in it.
+**The first real run, 2026-11-19 (job `5a362e56-077`, ADMET on paracetamol, approved by the owner).** It worked, and
+it found two defects in Studio and one in BioQL's output:
+
+- BioQL answers a submit with `status: "accepted"` — a word Studio's "still running" list did not have — so Studio
+  reported the **receipt as the result**. The receipt holds no science at all. Fixed: a body carrying a job id is
+  followed unless its state is already final, and a receipt with no job id is UNRESOLVABLE.
+- A finished job keeps its result on its own route (`/api/pipeline/job/<id>/result`, 95,988 bytes here) and leaves
+  `result` out of the status body. Studio now fetches it, from a path built out of the job id.
+- The verifier, on that real result: **contradicted**, four high findings. `admet_quantum` and `admet_classical`
+  carry an identical LightGBM payload, and `summary` counts `quantum_success: 1, classical_fallback: 0` while the run
+  reports `CLASSICAL_FALLBACK` and `quantum_backend: NONE`. BioQL is honest at the leaf
+  (`quantum_engine: "classical LightGBM ensemble (no quantum hardware in this prediction)"`); it is the envelope that
+  reads as quantum. Claude Code, given only that tool, reached the same conclusion unprompted.
 
 ## Claude Code behind it
 
