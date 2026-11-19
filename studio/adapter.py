@@ -266,10 +266,20 @@ class Adapter:
             return Resolution(got.state, got.source, f"job {jid} result: {got.detail}", None, {"job_id": jid})
         return resolved({**job, "result": got.value}, SOURCE, f"job {jid} completed", job_id=jid)
 
+    def _record(self, row: dict) -> dict:
+        """Write one line. Signed when this Mac can sign — that is the lab notebook — and plainly chained when it
+        cannot, which is reported by `notebook.verify` as UNSIGNED rather than passed off as signed. A signing
+        failure never costs the line: the call still gets recorded."""
+        try:
+            from . import notebook
+            return notebook.record(row)
+        except Exception as why:                 # noqa: BLE001 - no crypto, no key, a broken key: all land here
+            return ledger.append({**row, "unsigned_because": f"{type(why).__name__}: {why}"[:160]})
+
     def _note(self, name, e, args, state, detail, http, res, began, by, approved_by) -> None:
         if not self.log:
             return
-        ledger.append({"tool": name, "method": e and e["method"], "path": e and e["path"], "args": args,
+        self._record({"tool": name, "method": e and e["method"], "path": e and e["path"], "args": args,
                        "state": state, "detail": (detail or "")[:300], "http": http,
                        "result_sha256": ledger.digest(res.value) if res is not None and res.resolved else None,
                        "provenance": res.meta.get("provenance") if res is not None else None,

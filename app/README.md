@@ -27,7 +27,7 @@ app/dmg.md               the packaging plan, and what blocks distribution
 | bundle id | `com.agtr.desktop` (`Info.plist`) | `com.molevera.bioqlstudio` |
 | token header | `X-Agtr-Token` (`service.py:1228`) | `X-Studio-Token` |
 | also runs | a hub on 7799, a VS Code proxy, `cloudflared` | none of it |
-| LaunchAgent | yes, in Agtr's install path | **none, ever** |
+| LaunchAgent | not found in Agtr's `install/` either (grepped for `LaunchAgents` and `launchctl`: no hit), so this is not a difference — it is a standing rule for Studio | **none, ever** |
 
 Launched with Agtr's identity, the fork would have found Agtr Desktop answering on 7790, called it "the service"
 (`Service.swift:36`), and sent it this install's token and native key (`Service.swift:108-109`).
@@ -101,7 +101,7 @@ are each refused and each written to the ledger.
 |---|---|---|
 | per-install token, 0600, created privately | `service.py:124-128` | `app/service.py::read_secret`, via `studio.write_private` (0600 from the first byte, never chmod'ed after) |
 | **empty secret rejected** | *the bug*: Agtr creates `ui.token` only when it is **missing**, then `service.py:1228-1229` compares the resulting `""` against a header that is also `""` when absent — an empty or truncated file opens the whole API | `read_secret` raises `Empty` on a file shorter than 32 characters, **and** on one readable by group/other; `matches_token` additionally refuses while the stored secret is empty, so even a secret emptied at runtime does not open it |
-| constant-time comparison | `secrets.compare_digest` on `str` (`service.py:1229`) — which **raises** on a non-ASCII header, so a crafted header becomes a 500 from the catch-all at `service.py:1465` | `compare_digest` on **bytes**; a non-ASCII header is a plain 403 |
+| constant-time comparison | `secrets.compare_digest` on `str` (`service.py:1229`), which **raises** `TypeError` on a non-ASCII header — and `_guard` is called *outside* the `try` in both handlers (`service.py:1293`, `:1390`), so that raise is not caught at all and the request dies with no answer, not even a 500 | `compare_digest` on **bytes**; a non-ASCII header is a plain 403 |
 | no token in a URL | Agtr also accepts `?t=<token>` (`service.py:1228`) | removed. A token in a URL lands in logs, in history and in `Referer` |
 | no token in the page | Agtr substitutes its token placeholder into every `.html` it serves, to anyone with the right Host (`service.py:1236-1255`), handing the 0600 secret to a reader who never had the file | the window gets it in the **URL fragment**, which a browser never sends to a server; `app.js` reads it and clears it with `history.replaceState`. A test asserts the token appears in no response and that the HTML holds no placeholder |
 | Host allowlist (no DNS rebinding) | `service.py:1226`, hosts built from the port (`:1202`) | `127.0.0.1:7810`, `localhost:7810`, built from the port actually bound — **and checked on `/api/ping` too**, which Agtr answers before any check (`service.py:1291`) |
@@ -110,13 +110,20 @@ are each refused and each written to the ledger.
 | single-instance `/api/ping` check, no token | `service.py:1479-1484` | `app.service.who_answers`, and a foreign answer means **do not start** rather than *attach*. A ping name is not authentication |
 | POST body capped | Agtr parses whatever `Content-Length` says (`service.py:1392-1394`) | 1 MB, drained then refused with `413` |
 
-### One hole closed in the sealed adapter, not in Agtr
+### Two holes closed in the sealed adapter, not in Agtr
 
 `studio/allowlist.py::ID` is `^[A-Za-z0-9_.-]{1,128}$`, which `".."` matches, and `studio/adapter.py::_url` quotes a
 path parameter with `safe=""` — and `urllib.parse.quote` does not escape a dot. So `pipeline_job(job_id="..")` builds
 `/api/pipeline/job/..`, which a server that normalises paths (Flask/Werkzeug does) reads as `/api/pipeline/`.
 `studio/` may not be edited in this work, so `app/service.py::dotdot` refuses any argument that fills a `{param}`
 segment and is a dot-path. **The defect is in `studio/`, and it is still there for the CLI and the MCP server.**
+
+Second: `studio/ledger.py::_last_hash` finds the previous line's hash by reading only the **final 64 KB** of
+`runs.jsonl`, and `studio/adapter.py::_note` writes a call's `args` whole, with no bound. `/api/call` accepts a 1 MB
+body, so one request carrying a 100 KB `smiles` would write a line longer than that tail — after which every later
+`append` parses a fragment and raises, and the chain stops taking lines for ever. `app/service.py::too_big` refuses
+arguments over 32 KB at the door, and `trim` bounds what a refusal records. Same caveat: the CLI and the MCP server
+are still exposed.
 
 ## Running it
 
@@ -136,6 +143,9 @@ Nothing here starts, stops or restarts BioQL, writes inside `~/Documents/Proyect
 - **The Swift shell is uncompiled.** `app/macos/Sources/*.swift` is correct by inspection only: no Xcode run, no
   `swiftc`, no `.app`. The bugs it fixes are listed below; the fixes themselves have not been exercised.
 - **No DMG was built**, and distribution is blocked on an Apple Developer ID. `app/dmg.md`.
+- **The window was served, not rendered.** Tests fetch `/`, `/app.js` and `/app.css` and assert what they contain
+  and do not contain; `app.js` passes `node --check`, but no browser or WKWebView has ever executed it, so its
+  layout, its dark-mode rendering and its event handlers are unverified.
 - The window has no campaign view, no board and no notebook: Phases 3–5 of `docs/PLAN.md`.
 
 ### The Agtr bugs the Swift shell carries a fix for
@@ -148,13 +158,22 @@ Nothing here starts, stops or restarts BioQL, writes inside `~/Documents/Proyect
 | 4 | **the page picks which privileged route the native side posts to** — `{type:"verify", path:"/api/…"}`, checked only with `hasPrefix("/api/")`, and the call is then marked biometrically verified | `AppDelegate.swift:189-191`, `:257-278` | `Service.post` takes a Swift `enum Route`, not a string; the page cannot name a path, and there is no `verify` message |
 | 5 | **its script-message bridge trusts every frame and origin** — `message.body` is read and acted on with no check of `frameInfo`, while its own CSP allows `frame-src http://127.0.0.1:*` | `AppDelegate.swift:171-172` | `message.webView === web`, `frameInfo.isMainFrame`, and `securityOrigin` must be `http` / `127.0.0.1` / 7810 |
 | 6 | **the navigation policy ignores the port** — it checks only `host != "127.0.0.1"`, so BioQL's frontend on 3000, its backend on 5035 and Agtr Desktop on 7790 all load inside the window | `AppDelegate.swift:150-156` | scheme, host **and** port must be Studio's; anything else opens in the browser |
-| 7 | the shell hard-codes its home path while the Python decides its own, so the two can drift and the shell reads a token the service never wrote | `Service.swift:7-8` vs `service.py:__init__` | one definition, `Service.home`, handed to the child as `BIOQL_STUDIO_HOME` |
+| 7 | **two independent definitions of the home folder.** The shell hard-codes `AGTR/desktop` (`Service.swift:7-8`); the service computes its own in `agtrdesktop/__init__.py::default_home` (:23-30), which agrees *today* — but it returns `$AGTR_DESKTOP_HOME` first when that is set, and the shell passes the whole user environment to the child (`Service.swift:78-85`) without ever setting it. So an `AGTR_DESKTOP_HOME` already in the environment sends the service to one home while the shell keeps reading `ui.token` from the other, and every call is a 403 | `Service.swift:7-8`, `:78-85` vs `agtrdesktop/__init__.py:23-30` | one definition, `Service.home`, **handed to the child** as `BIOQL_STUDIO_HOME`, which `studio.home()` reads first |
+| 8 | **"Try Again" after a timeout spawns a second child** while the first still holds the port — and FIX 1 then correctly refuses that orphan as "not ours", so the app can never recover | `AppDelegate.swift:65-69` with `Service.swift:88-94` | `start()` stops any child of ours before spawning. `Service.start()` |
+| 9 | its only "restart" path is `service.stop()`, which clears the exit handler — so a restart would stop the service and nothing would bring it back | the shape of `Service.swift:97-100` | `Service.restart()` is separate from `stop()`: it clears the handler, terminates, and fires `onExit` exactly once |
+| 10 | `prompt()` in the page returns `null` under WKWebView unless the host implements `runJavaScriptTextInputPanelWithPrompt` — a tool with a required argument would silently do nothing | the class of bug, not a line of Agtr's | the window uses inline `<input>` fields, never `window.prompt()` |
 
 ## A note on `studio/`'s own record
 
-`studio/adapter.py::_note` writes one ledger row per call and carries `provenance`, but **not** the `verdict` and
-`findings` the adapter computes in the same function — although the project README says the ledger holds them.
-`studio/` is sealed here, so the window writes a second row of its own with the verdict and the findings' codes,
-severities and paths (the first 20, with a total; a full finding list on a 96 KB result would be a very long line, and
-`ledger._last_hash` reads only the final 64 KB of the file to find the previous hash — one oversized line would break
-the chain for every line after it). A row with no `verdict` key is shown as **not recorded**, never as clean.
+When this was written, `studio/adapter.py::_note` wrote one row per call with `provenance` but **not** the `verdict`
+and `findings` the adapter computes in the same function — so every row read back as "verdict not recorded", and the
+window compensated with a row of its own. **That was fixed in `studio/` during this same session, by whoever owns
+that file** (commit `0232e11`), and the adapter now puts the verdict, the findings and the job id on its own line.
+
+The window still writes a row of its own, and it is not redundant: it is the one that carries `window_event`
+(`call` / `approval_offered` / `approval_denied` / `approval_granted`), the `approved_by` mechanism, and a REFUSED
+line for a refusal the adapter never sees — `Adapter.check` deliberately writes nothing, so without it a refusal
+from the window would leave no trace. Its findings are stored as codes, severities and paths only (the first 20, with
+a total), for the 64 KB reason above.
+
+Either way, a row with no `verdict` key is shown as **not recorded**, never as clean.

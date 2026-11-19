@@ -17,7 +17,9 @@ and is the plan written as a script; it has not been executed.
 
 ## What works unsigned on this Mac
 
-| Step | State |
+Every row below is **expected**, from reading Agtr's pipeline and its recorded logs. None of it was run here.
+
+| Step | Expected |
 |---|---|
 | `swiftc` from the Command Line Tools, no Xcode project | works — Agtr ships this way (`build.sh:22-24`) |
 | `sips` + `iconutil` for the icon | works, and is skipped with a note when there is no `icon-1024.png` |
@@ -53,7 +55,7 @@ and is the plan written as a script; it has not been executed.
 | `--standalone` fetches `latest` from the GitHub API (`build.sh:62-76`) | not copied; see (2) above |
 | links LocalAuthentication, UserNotifications, Carbon, AVFoundation, Speech, NaturalLanguage (`build.sh:23`) | links AppKit and WebKit only — a framework that is not linked is a capability the app cannot be talked into using |
 | `dmg70.sh` runs `build.sh`, prints `build rc=$?`, and then copies the `.dmg` **whatever that return code was** (`dmg70.sh:6-9`); `set -e` is not on, and `grep -c '0.9.74'` on line 4 is a version check whose result is printed and ignored — the recorded run printed `0`, meaning it did not match, and the build went ahead | any driver written later runs under `set -euo pipefail` and gates the copy on the build's exit status |
-| the version is read from `agtros/__init__.py` by `sed`, and `dmg70.sh` *also* hard-codes `V=0.9.93` — the recorded `dmgcheck70.log` then reports `version 0.9.74`, so three different versions are in play in one pipeline | one source: `VERSION` in `app/__init__.py`, and the build fails if it cannot be read |
+| the version is read from `agtros/__init__.py` by `sed` while `dmg70.sh` *also* hard-codes `V=0.9.93`, and a recorded `dmgcheck70.log` reports `version 0.9.74` — two versions in play, and the `grep -c '0.9.74'` on `dmg70.sh:4` printed `0`, i.e. did not match, with the build going ahead anyway. (The two logs are not shown to be from the same run; that part is inference) | one source: `VERSION` in `app/__init__.py`, and the build fails if it cannot be read |
 
 ## The order, when it is time
 
@@ -68,6 +70,6 @@ and is the plan written as a script; it has not been executed.
 4. `shasum -a 256` the image, and record it beside the build.
 5. Only then, if it is to leave this Mac: the Developer ID, the hardened runtime, `notarytool`, `stapler`.
 
-**The app must never ship a LaunchAgent.** Agtr's install path has one; Studio's does not and must not. BioQL already
+**The app must never ship a LaunchAgent.** (Agtr's `install/` was grepped for `LaunchAgents` and `launchctl` and has none either, so this is a rule for Studio, not a difference from Agtr.) BioQL already
 owns `com.bioql.localstack`, `com.bioql.watchdog` and `com.bioql.llm-watchdog`, and Studio attaches to BioQL — it does
 not own it, start it or keep it alive.

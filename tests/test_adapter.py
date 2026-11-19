@@ -236,3 +236,25 @@ def test_bom_and_nul_in_a_streamed_body_still_parse(fake_bioql):
 def test_unknown_job_state_is_not_a_result(fake_bioql):
     res = job(fake_bioql).call("s", {"which": "j4"})
     assert res.state == UNRESOLVABLE and "unknown state" in res.detail
+
+
+def test_every_call_lands_in_the_signed_notebook(fake_bioql, studio_home):
+    """The notebook existed and nothing used it: the adapter called ledger.append directly, so every real row read
+    back UNSIGNED. The lab notebook is the artefact a due-diligence reader is handed; it has to be the default."""
+    from studio import notebook
+    ad(fake_bioql).call("backend_health")
+    r = notebook.verify()
+    assert r["lines"] == 1 and r["unsigned"] == 0 and r["ok"] is True
+    assert r["current_key_id"]
+
+
+def test_a_mac_that_cannot_sign_still_records_the_call(fake_bioql, studio_home, monkeypatch):
+    """A signing failure must never cost the line. It is reported as unsigned, never passed off as signed."""
+    from studio import notebook
+    monkeypatch.setattr(notebook, "record", lambda *a, **k: (_ for _ in ()).throw(notebook.NoCrypto("no cryptography")))
+    res = ad(fake_bioql).call("backend_health")
+    assert res.state == RESOLVED
+    import json
+    row = json.loads(ledger.path_file().read_text().splitlines()[-1])
+    assert row["tool"] == "backend_health" and "NoCrypto" in row["unsigned_because"]
+    assert notebook.verify()["unsigned"] == 1
