@@ -1161,6 +1161,10 @@ async function boot() {
   }
   setInterval(async () => {
     await drawState();
+    // The engine line is asked again every tick. Read once at boot it went STALE: the backend could die and the
+    // status bar would still read "healthy" while every call in BioQL's own window answered 502 — a status line
+    // that stops being asked is a claim, not a reading.
+    await drawEngine();
     if (SECTIONS[view].kind === "frame") await showFrame(SECTIONS[view].route, SECTIONS[view].panels);
     else if (["findings", "ledger", "results", "usage", "board"].includes(SECTIONS[view].kind)) await draw();
   }, 6000);

@@ -18,6 +18,7 @@ per turn, replaced when it dies, after 40 turns or after 20 minutes idle.
 from __future__ import annotations
 
 import atexit
+import collections
 import json
 import os
 import queue
@@ -181,13 +182,39 @@ class Session:
         self.proc: subprocess.Popen | None = None
         self.turns = 0
         self.last = 0.0
+        self.said = collections.deque(maxlen=60)   # the brain's own stderr, kept so a death can say why
         self.lock = threading.RLock()
 
     def _spawn(self) -> subprocess.Popen:
-        return subprocess.Popen(
+        # The config holds the owner's source tokens, so `stop()` deletes it — and a session stops on EVERY
+        # rotation: after 40 turns, after 20 minutes idle, and on any failure. The next spawn then pointed
+        # `--mcp-config` at a file that was no longer there, `claude` exited at once, and the window said "the
+        # brain stopped without answering" for every turn after the first rotation. A session that is starting
+        # writes itself a config.
+        if not self.cfg.exists():
+            self.cfg = mcp_config()
+        p = subprocess.Popen(
             command(None, self.cfg, self.model, self.allowed) + ["--input-format", "stream-json"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, bufsize=1, env={**os.environ, "DISABLE_AUTOUPDATER": "1"})
+        # Drain stderr: nothing reads this pipe, so a brain that writes more than the pipe holds (64 KB on macOS)
+        # blocks on its own error message for ever. Kept so a death can SAY something instead of "it stopped".
+        self.said.clear()
+        if p.stderr is not None:
+            threading.Thread(target=self._drain, args=(p,), name="brain-stderr", daemon=True).start()
+        return p
+
+    def _drain(self, p: subprocess.Popen) -> None:
+        try:
+            for line in p.stderr:                  # ends on its own when the process does
+                self.said.append(line.rstrip()[:400])
+        except (ValueError, OSError):              # the pipe was closed under us: nothing left to say
+            pass
+
+    def why(self) -> str:
+        """The last thing the brain said on stderr, for a failure message. Empty when it said nothing."""
+        tail = " / ".join(x for x in list(self.said)[-6:] if x)
+        return (": " + tail[:600]) if tail else ""
 
     def _fresh(self) -> bool:
         if self.proc is None or self.proc.poll() is not None:
@@ -226,7 +253,7 @@ class Session:
                 p.stdin.flush()
             except (BrokenPipeError, OSError) as why:
                 self.stop()
-                yield {"type": "fail", "text": f"the brain died before the question reached it: {why}"}
+                yield {"type": "fail", "text": f"the brain died before the question reached it: {why}{self.why()}"}
                 return
 
             deadline = time.time() + timeout
@@ -238,7 +265,8 @@ class Session:
                 line = p.stdout.readline()
                 if line == "":
                     self.stop()
-                    yield {"type": "fail", "text": "the brain stopped without answering"}
+                    yield {"type": "fail", "text": "the brain stopped without answering" + (self.why() or
+                                   " and said nothing on its error channel")}
                     return
                 for e in events(line):
                     yield e

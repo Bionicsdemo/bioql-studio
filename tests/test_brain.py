@@ -240,3 +240,63 @@ def test_a_config_is_never_silently_overwritten(studio_home):
     with pytest.raises(FileExistsError):
         brain.mcp_config(path=None) if False else __import__("os").open(p, __import__("os").O_CREAT | __import__("os").O_EXCL)
     brain.forget()
+
+
+# ------------------------------------------------------------------ the second turn after a rotation
+def test_a_session_that_rotated_writes_itself_a_new_config(tmp_path, monkeypatch):
+    """`stop()` deletes the MCP config, because it holds the owner's source tokens — and a session stops on EVERY
+    rotation: 40 turns, 20 minutes idle, any failure. The next spawn pointed `--mcp-config` at a file that was no
+    longer there, `claude` exited at once, and the window said "the brain stopped without answering". That is the
+    live failure the owner hit, and it happened on every turn after the first rotation.
+
+    This drives `_spawn` itself — the guard lives there, so a test with its own fake spawn would prove nothing."""
+    monkeypatch.setenv("BIOQL_STUDIO_HOME", str(tmp_path))
+    seen = []
+
+    class Fake:
+        stdin = stdout = stderr = None
+
+        def __init__(self, argv, **kw):
+            cfg = argv[argv.index("--mcp-config") + 1]
+            seen.append((cfg, __import__("pathlib").Path(cfg).exists()))
+
+        def poll(self):
+            return 0
+
+    monkeypatch.setattr(brain.subprocess, "Popen", Fake)
+    s = brain.Session(cfg=brain.mcp_config())
+    first = s.cfg
+    s.proc = s._spawn()
+    assert seen[-1][1] is True
+    s.stop()
+    assert not first.exists()                      # the tokens went with the session
+    s.proc = s._spawn()                            # the next turn
+    assert seen[-1][1] is True, "the brain was started pointing at a config that had been deleted"
+    assert s.cfg.exists() and s.cfg != first
+    brain.forget(s.cfg)
+
+
+def test_a_brain_that_dies_says_what_it_said(tmp_path, monkeypatch):
+    """`the brain stopped without answering` with nothing after it is unfixable from the window. Nothing drained
+    stderr either, so a brain that wrote more than the pipe holds blocked on its own error message."""
+    monkeypatch.setenv("BIOQL_STUDIO_HOME", str(tmp_path))
+    import subprocess
+    import sys as _sys
+    s = brain.Session(cfg=brain.mcp_config())
+    s.spawn = lambda: s._spawn.__func__(s) if False else subprocess.Popen(
+        [_sys.executable, "-c", "import sys; sys.stderr.write('mcp config not found\\n'); sys.stderr.flush()"],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
+
+    def spawn():
+        p = s.spawn()
+        s.said.clear()
+        import threading as _t
+        _t.Thread(target=s._drain, args=(p,), daemon=True).start()
+        return p
+
+    s.proc = spawn()
+    out = list(s.ask("anything", timeout=10))
+    assert out[-1]["type"] == "fail"
+    assert "stopped without answering" in out[-1]["text"]
+    assert "mcp config not found" in out[-1]["text"] or "said nothing" in out[-1]["text"]
+    brain.forget(s.cfg)
