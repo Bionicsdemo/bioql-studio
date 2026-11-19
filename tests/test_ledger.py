@@ -161,3 +161,45 @@ def test_a_good_ledger_still_verifies(f):
         ledger.append({"tool": "t", "i": i}, f)
     r = ledger.verify(f)
     assert r == {"ok": True, "lines": 5, "broken_at": None, "why": None}
+
+
+# ------------------------------------------------------------------ the chain's own fields are not the caller's
+def test_a_field_called_hash_does_not_break_the_chain_for_ever(f):
+    """`hash` is an ordinary word in a scientific payload. It used to be hashed WITH the body while `verify` popped
+    it first, so one such line broke the chain at that point permanently."""
+    ledger.append({"tool": "t"}, f)
+    ledger.append({"tool": "t", "hash": "caller", "prev": "x", "t": 99}, f)
+    assert ledger.verify(f)["ok"] is True
+    row = rows(f)[-1]
+    assert row["row_hash"] == "caller" and row["row_prev"] == "x" and row["row_t"] == 99
+    assert row["hash"] != "caller" and row["prev"] == rows(f)[0]["hash"]
+
+
+def test_two_repairs_in_one_call_are_both_recorded(f):
+    """A bad complete line AND an unfinished tail need two quarantines. Only the outer one used to be recorded, so
+    the record stopped accounting for what had been set aside."""
+    import hashlib
+    ledger.append({"a": 1}, f)
+    with f.open("ab") as fh:
+        fh.write(b"{not json}\n")
+    with f.open("ab") as fh:
+        fh.write(b'{"half": ')
+    ledger.append({"a": 2}, f)
+    reps = [r for r in rows(f) if r.get("tool") == "ledger_repair"]
+    assert len(reps) == 2 and len(ledger.damaged(f)) == 2
+    assert ledger.verify(f)["ok"] is True
+    for r in reps:                                   # and each digest proves the file it names
+        d = r["damaged"]
+        assert hashlib.sha256((f.parent / d["moved_to"]).read_bytes()).hexdigest() == d["sha256"]
+
+
+def test_two_repairs_in_the_same_second_do_not_share_a_file(f):
+    """They did, under one `.damaged-<second>` name opened O_APPEND — and then the sha256 each record carried
+    matched neither the file nor the other. The bytes were kept; the digest that proved what was kept was wrong."""
+    for i in range(3):
+        ledger.append({"a": i}, f)
+        with f.open("ab") as fh:
+            fh.write(b'{"torn": ')
+        ledger.append({"b": i}, f)
+    moved = ledger.damaged(f)
+    assert len({m["file"] for m in moved}) == len(moved) == 3

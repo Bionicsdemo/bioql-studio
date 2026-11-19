@@ -86,8 +86,19 @@ def _quarantine(f: Path, keep: int, why: str) -> dict:
     with f.open("rb") as fh:
         fh.seek(keep)
         bad = fh.read()
-    hurt = f.with_name(f"{f.name}.damaged-{int(time.time())}")
-    fd = os.open(hurt, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    # A name per repair, not per second: two repairs in the same second shared one file, and then the
+    # sha256 each record carried matched neither the file nor the other. The bytes were kept and the
+    # digest that was supposed to prove WHAT was kept was wrong.
+    base = f"{f.name}.damaged-{int(time.time())}"
+    for n in range(1000):
+        hurt = f.with_name(base if n == 0 else f"{base}-{n}")
+        try:
+            fd = os.open(hurt, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            break
+        except FileExistsError:
+            continue
+    else:
+        raise RuntimeError("too many damaged tails in one second")
     with os.fdopen(fd, "ab") as out:
         out.write(bad)
     with f.open("r+b") as fh:
@@ -95,17 +106,23 @@ def _quarantine(f: Path, keep: int, why: str) -> dict:
     return {"bytes": len(bad), "sha256": hashlib.sha256(bad).hexdigest(), "moved_to": hurt.name, "why": why}
 
 
-def _state(f: Path) -> tuple[str, dict | None]:
-    """(the hash to chain onto, a repair record when the tail had to be moved aside)."""
+def _state(f: Path, found: list | None = None) -> tuple[str, list]:
+    """(the hash to chain onto, EVERY repair this took).
+
+    The list matters: a file with a bad complete line AND an unfinished tail needs two quarantines, and an
+    earlier version returned only the outer one — both tails were moved aside and only one was recorded, so the
+    record no longer accounted for what had been set aside.
+    """
+    found = [] if found is None else found
     if not f.exists() or f.stat().st_size == 0:
-        return "0" * 64, None
+        return "0" * 64, found
     line, ended = _tail_line(f)
     try:
         row = json.loads(line)
         if not isinstance(row, dict) or not isinstance(row.get("hash"), str):
             raise ValueError("a ledger line must be an object carrying its hash")
         if ended:
-            return row["hash"], None
+            return row["hash"], found
     except ValueError as why:
         row, _ = None, None
         if ended:
@@ -113,16 +130,26 @@ def _state(f: Path) -> tuple[str, dict | None]:
             # refusing instead would brick the ledger, which is the defect this whole module exists to avoid — and
             # the repair line says what it was.
             keep = f.stat().st_size - len(line) - 1
-            rec = _quarantine(f, max(0, keep), f"the last line did not parse: {why}"[:160])
-            return _state(f)[0], rec
+            found.append(_quarantine(f, max(0, keep), f"the last line did not parse: {why}"[:160]))
+            return _state(f, found)
     # the tail is not newline-terminated: a write that never finished
     keep = f.stat().st_size - len(line)
-    rec = _quarantine(f, keep, "the last line was never finished (no newline): a write cut short")
-    return _state(f)[0], rec
+    found.append(_quarantine(f, keep, "the last line was never finished (no newline): a write cut short"))
+    return _state(f, found)
+
+
+RESERVED = ("hash", "prev", "t")
 
 
 def _write(f: Path, row: dict) -> dict:
-    body = {**row, "t": round(time.time(), 3)}
+    # The chain's own fields are the ledger's, never the caller's. A row carrying a field literally named `hash`
+    # was hashed WITH it while `verify` pops `hash` before hashing, so one such line broke the chain at that point
+    # for ever — and `hash` is an ordinary word in a scientific payload. What the caller sent is kept, under
+    # `row_<name>`, so nothing is lost and nothing is silently overwritten either.
+    body = {}
+    for k, v in row.items():
+        body[f"row_{k}" if k in RESERVED else k] = v
+    body["t"] = round(time.time(), 3)
     body["prev"] = _PREV[0]
     body["hash"] = digest(body)
     fd = os.open(f, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
@@ -149,9 +176,9 @@ def append(row: dict, file: Path | None = None) -> dict:
                 except OSError as why:               # a filesystem without locks: the in-process lock still holds
                     if why.errno not in (errno.ENOLCK, errno.EOPNOTSUPP, errno.EINVAL):
                         raise
-            prev, repair = _state(f)
+            prev, repairs = _state(f)
             _PREV[0] = prev
-            if repair:
+            for repair in repairs:
                 _write(f, {"tool": "ledger_repair", "state": "REPAIRED", "detail": repair["why"],
                            "damaged": repair, "by": "ledger"})
             return _write(f, row)
