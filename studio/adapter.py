@@ -98,7 +98,9 @@ def provenance(body: Any, limit: int = 8) -> dict:
                         backends.append(v)
                 walk(v, depth + 1)
         elif isinstance(x, list):
-            for v in x[:500]:
+        # Uncapped on purpose: a cap here can miss a later `is_real_hardware: False` and return True where the
+        # truth is "mixed" — a limit that turns a contradiction into a clean hardware claim.
+            for v in x:
                 walk(v, depth + 1)
 
     walk(body, 0)
@@ -149,8 +151,16 @@ class Adapter:
         params = set(al.PARAM.findall(e["path"]))
         allowed = set(e["required"]) | set(e["optional"]) | params
         unknown = sorted(set(args) - allowed)
-        if unknown:
+        if unknown and e["schema_known"]:
             raise Refused(f"{name!r} does not take {unknown} (it takes {sorted(allowed) or 'nothing'})")
+        if unknown:
+            # BioQL never declared this entry's parameters, so Studio does not know that these are wrong. Reading
+            # "no declared parameters" as "takes nothing" refused every real argument and left the tool listed but
+            # unusable. The reserved names stay refused: the caller never chooses the route.
+            reserved = sorted(set(args) & {"endpoint", "path", "url", "params", "approved_by", "approve", "by"})
+            if reserved:
+                raise Refused(f"{name!r} will not take {reserved}: the route and the approval are the allowlist's, "
+                              f"never the caller's")
         missing = [k for k in e["required"] if args.get(k) in (None, "")]
         if missing:
             raise Refused(f"{name!r} needs {missing}")

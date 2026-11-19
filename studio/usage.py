@@ -60,9 +60,12 @@ BILLED = ("plan", "key", "local")
 
 MEASURE = "measure_at_api_rates"                  # a plan: the price is what the tokens would cost, not a charge
 CHARGE = "charged_to_api_key"
+BASIS_UNKNOWN = "basis_unknown"                   # a price arrived and nobody said how this engine is paid for
 COST_NOTE = ("a price is recorded only when the engine reported one. On a subscription plan Claude Code reports what "
              "the tokens would cost at API rates: that is a measure, not a charge (cost_basis=measure_at_api_rates). "
-             "Nothing here is estimated, and a call that reported no price has cost null, never 0.")
+             "With an API key the same number is the bill (charged_to_api_key), and a price from an engine nobody "
+             "classified is basis_unknown rather than either. Nothing here is estimated, and a call that reported "
+             "no price has cost null, never 0.")
 
 _LOCK = threading.RLock()
 
@@ -182,13 +185,20 @@ def add(engine: str, used: Any, kind: str = "ask", campaign: str = "", tool: str
            "in": got["in"], "out": got["out"], "cache": got["cache"], "cost": got["cost"], "turns": got["turns"],
            "model": (model or "").strip() or got["model"], "calls": max(1, int(calls)),
            "not_reported": got["not_reported"]}
-    row["cost_basis"] = None if row["cost"] is None else (CHARGE if row["billed"] == "key" else MEASURE)
+    # Three states here too: no price, a price whose basis is known, and a price from an engine nobody has
+    # classified. The third is not a measure — calling it one would state on the record that this number is not a
+    # charge, which is exactly what nobody knows.
+    row["cost_basis"] = None if row["cost"] is None else \
+        {"key": CHARGE, "plan": MEASURE, "local": MEASURE}.get(row["billed"] or "", BASIS_UNKNOWN)
     f = file or path_file()
     line = json.dumps(row, ensure_ascii=False, default=str) + "\n"
     with _locked(f):
+        # A write cut short leaves a line with no newline. Appending straight after it would glue this call to the
+        # fragment and lose BOTH: the damaged bytes stay (and stay counted as skipped), this row starts its own line.
+        torn = f.exists() and f.stat().st_size > 0 and f.open("rb").read()[-1:] != b"\n"
         fd = os.open(f, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
         with os.fdopen(fd, "a", encoding="utf-8") as fh:
-            fh.write(line)
+            fh.write(("\n" if torn else "") + line)
         big = f.stat().st_size > KEEP * 400
     if big:
         fold(file=f)                     # folds only what is older than every window; often that is nothing
@@ -331,10 +341,17 @@ def summary(now: float | None = None, file: Path | None = None) -> dict:
 
 
 def for_campaign(campaign: str, file: Path | None = None) -> dict:
-    """What one campaign cost — the question this meter exists to answer."""
+    """What one campaign cost — the question this meter exists to answer.
+
+    `calls` is the number of model calls, not the number of lines: a folded line stands for many, and a count of
+    lines would make a campaign look cheaper after a fold than before it."""
     want = (campaign or "").strip()
-    sel = [r for r in rows(file) if (r.get("campaign") or "") == want]
-    return {"campaign": want, "calls": len(sel), "totals": add_up(sel), "rows": sel, "cost_note": COST_NOTE}
+    res = read_rows(file)
+    sel = [r for r in res.or_default([]) if (r.get("campaign") or "") == want]
+    totals = add_up(sel)
+    return {"campaign": want, "calls": totals["calls"], "lines": len(sel), "totals": totals, "rows": sel,
+            "cost_note": COST_NOTE,
+            "source": {"state": res.state, "detail": res.detail, "skipped": res.meta.get("skipped", 0)}}
 
 
 def campaigns(file: Path | None = None) -> list[str]:

@@ -56,6 +56,16 @@ def test_nothing_in_the_module_prices_tokens(f):
     assert usage.summary(file=f)["all"]["cost"] is None
 
 
+def test_a_price_from_an_unclassified_engine_is_not_called_a_measure(f):
+    """`measure_at_api_rates` is a claim: it says this number is not a charge. Nobody knows that for an engine no
+    one has classified, so the basis is its own third value."""
+    row = usage.add("some-new-engine", {"total_cost_usd": 1.5}, file=f)
+    assert row["billed"] is None and row["cost"] == 1.5
+    assert row["cost_basis"] == usage.BASIS_UNKNOWN != usage.MEASURE
+    assert usage.add("ollama", {"total_cost_usd": 0.5}, file=f)["cost_basis"] == usage.MEASURE
+    assert usage.summary(file=f)["all"]["billed"]["unknown"]["cost"] == 1.5
+
+
 def test_an_unknown_engine_is_not_billed_to_a_key():
     """Agtr's billed() (meter.py:24) answers "key" for anything it does not know, inventing a bill."""
     assert usage.billed("some-new-engine") is None
@@ -151,6 +161,17 @@ def test_no_meter_yet_is_absent_and_an_unreadable_one_raises(f, tmp_path):
         usage.rows(d)
 
 
+def test_a_torn_line_does_not_eat_the_next_call(f):
+    """An append straight after an unterminated line would glue the new row to the fragment and lose both."""
+    usage.add("claude-code", CLAUDE, campaign="before", file=f)
+    with f.open("a") as fh:
+        fh.write('{"t": 1, "in": 5')                 # a crash during an append
+    usage.add("claude-code", CLAUDE, campaign="after", file=f)
+    assert usage.for_campaign("after", file=f)["calls"] == 1
+    assert usage.for_campaign("before", file=f)["calls"] == 1
+    assert usage.read_rows(f).meta["skipped"] == 1   # the damaged bytes stay, and stay counted
+
+
 def test_a_torn_line_is_counted_not_dropped_in_silence(f):
     usage.add("claude-code", CLAUDE, file=f)
     with f.open("a") as fh:
@@ -205,6 +226,9 @@ def test_the_fold_leaves_every_total_and_breakdown_unchanged(f):
     out = usage.fold(now=now, file=f)
     assert out["folded"] == 6 and out["into"] >= 2
     after = usage.summary(now=now, file=f)
+    for c in ("c-0", "c-1"):
+        got = usage.for_campaign(c, file=f)
+        assert got["calls"] == before_campaigns[c]["calls"] and got["lines"] < got["calls"]
     for window in ("today", "week", "month", "all"):
         assert after[window] == before[window], window
     for c in ("c-0", "c-1"):
@@ -284,6 +308,18 @@ def test_a_folded_line_that_reaches_into_a_window_is_not_folded_again(f):
     s = usage.summary(now=now, file=f)
     assert s["today"]["calls"] == 0 and s["week"]["calls"] == 0 and s["month"]["calls"] == 0
     assert s["all"]["calls"] == 2
+
+
+def test_the_fold_add_triggers_still_keeps_todays_rows(f, monkeypatch):
+    """`add` folds when the file grows past the cap. Even then, a row today's total needs survives."""
+    monkeypatch.setattr(usage, "KEEP", 0)                      # any size is "too big": the fold runs on every add
+    write_rows(f, [old_row(time.time() - 100 * 86400, campaign="old")])
+    usage.add("claude-code", CLAUDE, campaign="new", file=f)
+    rows = lines(f)
+    assert [r.get("folded", False) for r in rows] == [True, False]
+    assert usage.for_campaign("new", file=f)["calls"] == 1
+    s = usage.summary(file=f)
+    assert s["today"]["calls"] == 1 and s["all"]["calls"] == 2
 
 
 # ------------------------------------------------------------------ the summary's own shape

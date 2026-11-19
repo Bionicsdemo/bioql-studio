@@ -145,7 +145,9 @@ def _scope_read(doc: dict, key: str, origin: str, what: str) -> Resolution:
 
 def _servers(raw, scope: str, origin: str) -> dict[str, Server]:
     out = {}
-    for k, v in (raw or {}).items():
+    if not isinstance(raw, dict):            # a wrong type is reported by _scope_read, not read as servers here
+        return out
+    for k, v in raw.items():
         if isinstance(v, dict) and isinstance(k, str) and NAME.fullmatch(k):
             out[k] = Server(k, scope, origin, v, digest(v))
     return out

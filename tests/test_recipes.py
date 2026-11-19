@@ -123,10 +123,63 @@ def test_approval_fails_closed_on_everything_it_cannot_settle(monkeypatch):
     assert why and "allowlist could not be read" in why[0]
 
 
+def test_an_owner_recipe_that_declares_nothing_asks_a_person(own, store):
+    """A built-in with an empty `uses` is a reviewed statement. A saved one that names nothing is undeclared, and
+    undeclared fails closed — all the way through to the tick, not only in a hand-built dict."""
+    recipes.save_recipe("mystery", "Mystery", "Do the usual thing, you know the one.", file=own)
+    r = recipes.find("mystery", own)
+    assert r["declared"] is False and recipes.approval_needed(r)
+    run = Runner()
+    s = sched(run, store, own)
+    item = s.add("mystery", every="day", at="09:00")
+    assert s.tick(now=item["next"] + 1)["pending"] == [item["id"]]
+    assert run.calls == []
+
+
+def test_a_recipe_may_name_a_workflow_and_its_steps_are_checked_too(own, store):
+    dd = recipes.find("due_diligence")
+    assert dd["workflow"] == "due diligence pack"
+    assert recipes.workflow_tools("due diligence pack").resolved is True
+    assert "due_diligence_report" in recipes.workflow_tools("due diligence pack").value
+    # a workflow nobody has is UNRESOLVABLE, and that is a reason a person is needed — never "it reaches nothing"
+    assert recipes.workflow_tools("no such workflow").unresolvable is True
+    recipes.save_recipe("wf", "W", "Run the workflow I named.", workflow="no such workflow", file=own)
+    why = recipes.approval_needed(recipes.find("wf", own))
+    assert why and "could not be read" in why[0]
+    # and the workflow's own tools reach the approval decision
+    named = {"id": "x", "ask": "a", "declared": True, "uses": [], "needs": [],
+             "workflow": "due diligence pack"}
+    assert recipes.approval_needed(named, entries={})
+
+
+def test_a_schedule_whose_recipe_has_gone_is_never_handed_to_the_runner(own, store):
+    recipes.save_recipe("temp", "Temp", "A request that will stop existing.", needs=["status"], file=own)
+    run = Runner()
+    s = sched(run, store, own)
+    item = s.add("temp", every="day", at="09:00")
+    recipes.remove_recipe("temp", own)
+    got = s.tick(now=item["next"] + 1)
+    assert got["failed"] == [item["id"]] and got["fired"] == [] and got["pending"] == [] and run.calls == []
+    assert s.get(item["id"])["result"]["state"] == "FAILED"
+    assert s.run_now(item["id"], approved_by="heinz")["state"] == "FAILED" and run.calls == []
+
+
+def test_a_pending_record_stops_waiting_once_a_person_approved_it(store):
+    run = Runner()
+    s = sched(run, store)
+    item = s.add("admet_sweep", every="day", at="09:00")
+    s.tick(now=item["next"] + 1)
+    assert len(s.pending()) == 1
+    s.run_now(item["id"], approved_by="heinz")
+    assert s.pending() == []                                    # nothing is waiting any more
+    kept = s.pending(waiting=False)
+    assert len(kept) == 1 and kept[0]["state"] == "APPROVED_AND_RAN" and kept[0]["approved_by"] == "heinz"
+
+
 def test_the_built_in_sweeps_ask_a_person_and_the_read_only_ones_do_not():
     needs = {r["id"]: recipes.approval_needed(r) for r in recipes.builtin()}
-    assert needs["admet_sweep"] and needs["rerun_compare"]
-    assert needs["engine_changed"] == [] and needs["weekly_digest"] == [] and needs["due_diligence"] == []
+    assert needs["admet_sweep"] and needs["rerun_compare"] and needs["due_diligence"]
+    assert needs["engine_changed"] == [] and needs["weekly_digest"] == []
 
 
 # ------------------------------------------------------------------ a schedule approves nothing
@@ -149,12 +202,12 @@ def test_a_scheduled_recipe_that_needs_approval_produces_a_pending_record_and_no
 def test_no_path_out_of_tick_ever_passes_an_approval(store):
     run = Runner()
     s = sched(run, store)
-    for rid in ("engine_changed", "weekly_digest", "due_diligence"):
+    for rid in ("engine_changed", "weekly_digest"):
         s.add(rid, every="day", at="09:00")
     now = max(x["next"] for x in s.list()) + 1
     got = s.tick(now=now)
-    assert len(got["fired"]) == 3 and got["pending"] == []
-    assert len(run.calls) == 3
+    assert len(got["fired"]) == 2 and got["pending"] == [] and got["failed"] == []
+    assert len(run.calls) == 2
     assert {c["approved_by"] for c in run.calls} == {None}
     assert {c["by"] for c in run.calls} == {"schedule"}
 
@@ -265,7 +318,7 @@ def test_the_off_switch_holds(store, monkeypatch):
     item = s.add("engine_changed", every="day", at="09:00")
     monkeypatch.setenv(recipes.OFF, "1")
     got = s.tick(now=item["next"] + 1)
-    assert got == {"fired": [], "pending": [], "off": True, "error": None}
+    assert got == {"fired": [], "pending": [], "failed": [], "off": True, "error": None}
     assert run.calls == []
     assert s.start() is False and s.status()["off"] is True
     assert s.get(item["id"])["next"] == item["next"]             # the clock did not even move
@@ -323,11 +376,15 @@ def test_no_store_yet_is_absent_not_an_error(store):
 
 
 # ------------------------------------------------------------------ the thread
-def test_one_thread_and_it_stops(store, monkeypatch):
+def test_one_thread_runs_what_is_due_exactly_once_and_stops(store, monkeypatch):
     monkeypatch.setattr(recipes, "TICK", 0.05)
     run = Runner()
     s = sched(run, store)
     item = s.add("engine_changed", every="day", at="09:00")
+    with store.open("r+") as fh:                                # already overdue, so the thread has work at once
+        got = json.load(fh)
+    got["items"][0]["next"] = time.time() - 5
+    store.write_text(json.dumps(got))
     try:
         assert s.start() is True
         assert s.start() is False                               # one thread, not two
@@ -339,4 +396,60 @@ def test_one_thread_and_it_stops(store, monkeypatch):
     finally:
         s.stop()
     assert s.status()["running"] is False
-    assert item["next"] > time.time() or run.calls              # it either had nothing due yet, or it ran it once
+    assert len(run.calls) == 1 and run.calls[0]["approved_by"] is None
+    assert s.get(item["id"])["next"] > time.time()
+
+
+def test_a_store_item_carrying_its_own_approval_still_reaches_the_runner_with_none(store):
+    """An approval is something a person gives to a CALL. A field in a file is not a person."""
+    run = Runner()
+    s = sched(run, store)
+    item = s.add("engine_changed", every="day", at="09:00")
+    got = json.loads(store.read_text())
+    got["items"][0]["approved_by"] = "heinz"                    # forged in the store
+    got["items"][0]["approval"] = True
+    store.write_text(json.dumps(got))
+    assert s.tick(now=item["next"] + 1)["fired"] == [item["id"]]
+    assert run.calls[0]["approved_by"] is None
+
+
+def test_a_daily_task_nobody_approves_keeps_one_waiting_record(store):
+    run = Runner()
+    s = sched(run, store)
+    item = s.add("admet_sweep", every="day", at="09:00")
+    when = item["next"] + 1
+    for day in range(4):
+        s.tick(now=when + day * 86400)
+    pend = s.pending()
+    assert len(pend) == 1 and pend[0]["slots"] == 4 and pend[0]["first"] <= pend[0]["t"]
+    assert run.calls == []
+
+
+def test_a_run_and_a_failure_are_on_the_record_with_who_approved(store, studio_home):
+    s = sched(Runner(), store)
+    item = s.add("admet_sweep", every="day", at="09:00")
+    s.tick(now=item["next"] + 1)                                 # it waits first
+    out = s.run_now(item["id"], approved_by="heinz")
+    assert out["state"] == "RAN" and out["record"]["state"] in ("RECORDED", "UNSIGNED")
+    rows = [json.loads(x) for x in (studio_home / "runs.jsonl").read_text().splitlines()]
+    ran = [r for r in rows if r.get("tool") == "schedule_run"]
+    assert ran and ran[-1]["approved_by"] == "heinz" and ran[-1]["recipe"] == "admet_sweep"
+    assert [r for r in rows if r.get("tool") == "schedule_pending"]          # the wait is on it too
+
+
+def test_one_item_that_cannot_be_fired_does_not_drop_the_others(store, monkeypatch):
+    run = Runner()
+    s = sched(run, store)
+    a = s.add("engine_changed", every="day", at="09:00")
+    b = s.add("weekly_digest", every="day", at="09:00")
+    real = s._fire
+
+    def once(x, **kw):
+        if x["id"] == a["id"]:
+            raise RuntimeError("the store blinked")
+        return real(x, **kw)
+
+    monkeypatch.setattr(s, "_fire", once)
+    got = s.tick(now=max(a["next"], b["next"]) + 1)
+    assert got["failed"] == [a["id"]] and got["fired"] == [b["id"]]
+    assert s.last_error and "blinked" in s.last_error

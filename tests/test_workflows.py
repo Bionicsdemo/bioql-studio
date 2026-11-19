@@ -225,7 +225,7 @@ def test_campaign_itself_accepts_the_plan(fake_bioql):
 
 
 def test_an_unresolved_reference_is_marked_not_guessed():
-    p = wf.plan("target to candidate", {"target": "GLP-1R"}, ad())
+    p = wf.plan("target to candidate", {"target": "GLP-1R", "target_structure_or_sequence": "4ZUD"}, ad())
     dock = p["runs"][1]
     assert dock["args"]["ligand_smiles"] == "$1.value.result.smiles"      # the reference, not a molecule
     assert "unresolved" in dock["why"] and "$1.value.result.smiles" in dock["why"]
@@ -234,7 +234,7 @@ def test_an_unresolved_reference_is_marked_not_guessed():
         (2, "ligand_smiles", 1), (3, "smiles", 1)]
     assert all(r["verified"] is False for r in refs)
     # and the seed value is a real value, never a reference
-    assert p["runs"][1]["args"]["target_structure_or_sequence"] == "GLP-1R"
+    assert p["runs"][1]["args"]["target_structure_or_sequence"] == "4ZUD"
 
 
 def test_a_step_with_no_recorded_parameters_says_so_in_the_plan():
@@ -268,10 +268,14 @@ def test_a_smuggled_argument_rejects_the_whole_plan(monkeypatch):
 
 
 def test_an_entry_that_lost_its_parameter_schema_rejects_the_plan_instead_of_dropping_the_argument():
-    """What the owner's own allowlist does to `render_2d`: the file's `required: []` shadows DEFAULTS' `["smiles"]`,
-    so the entry takes nothing. The plan is rejected naming it — the argument is NOT quietly dropped."""
+    """An entry that DECLARES it takes nothing rejects the plan naming it — the argument is not quietly dropped.
+
+    The distinction matters and it is `schema_known`. An entry discovered from BioQL's source declares no parameter
+    list, and reading that emptiness as "takes nothing" refused every real argument to 414 of the 502 entries: they
+    stayed listed and stopped working, which from the outside looks exactly like a missing tool. A declared empty
+    schema still refuses; an undeclared one lets the argument through and says the schema is not recorded."""
     ents = entries(render_2d={"method": "POST", "path": "/api/render/2d", "kind": "local",
-                              "required": [], "optional": []})
+                              "schema_known": True, "required": [], "optional": []})
     with pytest.raises(wf.PlanRejected) as e:
         wf.plan("molecule at a glance", {"smiles": "CCO"}, Adapter("http://127.0.0.1:1", ents, log=False))
     assert "render_2d" in str(e.value) and "does not take ['smiles']" in str(e.value)
@@ -313,15 +317,16 @@ def test_cost_says_what_each_step_is_and_never_a_number():
     assert c["steps"][0]["could_reach_real_hardware"] == wf.HW_NO
     assert c["steps"][2]["could_reach_real_hardware"] == wf.HW_PERSON
     assert c["steps"][2]["registry_cost_tier"] == "high"      # BioQL's own word, quoted
-    assert c["runnable_as_it_stands"] is True
+    assert c["no_unresolved_references"] is True
+    assert c["order_enforced"] is False and "neither orders" in c["order_note"]
     for s in c["steps"]:                                       # nothing numeric about price or duration
         assert set(s) & {"seconds", "minutes", "timeout", "usd", "dollars", "credits"} == set()
 
 
 def test_cost_marks_the_steps_that_cannot_run_yet():
-    p = wf.plan("target to candidate", {"target": "GLP-1R"}, ad())
+    p = wf.plan("target to candidate", {"target": "GLP-1R", "target_structure_or_sequence": "4ZUD"}, ad())
     c = wf.cost(p, entries())
-    assert c["unresolved_total"] == 2 and c["runnable_as_it_stands"] is False
+    assert c["unresolved_total"] == 2 and c["no_unresolved_references"] is False
     assert [s["blocked_until_resolved"] for s in c["steps"]] == [False, True, True]
     assert c["steps"][1]["unresolved"][0]["reference"] == "$1.value.result.smiles"
 
@@ -344,7 +349,7 @@ def test_cost_declares_a_declared_hardware_entry_as_such():
 def test_cost_of_a_tool_that_is_not_in_the_list_says_unknown_not_cheap():
     c = wf.cost({"title": "T", "criteria": ["c"], "runs": [{"tool": "ghost", "args": {}, "why": "w"}]}, entries())
     assert c["steps"][0]["class"] == wf.UNKNOWN_TOOL and c["steps"][0]["needs_person"] is True
-    assert c["unknown_tools"] == 1 and c["runnable_as_it_stands"] is False
+    assert c["unknown_tools"] == 1
     assert "unknown" in c["steps"][0]["could_reach_real_hardware"]
 
 
@@ -357,3 +362,90 @@ def test_an_entry_whose_parameter_schema_cannot_take_the_step_is_reported_too():
     assert row["missing"] == [] and row["usable"] is False
     assert row["argument_problems"] == [{"step": 1, "tool": "render_2d",
                                          "reason": "does not take ['smiles'] (it takes nothing)"}]
+
+
+# ------------------------------------------------------------------ 6. what the allowlist does not record
+def test_discoverys_boilerplate_is_not_a_purpose_and_is_not_searchable():
+    """128 of the 193 live entries carry exactly one sentence as their `why`. Reading it as a purpose would make a
+    third of the catalogue answer to the word "window"."""
+    ents = entries()
+    c = wf.catalogue(ents)
+    chembl = [e for e in wf.cards(c) if e["name"] == "screening_chembl"][0]
+    assert chembl["purpose_recorded"] is False and wf.BOILERPLATE in chembl["purpose"]
+    assert c["purpose_not_recorded"] >= 5
+    assert wf.search("window", ents) == []
+
+
+def test_one_route_under_two_names_is_said_to_be_one_route():
+    ents = entries(pipeline_admet_standalone={"method": "POST", "path": "/api/pipeline/admet_standalone",
+                                              "via": "submit", "kind": "compute"})
+    c = wf.catalogue(ents)
+    by_name = {e["name"]: e for e in wf.cards(c)}
+    assert by_name["admet_standalone"]["same_route_as"] == ["pipeline_admet_standalone"]
+    assert by_name["pipeline_admet_standalone"]["same_route_as"] == ["admet_standalone"]
+    assert c["duplicate_routes"]["POST /api/pipeline/admet_standalone"] == ["admet_standalone",
+                                                                            "pipeline_admet_standalone"]
+    # the duplicate is the one with no schema: both are listed, and the difference is visible
+    assert by_name["pipeline_admet_standalone"]["parameters_recorded"] is False
+
+
+def test_the_second_level_is_labelled_as_studios_own_reading():
+    c = wf.catalogue(entries())
+    jobs = [a for a in c["areas"] if a["area"] == "jobs"][0]
+    assert "not stated by BioQL" in jobs["group_source"]
+    assert wf.family_of("/api/quantum/peptide_design") == "quantum/peptide"
+    assert wf.family_of("/api/screening/chembl") == "screening"
+    assert wf.family_of("/health") == "health"
+    assert set(c["group_counts"]["screening"]) == {"screening", "docking", "sar"}
+
+
+def test_search_returns_everything_unless_a_limit_is_asked_for():
+    ents = {f"thing_{i}": al._norm(f"thing_{i}", {"method": "GET", "path": f"/api/motifs/{i}", "kind": "status"})
+            for i in range(60)}
+    assert len(wf.search("thing", ents)) == 60
+    assert len(wf.search("thing", ents, limit=5)) == 5
+
+
+def test_a_seed_value_that_looks_like_a_reference_is_refused():
+    with pytest.raises(wf.PlanRejected) as e:
+        wf.plan("molecule at a glance", {"smiles": "$1.value.result.smiles"}, ad())
+    assert "looks like a step reference" in str(e.value)
+
+
+def test_a_read_is_not_said_to_be_missing_a_body():
+    """Two of the four steps of the diligence pack are GET reads: a GET takes no body, and saying the allowlist lost
+    one would be a false finding."""
+    p = wf.plan("due diligence pack", {"target_or_product": "GLP-1R", "jurisdiction": "US"}, ad())
+    assert wf.NO_PARAMS not in p["runs"][0]["why"] and wf.NO_PARAMS not in p["runs"][1]["why"]
+    assert wf.NO_PARAMS in p["runs"][3]["why"]               # the dossier export is a compute route with no schema
+    c = wf.cost(p, entries())
+    assert [s["sent_without_a_body"] for s in c["steps"]] == [False, False, False, True]
+
+
+def test_one_route_under_two_names_that_disagree_about_approval_is_flagged():
+    """`chem_amp_bms` (local, no approval) and `amp_bms_md` (compute, approval) are one POST on the real list: the
+    gate then depends on which name is used."""
+    ents = entries(chem_amp_bms={"method": "POST", "path": "/api/chem/amp_bms", "kind": "local"},
+                   amp_bms_md={"method": "POST", "path": "/api/chem/amp_bms", "via": "submit", "kind": "compute"})
+    c = wf.catalogue(ents)
+    by_name = {e["name"]: e for e in wf.cards(c)}
+    assert by_name["chem_amp_bms"]["route_rules_disagree"] is True
+    assert by_name["amp_bms_md"]["route_rules_disagree"] is True
+    assert c["routes_whose_rules_disagree"]["POST /api/chem/amp_bms"] == ["amp_bms_md", "chem_amp_bms"]
+    assert by_name["admet_standalone"]["route_rules_disagree"] is False
+
+
+def test_a_search_row_does_not_print_a_group_the_catalogue_would_merge():
+    assert "group" not in wf.search("admet_standalone", entries())[0]
+
+
+def test_the_second_level_uses_bioqls_own_route_directory_when_there_is_one():
+    assert wf.family_of("/api/quantum/docking/boltz2") == "quantum/docking"
+    assert wf.family_of("/api/pipeline/job/{job_id}/result") == "pipeline/job"
+
+
+def test_a_compute_step_with_no_recorded_parameters_is_flagged_as_sent_with_no_body():
+    p = wf.plan("screen a library", {}, ad())
+    c = wf.cost(p, entries())
+    assert [s["sent_without_a_body"] for s in c["steps"]] == [True, True, True]
+    assert c["sent_without_a_body"] == 3

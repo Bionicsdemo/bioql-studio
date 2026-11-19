@@ -48,7 +48,7 @@ AREA_ORDER = [a for a, _ in AREAS] + ["other"]
 
 READ, LOCAL, PERSON, UNKNOWN_TOOL = "read", "local computation", "needs a person", "not in the allowlist"
 # Hardware, in words, never as a probability. BioQL's registry has no field that says whether a route reaches a QPU.
-HW_NO = "no: a read or a computation the owner declared local"
+HW_NO = "no: a read, or a computation classified local in the allowlist"
 HW_PERSON = "a person decides: nothing in BioQL's registry says whether this route reaches a QPU"
 HW_DECLARED = "declared `hardware` in the allowlist: a person must approve it"
 HW_ASKED = "the arguments ask for real hardware: a person must approve it"
@@ -71,8 +71,8 @@ BOILERPLATE = "used by BioQL's own window"
 # A step whose entry records no parameters. Empty `required`/`optional` on a route discovered from BioQL's window
 # means its body schema was never recorded, NOT that the route takes nothing (tools/discover_surface.py reads only
 # the path parameters). So such a step carries no body, and says so.
-NO_PARAMS = ("the allowlist records no parameters for this entry, so this run carries none; "
-             "BioQL's own window does send a body here")
+NO_PARAMS = ("the allowlist records no parameters for this entry — unknown, not none — so this run carries no "
+             "arguments; what BioQL's own window sends here was never recorded")
 REF_UNVERIFIED = "the path into the earlier result is not verified against a real BioQL body"
 
 
@@ -113,12 +113,18 @@ def _purpose(e: dict) -> tuple[str, bool]:
 
 
 def family_of(path: str) -> str:
-    """What the route is about, one level below its area — the second level of the catalogue, because `quantum` alone
-    is 79 entries. Derived from the path by Studio (`/api/quantum/gpu_vqe` -> `quantum/gpu`): a reading of BioQL's own
-    naming, not something BioQL states, which is why every group carries `group_source`."""
+    """What the route is about, one level below its area — the second level, because `quantum` alone is 79 entries.
+
+    Where BioQL's route HAS a directory (`/api/quantum/docking/boltz2`, 46 of the 193) that directory is the group:
+    BioQL's own grouping, read rather than invented. For a two-segment route the leading word of the leaf is used
+    (`/api/quantum/peptide_design` -> `quantum/peptide`), and that IS a guess at BioQL's naming — which is why every
+    group carries `group_source` and a lone sub-group is folded back into its head.
+    """
     parts = [p for p in path.split("/") if p and p != "api"]
     if not parts:
         return path or "other"
+    if len(parts) > 2:
+        return f"{parts[0]}/{parts[1]}"
     head, leaf = parts[0], parts[-1]
     bits = re.split(r"[_-]", leaf)
     return f"{head}/{bits[0]}" if len(parts) > 1 and len(bits) > 1 and bits[0] != head else head
@@ -177,14 +183,28 @@ def catalogue(entries: dict[str, dict] | None = None) -> dict:
     by_route: dict[tuple, list[str]] = {}
     for c in cards:
         by_route.setdefault((c["method"], c["path"]), []).append(c["name"])
+    rules = {k: {(x["kind"], x["needs_person"]) for x in cards if (x["method"], x["path"]) == k} for k in by_route}
     for c in cards:
         same = [n for n in by_route[(c["method"], c["path"])] if n != c["name"]]
         c["same_route_as"] = same
+        # Two names for one route that disagree about approval: calling it by one name asks a person and by the other
+        # does not, so the gate depends on the spelling. `chem_amp_bms` (local) and `amp_bms_md` (compute) are one
+        # POST /api/chem/amp_bms.
+        c["route_rules_disagree"] = bool(same) and len(rules[(c["method"], c["path"])]) > 1
     areas = []
     for a in AREA_ORDER:
         mine = [c for c in cards if c["area"] == a]
         if not mine:
             continue
+        # A group of one is not a group: `quantum/flexible` with a single entry in it is noise, so a lone
+        # sub-group falls back to its head (`quantum`). Grouping exists to make 79 entries readable; splitting them
+        # into 41 slivers is the same unusable flat list with more lines.
+        tally: dict[str, int] = {}
+        for c in mine:
+            tally[c["group"]] = tally.get(c["group"], 0) + 1
+        for c in mine:
+            if tally[c["group"]] == 1 and "/" in c["group"]:
+                c["group"] = c["group"].split("/")[0]
         gs: dict[str, list[dict]] = {}
         for c in mine:
             gs.setdefault(c["group"], []).append(c)
@@ -203,6 +223,8 @@ def catalogue(entries: dict[str, dict] | None = None) -> dict:
             "parameters_not_recorded": sum(1 for c in cards if not c["parameters_recorded"]),
             "purpose_not_recorded": sum(1 for c in cards if not c["purpose_recorded"]),
             "duplicate_routes": {f"{m} {p}": sorted(v) for (m, p), v in sorted(by_route.items()) if len(v) > 1},
+            "routes_whose_rules_disagree": {f"{m} {p}": sorted(v) for (m, p), v in sorted(by_route.items())
+                                            if len(v) > 1 and len(rules[(m, p)]) > 1},
             "areas": areas, "area_order": list(AREA_ORDER), "excluded": excluded}
 
 
@@ -250,8 +272,9 @@ def search(q: str, entries: dict[str, dict] | None = None, limit: int | None = N
             score += 400                       # every query token is in the name
         if not score:
             continue
-        out.append({"name": name, "area": area, "group": family_of(e["path"]), "kind": e["kind"],
-                    "class": _klass(e), "needs_person": bool(e["approval"] or e["kind"] == "hardware"),
+        # No `group` here on purpose: the catalogue folds a lone sub-group into its head, so a group printed from
+        # one entry alone would not be the group the catalogue shows.
+        out.append({"name": name, "area": area, "kind": e["kind"], "class": _klass(e), "needs_person": bool(e["approval"] or e["kind"] == "hardware"),
                     "purpose": purpose, "purpose_recorded": recorded,
                     "matched_on": sorted(hit), "score": score})
     out.sort(key=lambda r: (-r["score"], r["name"]))
@@ -440,10 +463,18 @@ def plan(workflow_name: str, seed_args: dict | None = None, adapter: Adapter | N
         why = s["why"]
         if refs:
             why += (f" — unresolved until the earlier step runs: {', '.join(refs)} ({REF_UNVERIFIED})")
-        if not args:
+        if not args and ents_kind(a, s["tool"]) in ("compute", "hardware"):
+            # Only where a body is the question. A GET read takes none, and saying otherwise about `tools_registry`
+            # would be a sentence that reads as a finding and is simply false.
             why += f" — {NO_PARAMS}"
         runs.append({"tool": s["tool"], "args": args, "why": why})
     return {"title": wf["title"], "criteria": list(wf["criteria"]), "runs": runs}
+
+
+def ents_kind(a: Adapter, tool: str) -> str:
+    """The kind the adapter's own entry records, so `plan()` never re-reads the allowlist behind its back."""
+    e = a.entries.get(tool) or {}
+    return str(e.get("kind") or "")
 
 
 def unresolved(plan_dict: dict) -> list[dict]:
@@ -503,7 +534,7 @@ def cost(plan_dict: dict, entries: dict[str, dict] | None = None) -> dict:
             # will run correctly — `campaign.execute` submits every run to a thread pool with no ordering and no
             # reference resolution, so a plan with references would POST the literal "$1..." to BioQL, and even a
             # plan without them has its steps run in no particular order.
-            "no_unresolved_references": not refs and not any(s["class"] == UNKNOWN_TOOL for s in steps),
+            "no_unresolved_references": not refs,
             "order_enforced": False,
             "order_note": "campaign.execute runs the steps in a pool: it neither orders them nor fills a reference",
             "hardware": "a person decides: no field of BioQL's registry says whether a route reaches a QPU"}

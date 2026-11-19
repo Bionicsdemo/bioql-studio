@@ -49,6 +49,11 @@ ADMET = {
                 "half_life_obach": float("nan"),
             },
         },
+        "admet_quantum": {
+            "backend": "Bionics LightGBM (classical ML)",
+            "quantum_engine": "classical LightGBM ensemble (no quantum hardware in this prediction)",
+            "raw_predictions": {"ames": 0.1337},
+        },
     }],
     "fda_report": {"status": "no record", "source": "openFDA /drug/drugsfda.json",
                    "note": "queried and the source has no approval for this structure"},
@@ -307,6 +312,17 @@ def test_render_2d_becomes_a_molecule2d_block_only_while_the_format_says_png():
     check_schema(other)
 
 
+def test_a_chart_image_is_not_passed_off_as_the_molecule():
+    """`visualization.charts[].image_base64` is a ranking plot. There is no image block for a chart, so the card
+    says so rather than drawing the plot where the compound belongs."""
+    spec = card({"smiles": "CCO",
+                 "visualization": {"charts": [{"title": "ranking", "image_base64": "iVBORw0KGgo"}]}})
+    two_d = blocks_of(spec, "molecule2d")
+    assert two_d and "png_base64" not in two_d[0] and two_d[0]["smiles"] == "CCO"
+    assert "no block type" in absent_about(spec, "chart image")[0]["why"]
+    check_schema(spec)
+
+
 def test_pdb_text_is_not_offered_as_sdf():
     """`structure_3d.pdb` is protein text; this block type carries SDF. Calling it SDF would hand the window a file
     it cannot open and label it a structure."""
@@ -338,12 +354,22 @@ def test_a_receipt_becomes_a_job_card_and_the_poll_route_is_a_fact_not_a_link():
     assert not blocks_of(spec, "links")
 
 
-def test_only_an_absolute_url_becomes_a_link():
-    spec = card({"downloads": {"files": {"design.pdb": "https://example.invalid/d.pdb",
-                                         "notes.txt": "/local/route"},
-                               "session_id": "s1"}})
-    items = blocks_of(spec, "links")[0]["items"]
-    assert items == [{"label": "design.pdb", "url": "https://example.invalid/d.pdb"}]
+def test_a_declared_artifact_is_a_link_and_a_bare_route_is_not():
+    """BioQL's own `ArtifactDownloads` keeps `downloads.files` values relative (`/api/...`, resolved against the
+    backend) and still renders them as links, so an absolute-only rule would make this block never fire on a real
+    payload. A `*_url` anywhere else is a route, and only an absolute one is offered: `poll_url` stays a fact,
+    because Studio follows the allowlist's route and never one a body names."""
+    spec = card({"downloads": {"files": {"design.pdb": "/api/download/design.pdb",
+                                         "report.html": "https://example.invalid/r.html"},
+                               "session_id": "s1"},
+                 "poll_url": "/api/pipeline/job/x", "report_url": "https://example.invalid/report"})
+    urls = {i["label"]: i["url"] for i in blocks_of(spec, "links")[0]["items"]}
+    assert urls == {"design.pdb": "/api/download/design.pdb",
+                    "report.html": "https://example.invalid/r.html",
+                    "report_url": "https://example.invalid/report"}
+    rows = {r["label"]: r["value"] for b in blocks_of(spec, "facts") for r in b["rows"]}
+    assert rows["poll_url"] == "/api/pipeline/job/x"
+    assert rows["downloads.session_id"] == "s1"
 
 
 # --------------------------------------------------------------------------- rule 5: the fallback
@@ -387,6 +413,7 @@ def test_the_tool_name_informs_the_subtitle_and_nothing_else():
     honest = card(ADMET, tool="admet_standalone")
     liar = card(ADMET, tool="ibm_heron_real_hardware_vqe")
     assert honest["kind"] == liar["kind"] == "admet"
+    assert honest["title"] == liar["title"]
     assert honest["blocks"] == liar["blocks"]
     assert honest["provenance"] == liar["provenance"]
     assert "ibm_heron_real_hardware_vqe" in liar["subtitle"]
@@ -417,7 +444,8 @@ def test_exactly_at_the_table_cap_nothing_is_announced():
 def test_the_facts_cap_says_how_many_were_left_out():
     spec = card({f"field_{i}": i for i in range(MAX_FACTS + 1)})
     assert sum(len(b["rows"]) for b in blocks_of(spec, "facts")) == MAX_FACTS
-    assert any(f"1 of {MAX_FACTS + 1} facts are not shown" in b["text"] for b in blocks_of(spec, "text"))
+    assert any(f"1 of {MAX_FACTS + 1} facts" in b["text"] and "not shown" in b["text"]
+               for b in blocks_of(spec, "text"))
 
 
 def test_exactly_at_the_facts_cap_nothing_is_announced():
@@ -442,3 +470,136 @@ def test_an_iteration_series_carries_the_numbers_the_payload_wrote():
                                                  {"iteration": 2, "convergence": 0.75}]}})
     s = blocks_of(spec, "series")
     assert s and s[0]["points"] == [[1, 0.25], [2, 0.75]]
+
+
+# --------------------------------------------------------------------------- depth: nothing is lost in silence
+def test_a_twelve_stage_pipeline_five_levels_deep_loses_nothing():
+    """The shape BioQL's own registry gates on is `stages.<n>.<field>`, and a hand-unrolled two-level pass loses the
+    third. Every leaf is either in the card or counted in a block that says it was cut."""
+    payload = {"pipeline": "deep_v1",
+               "stages": {f"{i}_stage": {"metrics": {"inner": {"deepest": {"value_kcal_mol": -i}}},
+                                         "ok": True, "name": f"s{i}"} for i in range(1, 13)}}
+    spec = card(payload, tool="deep_tool")
+    check_schema(spec)
+    flat = json.dumps(spec)
+    for i in range(1, 13):
+        assert f"{i}_stage" in flat, i
+    rows = {r["label"]: r for b in blocks_of(spec, "facts") for r in b["rows"]}
+    cut = " ".join(b["text"] for b in blocks_of(spec, "text"))
+    for i in range(1, 13):
+        label = f"stages.{i}_stage.metrics.inner.deepest.value_kcal_mol"
+        assert label in rows or "not shown" in cut, label
+    assert rows["stages.1_stage.metrics.inner.deepest.value_kcal_mol"]["unit"] == "kcal/mol"
+
+
+def test_a_list_nested_two_dicts_down_is_drawn():
+    spec = card({"a": {"b": [1, 2, 3]}, "c": {"d": {"e": {"f": "g"}}}})
+    flat = json.dumps(spec)
+    assert "a.b" in flat and "1, 2, 3" in flat and "c.d.e.f" in flat and "g" in flat
+    check_schema(spec)
+
+
+def test_a_long_list_of_scalars_says_how_many_it_cut():
+    spec = card({"smiles_list": [f"C{i}" for i in range(60)]})
+    assert any("20 of 60 entries" in b["text"] for b in blocks_of(spec, "text"))
+    check_schema(spec)
+
+
+def test_a_nested_honest_value_is_one_absent_block_with_its_reason():
+    """Two blocks for one field — one with BioQL's reason, one saying "no reason given" — is the degradation this
+    module exists to stop, one level down."""
+    spec = card({"pk": {"half_life": {"value": None, "null_reason": "no hepatocyte model"}}})
+    hits = absent_about(spec, "half_life")
+    assert len(hits) == 1 and hits[0]["why"] == "no hepatocyte model"
+    assert not absent_about(spec, "null_reason")
+    check_schema(spec)
+
+
+def test_a_nested_honest_value_keeps_its_unit_and_its_method():
+    spec = card({"pk": {"half_life": {"value": 6.2, "units": "h", "method": "PK predictor",
+                                      "is_estimate": True, "ci90": [4.0, 9.1]}}})
+    row = [r for b in blocks_of(spec, "facts") for r in b["rows"] if r["label"] == "pk.half_life"][0]
+    assert row["value"] == 6.2 and row["unit"] == "h"
+    # the three fields that say whether the number is measured or guessed travel with it
+    assert "PK predictor" in row["note"] and "estimate" in row["note"] and "ci90 4.0" in row["note"]
+    assert not [r for b in blocks_of(spec, "facts") for r in b["rows"] if r["label"].endswith("units")]
+    check_schema(spec)
+
+
+def test_an_orphan_units_key_is_still_data():
+    spec = card({"exposure_units": "ng/mL"})
+    rows = {r["label"]: r["value"] for b in blocks_of(spec, "facts") for r in b["rows"]}
+    assert rows["exposure_units"] == "ng/mL"
+
+
+# --------------------------------------------------------------------------- detectors are not gated on the kind
+def test_a_pipeline_carrying_a_structure_still_gets_the_structure():
+    """`scoring: {"admet": 0.3}` is a WEIGHT, not an ADMET result; reading it as one once turned a 12-stage pipeline
+    into an ADMET card with no structure in it. Every detector runs, whatever the kind says."""
+    payload = {"pipeline": "unified_drug_development", "stages": {"2_admet": {"data": {"logp": 1.2}}},
+               "scoring": {"admet": 0.3, "docking": 0.7},
+               "mol_3d": "\n  RDKit 3D\n\n  1  0  0  0  0  0  0  0  0  0999 V2000\nM  END\n"}
+    spec = card(payload)
+    assert spec["kind"] == "pipeline"
+    assert blocks_of(spec, "molecule3d"), "the structure is drawn even though the kind is not 'molecule'"
+    rows = {r["label"]: r["value"] for b in blocks_of(spec, "facts") for r in b["rows"]}
+    assert rows["scoring.admet"] == 0.3 and rows["stages.2_admet.data.logp"] == 1.2
+    check_schema(spec)
+
+
+def test_a_pipeline_name_alone_does_not_make_a_pipeline_card():
+    """The ADMET envelope carries `pipeline: "ADMET_STANDALONE"` as a NAME. Reading a name as a shape is the
+    dispatch-by-name this module refuses; the name titles the card and the shape decides the kind."""
+    assert card(ADMET)["kind"] == "admet"
+    assert "ADMET_STANDALONE" in card(ADMET)["title"]
+
+
+def test_the_quantum_twin_is_drawn_too_and_claims_nothing():
+    """The real run carried an identical LightGBM payload under both `_classical` and `_quantum`. The card draws
+    both — hiding one would hide the defect — and the quantum NAME still buys no provenance."""
+    spec = card(ADMET)
+    said = " ".join(b["text"] for b in blocks_of(spec, "text"))
+    assert "admet_classical.raw_predictions" in said and "admet_quantum.raw_predictions" in said
+    assert spec["provenance"]["is_real_hardware"] is None
+
+
+def test_the_real_pdb_keys_are_recognised_and_capped():
+    """`structure_3d.pdb`, `pdb_data` and `complex_pdb` are the keys the registry gates on. PDB text is not SDF, and
+    a 40 000-character file is not a fact."""
+    pdb = "HEADER    X\n" + "ATOM      1  N   MET A   1       0.0   0.0   0.0\n" * 900
+    spec = card({"structure_3d": {"pdb": pdb, "plddt": 91.2, "length_aa": 285}})
+    assert spec["kind"] == "structure"
+    assert not blocks_of(spec, "molecule3d")
+    assert "SDF only" in absent_about(spec, "molecule3d")[0]["why"]
+    text = [b["text"] for b in blocks_of(spec, "text") if "ATOM" in b["text"]][0]
+    assert "further characters are not shown" in text
+    rows = {r["label"]: r for b in blocks_of(spec, "facts") for r in b["rows"]}
+    assert rows["structure_3d.plddt"]["value"] == 91.2 and rows["structure_3d.length_aa"]["unit"] == "aa"
+    check_schema(spec)
+
+
+def test_the_catalogue_keeps_its_entries_and_its_title():
+    spec = card(MOTIFS, tool="motifs_list")
+    assert spec["title"] == "Catalogue", "a card is never titled after the first entry of a nested catalogue"
+    flat = json.dumps(spec)
+    for name in ("methyl", "ethyl", "phenyl"):
+        assert name in flat, name
+
+
+def test_a_bare_chain_letter_is_not_an_angstrom():
+    """`contacts_chain_A` is a chain. A suffix that can mean something other than a unit is not a unit."""
+    rows = {r["label"]: r for b in blocks_of(card({"contacts_chain_A": 12, "bsa_A2": 940.0}), "facts")
+            for r in b["rows"]}
+    assert "unit" not in rows["contacts_chain_A"]
+    assert rows["bsa_A2"]["unit"] == "\u00c5\u00b2"
+
+
+def test_the_callers_provenance_cannot_turn_mixed_into_true():
+    """The adapter's own walk caps long lists at 500, so it can see one claim where this walk sees two that
+    disagree. Letting it override would turn a contradiction into a clean `true`."""
+    payload = {"rows": [{"n": i} for i in range(900)] + [{"is_real_hardware": False}], "is_real_hardware": True}
+    spec = card(payload, meta={"provenance": {"is_real_hardware": True, "ibm_job_ids": [], "backends": []}})
+    assert spec["provenance"]["is_real_hardware"] == "mixed"
+    other = card({"is_real_hardware": True, "ibm_job_id": "j1"},
+                 meta={"provenance": {"is_real_hardware": "mixed", "ibm_job_ids": []}})
+    assert other["provenance"]["is_real_hardware"] == "mixed"

@@ -47,7 +47,7 @@ def _walk(o: Any, path: str = "$", depth: int = 0, limit: int = 7):
         for k, v in o.items():
             yield from _walk(v, f"{path}.{k}", depth + 1, limit)
     elif isinstance(o, list):
-        for i, v in enumerate(o[:200]):
+        for i, v in enumerate(o[:20000]):   # a cap here hides a contradiction past it
             yield from _walk(v, f"{path}[{i}]", depth + 1, limit)
 
 

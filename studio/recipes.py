@@ -28,7 +28,7 @@ without an approval of their own. This is the first gate, not the only one.
 
     recipes.listed()                    the built-ins and the owner's own
     Schedules(run=...).add("admet_sweep", every="weekday", at="07:30")
-    Schedules(run=...).tick()           {"fired": [...], "pending": [...], "off": False, "error": None}
+    Schedules(run=...).tick()           {"fired": [], "pending": [...], "failed": [], "off": False, "error": None}
 """
 from __future__ import annotations
 
@@ -71,15 +71,17 @@ FREE_KINDS = ("status", "local")
 # ---------------------------------------------------------------- the built-in recipes, for THIS domain
 
 BUILTIN: list[dict] = [
-    {"id": "due_diligence", "title": "Due diligence report on a candidate",
-     "ask": "Write a due-diligence report on the candidate I name. Take every claim about it from the signed "
-            "notebook only: for each claim give the ledger line that produced it, the BioQL entry and arguments "
-            "that were called, the verifier's verdict, and the provenance BioQL itself reported — is_real_hardware "
-            "and the IBM job id, real or null, never inferred. State plainly what is NOT in the record: a claim "
-            "with no line behind it goes in a section called 'not evidenced', not in the body. Do not call BioQL "
-            "for anything new; do not estimate a number that is missing.",
-     "uses": ["pipeline_job", "pipeline_job_result"], "needs": ["status"],
-     "why": "The report a reader can check: every number traced to the run that produced it."},
+    {"id": "due_diligence", "title": "Due diligence report on a target or product",
+     "ask": "Produce a due-diligence report on the target or product I name, through BioQL's own diligence route, "
+            "and record what the engine said it could do at the moment of the pack: its tool registry and the "
+            "validation metrics it publishes, read rather than restated. Then put every claim in the report back "
+            "on the record: for each one give the ledger line that produced it, the entry and arguments that were "
+            "called, the verifier's verdict, and the provenance BioQL itself reported — is_real_hardware and the "
+            "IBM job id, real or null, never inferred. A claim with no line behind it goes in a section called "
+            "'not evidenced', not in the body, and a number that is missing stays missing.",
+     "uses": ["pipeline_job", "pipeline_job_result"], "needs": ["status"], "workflow": "due diligence pack",
+     "why": "The report a reader can check: BioQL's own diligence route, every number traced to the run that "
+            "produced it. It calls BioQL's routes, so a person starts it."},
 
     {"id": "admet_sweep", "title": "ADMET sweep of a candidate set",
      "ask": "Run the ADMET predictions over the candidate set I give you (one SMILES per line), in ONE batch call "
@@ -121,8 +123,13 @@ BUILTIN: list[dict] = [
 def _norm(r: dict, own: bool = False) -> dict:
     out = {"id": str(r.get("id") or "").strip(), "title": str(r.get("title") or "").strip(),
            "ask": str(r.get("ask") or "").strip(), "uses": [str(x) for x in (r.get("uses") or [])],
-           "needs": [str(x) for x in (r.get("needs") or [])], "why": str(r.get("why") or "").strip(),
-           "own": bool(own), "declared": "uses" in r or "needs" in r}
+           "needs": [str(x) for x in (r.get("needs") or [])],
+           "workflow": (str(r.get("workflow")).strip() if r.get("workflow") else None),
+           "why": str(r.get("why") or "").strip(), "own": bool(own)}
+    # A built-in declares by being in BUILTIN, where an empty `uses` and `needs` is a reviewed statement that this
+    # recipe reaches nothing of BioQL's. The owner's own cannot claim that by omission: a saved recipe that names no
+    # entry, kind or workflow is UNDECLARED, and undeclared asks a person.
+    out["declared"] = (not own) or bool(out["uses"] or out["needs"] or out["workflow"])
     if not ID.match(out["id"]):
         raise ValueError(f"a recipe id is lowercase letters, digits and underscores: {out['id']!r}")
     if not out["ask"]:
@@ -190,9 +197,10 @@ def find(rid: str, file: Path | None = None) -> dict:
     return hit
 
 
-def save_recipe(rid: str, title: str, ask: str, uses=(), needs=(), why: str = "",
+def save_recipe(rid: str, title: str, ask: str, uses=(), needs=(), workflow: str | None = None, why: str = "",
                 file: Path | None = None) -> dict:
-    r = _norm({"id": rid, "title": title, "ask": ask, "uses": list(uses), "needs": list(needs), "why": why}, own=True)
+    r = _norm({"id": rid, "title": title, "ask": ask, "uses": list(uses), "needs": list(needs),
+               "workflow": workflow, "why": why}, own=True)
     store = _store(file)                     # read first: a store that cannot be read is never overwritten
     store["recipes"][r["id"]] = r
     write_private(file or recipes_path(), json.dumps(store, indent=1, sort_keys=True))
@@ -211,6 +219,21 @@ def remove_recipe(rid: str, file: Path | None = None) -> bool:
 # ---------------------------------------------------------------- what needs a person
 
 
+def workflow_tools(name: str) -> Resolution:
+    """The tools of one of Studio's workflows, RESOLVED from `workflows.WORKFLOWS`; ABSENT when the workflow has no
+    steps; UNRESOLVABLE when the workflow is not there or the catalogue cannot be read. A name nobody recognises is
+    never read as "it reaches nothing"."""
+    try:
+        from . import workflows as W                       # noqa: PLC0415 - optional: Studio works without the pane
+        wf = W.WORKFLOWS.get(name)
+    except Exception as e:                                 # noqa: BLE001
+        return unresolvable("workflows", f"the workflow catalogue could not be read ({type(e).__name__}: {e})")
+    if wf is None:
+        return unresolvable("workflows", f"no workflow is called {name!r}")
+    tools = [str(s.get("tool")) for s in (wf.get("steps") or []) if s.get("tool")]
+    return resolved(tools, "workflows", f"{len(tools)} step(s)") if tools else absent("workflows", "it has no steps")
+
+
 def approval_needed(recipe: dict, more: str = "", entries: dict | None = None) -> list[str]:
     """Why a person is needed before this recipe runs — an empty list means nothing here asks for one.
 
@@ -226,6 +249,12 @@ def approval_needed(recipe: dict, more: str = "", entries: dict | None = None) -
         if kind not in FREE_KINDS:
             why.append(f"it needs a {kind!r} entry, which can spend GPU, cloud or real quantum hardware")
     names = list(recipe.get("uses") or [])
+    if recipe.get("workflow"):
+        got = workflow_tools(recipe["workflow"])
+        if got.unresolvable:
+            why.append(f"the workflow {recipe['workflow']!r} could not be read: {got.detail}")
+        else:
+            names += got.or_default([])                    # its steps are checked exactly like a declared `uses`
     if names:
         try:
             got = allowlist.load() if entries is None else entries
@@ -248,7 +277,8 @@ def request_of(recipe: dict, more: str = "", by: str = "owner", approved_by: str
     """What the runner is handed. `approved_by` is carried, never invented: a schedule always passes None."""
     ask = recipe["ask"] + (("\n\n" + more.strip()) if (more or "").strip() else "")
     return {"recipe": recipe["id"], "title": recipe["title"], "ask": ask, "uses": list(recipe.get("uses") or []),
-            "needs": list(recipe.get("needs") or []), "more": (more or "").strip(), "by": by,
+            "needs": list(recipe.get("needs") or []), "workflow": recipe.get("workflow"),
+            "more": (more or "").strip(), "by": by,
             "approved_by": approved_by, "schedule": schedule, "t": round(time.time(), 3)}
 
 
@@ -324,6 +354,10 @@ class Schedules:
                     raise ValueError("a scheduled task is not an object with an id")
                 if x.get("every") not in EVERY or not AT.match(str(x.get("at", ""))):
                     raise ValueError(f"scheduled task {x.get('id')!r} has no usable clock")
+                if x.get("on") and not isinstance(x.get("next"), (int, float)):
+                    # An `on` task whose next moment is not a number would never be due, and would look like a
+                    # schedule that is simply waiting. That is a store nobody can act on, not an empty one.
+                    raise ValueError(f"scheduled task {x.get('id')!r} is on with no numeric next moment")
         except (ValueError, TypeError) as e:
             return unresolvable(SCHEDULES_SOURCE, f"{f.name} exists but cannot be trusted: {e}")
         store.setdefault("version", 1)
@@ -366,9 +400,11 @@ class Schedules:
             raise ValueError(f"there is no scheduled task {sid!r}")
         return dict(x)
 
-    def pending(self) -> list[dict]:
-        """What is waiting for a person, newest first."""
-        return sorted(self._read()["pending"], key=lambda p: -float(p.get("t") or 0))
+    def pending(self, waiting: bool = True) -> list[dict]:
+        """What is waiting for a person, newest first. `waiting=False` includes the ones a person has since
+        approved, which keep who approved them and when."""
+        got = [p for p in self._read()["pending"] if not waiting or p.get("state") == PENDING]
+        return sorted(got, key=lambda p: -float(p.get("t") or 0))
 
     def add(self, recipe: str, more: str = "", every: str = "week", at: str = "09:00", day: int = 0,
             by: str = "", on: bool = True) -> dict:
@@ -412,7 +448,8 @@ class Schedules:
     # -- running
 
     def tick(self, now: float | None = None) -> dict:
-        """Fire what is due. {fired, pending, off, error}.
+        """Fire what is due. {fired, pending, failed, off, error}: a run that never happened is never counted as
+        one that did, which is why "pending" and "failed" are their own lists rather than entries in `fired`.
 
         Nothing here approves anything: `approved_by` is None on every path out of this method. A task whose recipe
         would touch something needing a person becomes a pending record instead of a call.
@@ -420,7 +457,7 @@ class Schedules:
         `next` is advanced and SAVED before anything runs, inside the cross-process lock, so a second process that
         ticks at the same moment finds the slot already taken.
         """
-        out: dict = {"fired": [], "pending": [], "off": False, "error": None}
+        out: dict = {"fired": [], "pending": [], "failed": [], "off": False, "error": None}
         if off():
             return {**out, "off": True, "error": None}
         now = time.time() if now is None else now
@@ -443,8 +480,17 @@ class Schedules:
             return {**out, "error": self.last_error}
         self.last_error = None
         for x in due:
-            got = self._fire(x, approved_by=None, by="schedule")
-            (out["pending"] if got.get("state") == PENDING else out["fired"]).append(x["id"])
+            # Per item: the slot of every due task has already been advanced and saved, so one task's trouble must
+            # not take the others with it — they would be silently skipped until tomorrow.
+            try:
+                got = self._fire(x, approved_by=None, by="schedule")
+            except Exception as e:                # noqa: BLE001
+                self.last_error = f"{x.get('id')}: {type(e).__name__}: {e}"[:300]
+                out["failed"].append(x["id"])
+                continue
+            state = got.get("state")
+            key = "pending" if state == PENDING else "failed" if state == "FAILED" else "fired"
+            out[key].append(x["id"])
         return out
 
     def run_now(self, sid: str, approved_by: str | None = None) -> dict:
@@ -456,20 +502,39 @@ class Schedules:
         try:
             r = find(x["recipe"], self.recipes_file)
             why = approval_needed(r, x.get("more") or "")
-        except Exception as e:                # noqa: BLE001 - an unreadable recipe or allowlist asks a person too
-            r, why = None, [f"the recipe could not be prepared ({type(e).__name__}: {e})"[:300]]
+        except Exception as e:                # noqa: BLE001 - a recipe that is gone, or an allowlist that cannot
+            r, why = None, [f"the recipe could not be prepared ({type(e).__name__}: {e})"[:300]]   # be read
+        if r is None:
+            # Nothing is handed to the runner when the request itself could not be built: an approval approves a
+            # KNOWN request, and `run({})` would be a call nobody wrote.
+            no_recipe = "; ".join(why)[:300]
+            return self._result(x, {"state": "FAILED", "why": no_recipe, "by": by, "approved_by": approved_by,
+                                    "record": _record({"tool": "schedule_run", "state": "FAILED",
+                                                       "detail": no_recipe, "recipe": x.get("recipe"),
+                                                       "schedule": x.get("id"), "by": by,
+                                                       "approved_by": approved_by})})
         if why and not approved_by:
             return self._pend(x, why, r)
-        req = request_of(r, x.get("more") or "", by=by, approved_by=approved_by, schedule=x["id"]) if r else {}
+        req = request_of(r, x.get("more") or "", by=by, approved_by=approved_by, schedule=x["id"])
         try:
             said = self.run(req)
         except Exception as e:                # noqa: BLE001 - a runner that throws does not stop the next slot
-            return self._result(x, {"state": "FAILED", "why": f"{type(e).__name__}: {e}"[:300]})
+            why_ran = f"{type(e).__name__}: {e}"[:300]
+            return self._result(x, {"state": "FAILED", "why": why_ran, "by": by, "approved_by": approved_by,
+                                    "record": _record({"tool": "schedule_run", "state": "FAILED",
+                                                       "detail": why_ran, "recipe": x.get("recipe"),
+                                                       "schedule": x.get("id"), "by": by,
+                                                       "approved_by": approved_by})})
         if _asks_for_approval(said):
             # The runner itself says a person is needed. That is pending, not failed, and it is never retried
             # automatically: a retry is how a refusal turns into a run nobody approved.
             return self._pend(x, ["the runner reported that this needs a person's approval"], r, said=said)
-        return self._result(x, {"state": "RAN", "by": by, "approved_by": approved_by, "said": _small(said)})
+        return self._result(x, {"state": "RAN", "by": by, "approved_by": approved_by, "said": _small(said),
+                                "record": _record({"tool": "schedule_run", "state": "RAN", "detail": "",
+                                                   "recipe": req["recipe"], "schedule": x.get("id"),
+                                                   "workflow": req.get("workflow"), "by": by,
+                                                   "approved_by": approved_by})},
+                            approved_by=approved_by)
 
     def _pend(self, x: dict, why: list[str], r: dict | None, said: Any = None) -> dict:
         rec = {"id": secrets.token_hex(4), "t": round(time.time(), 3), "state": PENDING, "schedule": x.get("id"),
@@ -481,19 +546,36 @@ class Schedules:
                                  "by": "schedule", "approved_by": None})
         with self._locked():
             store = self._read()
-            store["pending"] = ([rec] + list(store["pending"]))[:KEEP_PENDING]
+            # One waiting record per schedule: a daily task nobody approves would otherwise add one a day, and
+            # KEEP_PENDING would eventually evict a record that is still waiting for a person.
+            before = next((q for q in store["pending"]
+                           if q.get("schedule") == x.get("id") and q.get("state") == PENDING), None)
+            if before is not None:
+                rec["id"], rec["first"] = before["id"], before.get("first", before.get("t"))
+                rec["slots"] = int(before.get("slots") or 1) + 1
+                store["pending"] = [rec if q is before else q for q in store["pending"]]
+            else:
+                rec["first"], rec["slots"] = rec["t"], 1
+                store["pending"] = ([rec] + list(store["pending"]))[:KEEP_PENDING]
             y = next((y for y in store["items"] if y["id"] == x.get("id")), None)
             if y is not None:
                 y["result"] = {"state": PENDING, "pending": rec["id"], "why": why}
             self._save(store)
         return rec
 
-    def _result(self, x: dict, result: dict) -> dict:
+    def _result(self, x: dict, result: dict, approved_by: str | None = None) -> dict:
         with self._locked():
             store = self._read()
             y = next((y for y in store["items"] if y["id"] == x.get("id")), None)
             if y is not None:
                 y["result"] = result
+                self._save(store)
+            if approved_by:
+                # What was waiting for a person is no longer waiting: it says who approved it and when, so
+                # `pending()` is what still needs someone rather than a list that only grows.
+                for rec in store["pending"]:
+                    if rec.get("schedule") == x.get("id") and rec.get("state") == PENDING:
+                        rec.update(state="APPROVED_AND_RAN", approved_by=approved_by, resolved=round(time.time(), 3))
                 self._save(store)
         return result
 

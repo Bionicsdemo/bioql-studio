@@ -40,23 +40,23 @@ MODELS = re.compile(r"(^|/)(localllm|llm|openrouter|marie|deepseek|ollama|vmlx|c
                     r"embeddings|audio/(speech|transcriptions))(/|$|_)", re.I)
 
 DEFAULTS: dict[str, dict] = {
-    "backend_health": {"method": "GET", "path": "/health", "kind": "status", "timeout": 15,
+    "backend_health": {"schema_known": True, "method": "GET", "path": "/health", "kind": "status", "timeout": 15,
                        "why": "Whether BioQL's backend answers, and which services it sees."},
-    "tools_registry": {"method": "GET", "path": "/api/tools/registry", "kind": "status", "timeout": 30,
+    "tools_registry": {"schema_known": True, "method": "GET", "path": "/api/tools/registry", "kind": "status", "timeout": 30,
                        "why": "BioQL's own typed list of pipelines (endpoint, required parameters, cost tier)."},
-    "live_status": {"method": "GET", "path": "/api/system/live_status", "kind": "status", "timeout": 30,
+    "live_status": {"schema_known": True, "method": "GET", "path": "/api/system/live_status", "kind": "status", "timeout": 30,
                     "why": "Pipelines running now and recent sessions."},
-    "pipeline_job": {"method": "GET", "path": "/api/pipeline/job/{job_id}", "kind": "status", "timeout": 30,
+    "pipeline_job": {"schema_known": True, "method": "GET", "path": "/api/pipeline/job/{job_id}", "kind": "status", "timeout": 30,
                      "required": ["job_id"], "absent_on_404": True,
                      "why": "The state of one pipeline job (a large result is not in here; see pipeline_job_result)."},
-    "pipeline_job_result": {"method": "GET", "path": "/api/pipeline/job/{job_id}/result", "kind": "status",
+    "pipeline_job_result": {"schema_known": True, "method": "GET", "path": "/api/pipeline/job/{job_id}/result", "kind": "status",
                             "timeout": 300, "required": ["job_id"], "absent_on_404": True,
                             "why": "The finished result of one pipeline job, which BioQL keeps off the status body."},
-    "motifs_list": {"method": "GET", "path": "/api/motifs/list", "kind": "status", "timeout": 30,
+    "motifs_list": {"schema_known": True, "method": "GET", "path": "/api/motifs/list", "kind": "status", "timeout": 30,
                     "why": "The chemical motif catalogue (SMARTS)."},
-    "smiles_to_3d": {"method": "POST", "path": "/api/smiles-to-3d", "kind": "local", "timeout": 120,
+    "smiles_to_3d": {"schema_known": True, "method": "POST", "path": "/api/smiles-to-3d", "kind": "local", "timeout": 120,
                      "required": ["smiles"], "why": "A 3D structure (SDF) for a SMILES, computed locally."},
-    "render_2d": {"method": "POST", "path": "/api/render/2d", "kind": "local", "timeout": 120,
+    "render_2d": {"schema_known": True, "method": "POST", "path": "/api/render/2d", "kind": "local", "timeout": 120,
                   "required": ["smiles"], "optional": ["width", "height", "format"],
                   "why": "A 2D depiction of a molecule."},
 }
@@ -70,7 +70,15 @@ PARAM = re.compile(r"\{([a-z_][a-z0-9_]*)\}")
 
 
 def _norm(name: str, e: dict) -> dict:
+    # `schema_known` is the difference between "this entry takes nothing" and "BioQL never told us what it takes".
+    # A route discovered from the engine's source or from its window declares no parameter list, and reading that
+    # emptiness as "takes nothing" made the adapter refuse EVERY real argument to 128 of the first 193 entries —
+    # they were listed and unusable, which from the outside looks exactly like a missing tool.
+    known = e.get("schema_known")
+    if known is None:
+        known = bool(e.get("required") or e.get("optional")) or bool(PARAM.findall(str(e.get("path", ""))))
     out = {"name": name, "method": str(e.get("method", "GET")).upper(), "path": str(e.get("path", "")),
+           "schema_known": bool(known),
            "via": e.get("via", "direct"), "kind": e.get("kind", "compute"), "required": list(e.get("required") or []),
            "optional": list(e.get("optional") or []), "timeout": float(e.get("timeout") or 43200),
            "approval": bool(e.get("approval", False)), "enabled": bool(e.get("enabled", True)),
@@ -122,7 +130,17 @@ def load(file: Path | None = None) -> dict[str, dict]:
         for k, v in raw.items():
             if not isinstance(v, dict):
                 raise ValueError(f"{f}: entry {k!r} is not an object")
-            entries[k] = _norm(k, {**DEFAULTS.get(k, {}), **v})
+            base = DEFAULTS.get(k, {})
+            # A built-in entry's schema was written by hand and IS known, even when it takes nothing — otherwise
+            # `tools_registry` would start accepting arguments it has no use for.
+            merged = {**base, **v}
+            # A file's EMPTY parameter list never erases a default's. A discovery tool that only reads path
+            # parameters writes `"required": []`, and merging that over a known schema silently turned
+            # `render_2d(smiles=…)` into a route that takes nothing — the entry stayed listed and stopped working.
+            for key in ("required", "optional"):
+                if base.get(key) and not v.get(key):
+                    merged[key] = base[key]
+            entries[k] = _norm(k, merged)
     return entries
 
 

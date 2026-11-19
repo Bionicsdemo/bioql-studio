@@ -272,3 +272,35 @@ def test_a_path_segment_can_never_change_the_route(fake_bioql, bad):
 
 def test_an_ordinary_job_id_still_works(fake_bioql):
     assert ad(fake_bioql).call("pipeline_job", {"job_id": "j1"}).state == RESOLVED
+
+
+def test_an_undeclared_schema_lets_a_real_argument_through(fake_bioql):
+    """Unknown is not "takes nothing". 414 of the 502 entries come from BioQL's own source, which declares no
+    parameter list; refusing their arguments left them listed and unusable — from the outside, a missing tool."""
+    a = ad(fake_bioql, found={"method": "POST", "path": "/api/smiles-to-3d", "kind": "local"})
+    assert a.entries["found"]["schema_known"] is False
+    assert a.call("found", {"smiles": "CCO", "anything": 1}).state == RESOLVED
+
+
+def test_an_undeclared_schema_still_never_lets_the_caller_choose_the_route(fake_bioql):
+    a = ad(fake_bioql, found={"method": "POST", "path": "/api/smiles-to-3d", "kind": "local"})
+    for bad in ({"endpoint": "/api/ssh/execute"}, {"url": "http://x"}, {"approved_by": "me"}, {"by": "me"}):
+        with pytest.raises(Refused, match="never the caller"):
+            a.call("found", bad)
+
+
+def test_a_declared_schema_is_still_strict(fake_bioql):
+    a = ad(fake_bioql)
+    with pytest.raises(Refused, match="does not take"):
+        a.call("tools_registry", {"smuggled": 1})
+
+
+def test_a_file_entry_never_erases_a_builtins_schema(studio_home):
+    """A discovery tool writes `"required": []` because it only read path parameters. Merging that over a known
+    schema turned render_2d(smiles=…) into a route that takes nothing."""
+    f = al.path_file()
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(json.dumps({"render_2d": {"method": "POST", "path": "/api/render/2d", "kind": "local",
+                                           "required": [], "optional": []}}))
+    e = al.load()["render_2d"]
+    assert e["required"] == ["smiles"] and e["schema_known"] is True
