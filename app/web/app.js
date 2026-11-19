@@ -442,13 +442,25 @@ function cardNode(card) {
         t.appendChild(tr);
       });
       body.appendChild(t);
-    } else if (b.type === "molecule2d" && b.png_base64) {
-      const img = el("img", "shot");
-      img.src = "data:image/png;base64," + b.png_base64;
-      img.alt = b.smiles || "molecule";
-      body.appendChild(img);
+    } else if (b.type === "molecule2d") {
+      if (b.png_base64) {
+        const img = el("img", "shot");
+        img.src = "data:image/png;base64," + b.png_base64;
+        img.alt = b.smiles || "molecule";
+        body.appendChild(img);
+      } else if (b.smiles) {
+        // No depiction in the answer, only the SMILES. Showing the string is honest; drawing something would be
+        // this window inventing a structure the engine did not return.
+        const f = el("div", "fact");
+        f.appendChild(el("div", "fact-k", "smiles"));
+        f.appendChild(el("div", "fact-v hash", b.smiles));
+        body.appendChild(f);
+      }
     } else if (b.type === "molecule3d" && b.sdf) {
-      body.appendChild(el("pre", "sdf", String(b.sdf).split("\n").slice(0, 8).join("\n") + "\n…"));
+      const lines = String(b.sdf).split("\n");
+      const head = lines.slice(0, 6).join("\n");
+      const pre = el("pre", "sdf", head + (lines.length > 6 ? "\n… " + (lines.length - 6) + " more line(s)" : ""));
+      body.appendChild(pre);
     } else if (b.type === "absent") {
       body.appendChild(el("p", "absent-block", (b.what || "this") + " — " + (b.why || "not computed")));
     } else if (b.type === "links") {
@@ -466,7 +478,12 @@ function cardNode(card) {
       });
       body.appendChild(d);
     } else if (b.text) {
-      body.appendChild(el("p", "beat-say", b.text));
+      // A card's text can be a whole MOL file. The window shows an opening and says how much it kept back; the
+      // record holds all of it.
+      const t = String(b.text);
+      const cut = t.length > 600;
+      const p = el("pre", "sdf", cut ? t.slice(0, 600) + "\n… " + (t.length - 600) + " more character(s)" : t);
+      body.appendChild(p);
     }
   });
   box.appendChild(body);
