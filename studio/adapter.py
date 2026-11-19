@@ -16,6 +16,7 @@ Rules held here, in code:
 """
 from __future__ import annotations
 
+import http.client
 import json
 import re
 import time
@@ -51,14 +52,23 @@ def _opener() -> urllib.request.OpenerDirector:
     return urllib.request.build_opener(urllib.request.ProxyHandler({}))     # never through a proxy: localhost only
 
 
-def wants_hardware(args: dict) -> bool:
-    """Arguments that ask for a real quantum device. Matched on whole key names, never substrings."""
+def wants_hardware(args: dict, depth: int = 0) -> bool:
+    """Arguments that ask for a real quantum device. Matched on whole key names, never substrings, and NESTED:
+    reading only the top level let `{"opts": {"real_qpu": true}}` through the hardware gate."""
+    if depth > 6:
+        return False
     for k, v in (args or {}).items():
         key = str(k).lower()
         if key in HARDWARE_KEYS and v not in (False, None, 0, "", "false", "no", "0", "simulator", "sim"):
             return True
         if key in BACKEND_KEYS and isinstance(v, str) and HARDWARE_WORDS.search(v):
             return True
+        if isinstance(v, dict) and wants_hardware(v, depth + 1):
+            return True
+        if isinstance(v, list):
+            for item in v[:50]:
+                if isinstance(item, dict) and wants_hardware(item, depth + 1):
+                    return True
     return False
 
 
@@ -80,7 +90,10 @@ def provenance(body: Any, limit: int = 8) -> dict:
                     for j in (v if isinstance(v, list) else [v]):
                         if isinstance(j, str) and j and j not in jobs:
                             jobs.append(j)
-                elif key in ("quantum_backend", "backend_name", "ibm_backend") and isinstance(v, str) and v:
+                elif key in ("quantum_backend", "backend_name", "ibm_backend", "backend") and isinstance(v, str) and v:
+                    # The plain key `backend`, nested in a stage, is where several BioQL pipelines record the lane
+                    # they actually ran on. Reading only `quantum_backend` meant a report built from provenance
+                    # could not name the device the body itself named.
                     if v not in backends:
                         backends.append(v)
                 walk(v, depth + 1)
@@ -188,7 +201,10 @@ class Adapter:
             if status == 404 and absent_on_404:
                 return absent(SOURCE, f"404 at {urllib.parse.urlsplit(url).path}", http=status), status
             return unresolvable(SOURCE, f"HTTP {status}: {text[:300]}", http=status), status
-        except (urllib.error.URLError, TimeoutError, OSError) as err:
+        except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException) as err:
+            # IncompleteRead and the rest of HTTPException are NOT OSError, so a body cut short — plausible on
+            # BioQL's streamed keepalive — escaped as a bare exception instead of becoming UNRESOLVABLE. A caller
+            # would have seen a crash where the honest answer is "we could not read it".
             return unresolvable(SOURCE, f"could not reach BioQL: {getattr(err, 'reason', err)}"), None
         if len(raw) > MAX_BODY:
             return unresolvable(SOURCE, "answer larger than 64 MB", http=status), status
@@ -257,4 +273,14 @@ class Adapter:
                        "state": state, "detail": (detail or "")[:300], "http": http,
                        "result_sha256": ledger.digest(res.value) if res is not None and res.resolved else None,
                        "provenance": res.meta.get("provenance") if res is not None else None,
+                       # The verdict and its findings belong ON the line. Computing them and not writing them meant
+                       # every row read back "verdict not recorded", and anything built on the ledger — the board,
+                       # the notebook, a report — could not tell an unchecked result from a clean one.
+                       "verdict": res.meta.get("verdict") if res is not None else None,
+                       "findings": (res.meta.get("findings") or [])[:20] if res is not None else [],
+                       "findings_total": len(res.meta.get("findings") or []) if res is not None else 0,
+                       "job_id": (res.meta.get("job_id") or (res.value.get("job_id")
+                                                             if res is not None and res.resolved
+                                                             and isinstance(res.value, dict) else None))
+                                 if res is not None else None,
                        "seconds": round(time.time() - began, 3), "by": by, "approved_by": approved_by or None})

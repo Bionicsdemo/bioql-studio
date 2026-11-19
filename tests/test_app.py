@@ -437,8 +437,12 @@ def test_an_unknown_run_id_is_a_404_and_never_a_path(svc):
 
 # ------------------------------------------------------------------ the record
 def test_the_ledger_records_the_verdict_and_the_findings(svc):
-    """studio.adapter._note writes provenance but not the verdict or the findings, although the project's README says
-    it does. The window's own row carries them."""
+    """Every row carries its verdict and findings, whoever wrote it.
+
+    This test used to assert the opposite for the adapter's own rows: `_note` computed the verdict and did not write
+    it, so anything reading the ledger back — the board, the notebook, a report — could not tell an unchecked result
+    from a clean one. The window compensated with a row of its own. The adapter records it now, and
+    `verdict_recorded` stays as the flag that tells "not recorded" apart from "clean"."""
     ents = entries(twin={"method": "POST", "path": "/api/mixed", "kind": "local", "timeout": 30,
                          "why": "provenance that contradicts itself"})
     s2 = Svc(svc.s.home, svc.s.adapter.base, ents)
@@ -451,9 +455,11 @@ def test_the_ledger_records_the_verdict_and_the_findings(svc):
         assert mine and mine[-1]["verdict"] == body["verdict"]
         assert [f["code"] for f in mine[-1]["findings"]] == [f["code"] for f in body["findings"]][:20]
         assert mine[-1]["verdict_recorded"] is True
-        # the adapter's own rows recorded no verdict, and are shown as such — never as clean
+        # the adapter's own rows now carry it too, and a row that genuinely has none still says so rather than
+        # reading as clean
         theirs = [r for r in out["rows"] if "window_event" not in r]
-        assert theirs and all(r["verdict_recorded"] is False and r["verdict"] is None for r in theirs)
+        assert theirs and all(r["verdict_recorded"] is (r["verdict"] is not None) for r in theirs)
+        assert any(r["verdict"] is not None for r in theirs), "the adapter must put the verdict on its own line"
     finally:
         s2.stop()
 
