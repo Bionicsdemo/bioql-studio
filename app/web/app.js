@@ -14,13 +14,34 @@
 "use strict";
 
 const TOKEN = (() => {
+  // The token arrives in the fragment and is cleared from the address bar at once — a fragment is never sent to a
+  // server, never logged and never put in a Referer. But clearing it also meant a RELOAD had no token left, so
+  // every call answered 403 and the window went dead with the word "forbidden" and no way back. It is kept for
+  // THIS TAB only, in sessionStorage: it dies with the tab, never reaches another tab, another window, disk, or
+  // any server.
   const m = /(?:^|[#&])t=([A-Za-z0-9_\-]+)/.exec(location.hash || "");
   if (m) {
+    try { sessionStorage.setItem("studio.t", m[1]); } catch (e) { /* private window: this tab works, a reload asks again */ }
     try { history.replaceState(null, "", location.pathname); } catch (e) { location.hash = ""; }
     return m[1];
   }
-  return "";
+  try { return sessionStorage.getItem("studio.t") || ""; } catch (e) { return ""; }
 })();
+
+function noToken() {
+  // A window with no token can do NOTHING, so it says so in the one place that is always visible, with the command
+  // that prints a working URL. It used to show "forbidden" in a status line and nothing else.
+  const hero = $("hero");
+  if (hero && !$("no-token")) {
+    const box = el("div", "empty");
+    box.id = "no-token";
+    box.appendChild(el("p", "waiting-why", "This window has no token, so it cannot ask Studio anything."));
+    box.appendChild(el("p", "fine", "Open it with the URL this prints, and keep that tab:"));
+    box.appendChild(el("p", "cmd", "python3 -m app token"));
+    hero.appendChild(box);
+  }
+  ring("down");
+}
 
 const $ = (id) => document.getElementById(id);
 const txt = (s) => document.createTextNode(s === undefined || s === null ? "" : String(s));
@@ -138,31 +159,31 @@ const SECTIONS = {
   pipelines: { group: "Discovery", label: "Pipelines", icon: "flow", kind: "pipes",
                lead: "BioQL's own pipeline groups. Each one starts the question it starts in BioQL; Claude Code " +
                      "picks the route from the closed list and nothing compute-bearing runs without a person." },
-  quantum:  { group: "Discovery", label: "Quantum", icon: "cpu", kind: "tools", pick: (t) => AREA_OF(t) === "quantum",
+  quantum:  { group: "Discovery", label: "Quantum", icon: "cpu", kind: "tools", panel: "Quantum panel", pick: (t) => AREA_OF(t) === "quantum",
               lead: "Every quantum route BioQL declares. Nothing here is offered a shortcut past approval, and a run " +
                     "is only called real hardware when the answer carries an IBM job id." },
-  molecular:{ group: "Discovery", label: "Molecular", icon: "atom", kind: "tools", pick: (t) => AREA_OF(t) === "chem",
+  molecular:{ group: "Discovery", label: "Molecular", icon: "atom", kind: "tools", panel: "Molecular panel", pick: (t) => AREA_OF(t) === "chem",
               lead: "Depiction, 3D, motifs, descriptors — BioQL's own chemistry routes." },
-  screening:{ group: "Discovery", label: "Screening & SAR", icon: "find", kind: "tools",
+  screening:{ group: "Discovery", label: "Screening & SAR", icon: "find", kind: "tools", panel: "Screening panel",
               pick: (t) => AREA_OF(t) === "screening", lead: "Docking, virtual screening, SAR." },
-  targets:  { group: "Discovery", label: "Targets", icon: "cross", kind: "tools",
+  targets:  { group: "Discovery", label: "Targets", icon: "cross", kind: "tools", panel: "Targets panel",
               pick: (t) => AREA_OF(t) === "targets" && !/targetradar/.test(t.path) },
-  radar:    { group: "Discovery", label: "TargetRadar", icon: "eye", kind: "tools",
-              pick: (t) => /targetradar/.test(t.path),
-              lead: "TargetRadar's routes as BioQL's backend exposes them." },
-  undrug:   { group: "Discovery", label: "Undruggable", icon: "boxes", kind: "tools",
+  radar:    { group: "Discovery", label: "TargetRadar", icon: "eye", kind: "frame", which: "radar", route: "",
+              routes: (t) => /targetradar/.test(t.path),
+              lead: "TargetRadar's own application, whole. Its routes are under Routes." },
+  undrug:   { group: "Discovery", label: "Undruggable", icon: "boxes", kind: "tools", panel: "Undruggable panel",
               pick: (t) => /(enterprise|undrug|complexa|ppi|allosteric)/i.test(t.path + " " + (t.why || "")),
               lead: "The enterprise pipeline BioQL labels Undruggable." },
-  jobs:     { group: "Discovery", label: "Jobs & Recovery", icon: "pulse", kind: "tools",
+  jobs:     { group: "Discovery", label: "Jobs & Recovery", icon: "pulse", kind: "tools", panel: "Pipelines panel",
               pick: (t) => AREA_OF(t) === "jobs",
               lead: "Submitting, polling and recovering a run. A receipt is not a result: a body with a job id is " +
                     "followed until it is final, and a receipt with no job id is UNRESOLVABLE, never empty." },
-  pipeline: { group: "Discovery", label: "Pipeline routes", icon: "flow", kind: "tools",
+  pipeline: { group: "Discovery", label: "Pipeline routes", icon: "flow", kind: "tools", panel: "Pipelines panel",
               pick: (t) => AREA_OF(t) === "pipeline" },
-  tools:    { group: "Discovery", label: "MCP Tools", icon: "tools", kind: "tools", pick: () => true,
+  tools:    { group: "Discovery", label: "MCP Tools", icon: "tools", kind: "tools", panel: "MCP Tools panel", pick: () => true,
               lead: "The whole closed list Studio may call. An entry marked needs a person is refused from this " +
                     "window and offers an approval instead; anything that could reach real quantum hardware asks first." },
-  results:  { group: "Discovery", label: "Results", icon: "table", kind: "results",
+  results:  { group: "Discovery", label: "Results", icon: "table", kind: "results", panel: "Results panel",
               lead: "Every call that resolved, newest first, with the digest of what came back and the verdict the " +
                     "verifier recorded." },
 
@@ -199,6 +220,7 @@ const GROUPS = ["Iris", "Discovery", "BioQL", "Record"];
 
 // ------------------------------------------------------------------ the state line and the status bar
 let uiUrl = "http://127.0.0.1:3000";
+let radarUrl = "http://127.0.0.1:4000";
 let lastState = null;
 
 async function drawState() {
@@ -207,8 +229,8 @@ async function drawState() {
     $("hubLine").textContent = "no token";
     $("hubDot").className = "dot bad";
     $("stEngine").querySelector("span").textContent =
-      "no token — open this window from the app, or with the URL `python3 -m app token` prints";
-    ring("down");
+      "no token — open this window with the URL `python3 -m app token` prints";
+    noToken();
     return null;
   }
   if (code !== 200) {
@@ -227,6 +249,7 @@ async function drawState() {
   $("stateLine").textContent = `${body.calls} call(s) on the record · ${body.refusals} refused · ` +
     `${body.approvals} approved` + (waiting ? ` · ${waiting} waiting for a person` : "");
   if (body.bioql_ui) uiUrl = body.bioql_ui;
+  if (body.radar_ui) radarUrl = body.radar_ui;
   drawPending(body.pending || []);
   if (waiting) ring("waiting");
   return body;
@@ -758,11 +781,15 @@ function drawChats(box) {
 }
 
 // ------------------------------------------------------------------ BioQL's own window
-async function showFrame(route, panels) {
+async function showFrame(s) {
   const frame = $("bioql"), room = $("waiting-room");
-  const want = uiUrl + "/" + (route || "");
-  const { body } = await api("/api/ui");
+  const which = s.which || "bioql";
+  // Which window is up is asked of Studio's service: `connect-src 'self'` forbids this page reaching another
+  // origin, and a page that cannot ask must not guess.
+  const { body } = await api("/api/ui?which=" + encodeURIComponent(which));
+  const base = (body && body.url) || (which === "radar" ? radarUrl : uiUrl);
   const up = body && body.up === true;
+  const want = base + "/" + (s.route || "");
   $("frameUrl").textContent = want;
   if (up) {
     if (frame.dataset.want !== want) { frame.dataset.want = want; frame.src = want; }
@@ -771,10 +798,12 @@ async function showFrame(route, panels) {
   } else {
     frame.classList.add("hidden");
     room.classList.remove("hidden");
-    $("waiting-why").textContent = "BioQL's window is not up at " + uiUrl;
+    $("waiting-why").textContent = (which === "radar" ? "TargetRadar" : "BioQL") +
+      " is not answering at " + base;
+    $("waiting-cmd").textContent = which === "radar" ? "./start_targetradar_local.sh" : "./start_frontend_local.sh";
     ring("down");
   }
-  if (panels) {
+  if (s.panels) {
     $("frameTitle").title = "BioQL's own activity bar: " + BIOQL_PANELS.join(" · ");
   }
   return up;
@@ -1000,11 +1029,17 @@ function drawTabs() {
   });
 }
 
+// Which half of a section is showing. A section that mirrors something BioQL already draws has two: the interface
+// BioQL itself draws, and the routes behind it. The interface is the default, because "it should behave like
+// localhost:3000" is the whole point; the routes are what Studio adds.
+const half = {};
+
 async function draw() {
   const s = SECTIONS[view];
   if (s.kind === "chat") return;
-  if (s.kind === "frame") return void (await showFrame(s.route, s.panels));
+  if (s.kind === "frame" && half[view] !== "routes") return void (await showFrame(s));
   const box = $("pageBody");
+  if (s.kind === "frame") return drawToolsSection(box, s.routes);
   switch (s.kind) {
     case "tools": return drawToolsSection(box, s.pick);
     case "pipes": return drawPipes(box);
@@ -1028,16 +1063,51 @@ async function open_(k) {
   if (!openTabs.includes(k)) openTabs.push(k);
   drawTabs();
   document.querySelectorAll("nav button").forEach((b) => b.classList.toggle("on", b.dataset.v === k));
+  const framed = s.kind === "frame" && half[k] !== "routes";
   $("v-chat").hidden = s.kind !== "chat";
-  $("v-page").hidden = s.kind === "chat" || s.kind === "frame";
-  $("v-frame").hidden = s.kind !== "frame";
-  if (s.kind === "frame") $("frameTitle").textContent = s.label;
-  if (s.kind !== "chat" && s.kind !== "frame") {
+  $("v-page").hidden = s.kind === "chat" || framed;
+  $("v-frame").hidden = !framed;
+  if (framed) $("frameTitle").textContent = s.label;
+  if (!framed && s.kind !== "chat") {
     $("pageTitle").textContent = s.label;
     $("pageLead").textContent = s.lead || "";
     empty($("pageBody"), "reading…");
   }
+  halves(k, s, framed);
   await draw();
+}
+
+function halves(k, s, framed) {
+  // A section that mirrors an interface BioQL already has shows a switch: the interface, or the routes behind it.
+  const host = framed ? $("v-frame").querySelector(".bar-acts") : $("pageActs");
+  const old = document.getElementById("halfSeg");
+  if (old) old.remove();
+  if (!s.routes && !s.panel) return;
+  const seg = el("span", "seg");
+  seg.id = "halfSeg";
+  const mk = (word, mode, title) => {
+    const b = el("button", null, word);
+    b.type = "button";
+    b.title = title || "";
+    b.setAttribute("role", "tab");
+    b.setAttribute("aria-selected", String((half[k] || "panel") === mode));
+    b.addEventListener("click", () => { half[k] = mode; open_(k); });
+    return b;
+  };
+  if (s.routes) {
+    seg.appendChild(mk(s.label === "TargetRadar" ? "TargetRadar" : "Panel", "panel", "the application's own interface"));
+    seg.appendChild(mk("Routes", "routes", "the routes behind it, in Studio's closed list"));
+    host.insertBefore(seg, host.firstChild);
+    return;
+  }
+  // A BioQL panel is component state inside its window, not an address, so Studio cannot open one from outside.
+  // What it can do is say which one, and put its window one click away instead of pretending the list is it.
+  const go = el("button", "tool", "Open BioQL's " + s.panel);
+  go.id = "halfSeg";
+  go.type = "button";
+  go.title = "BioQL's panels are picked inside its own window: they are not addressable from here";
+  go.addEventListener("click", () => open_("bioql"));
+  host.insertBefore(go, host.firstChild);
 }
 
 // ------------------------------------------------------------------ the command centre
@@ -1121,14 +1191,10 @@ async function boot() {
   }));
 
   $("frameReload").addEventListener("click", () => {
-    const s = SECTIONS[view];
     $("bioql").dataset.want = "";
-    showFrame(s.route, s.panels);
+    showFrame(SECTIONS[view]);
   });
-  $("waiting-retry").addEventListener("click", () => {
-    const s = SECTIONS[view];
-    showFrame(s.route, s.panels);
-  });
+  $("waiting-retry").addEventListener("click", () => showFrame(SECTIONS[view]));
 
   document.querySelectorAll(".st[data-go]").forEach((b) => b.addEventListener("click", () => open_(b.dataset.go)));
   $("cmdCenter").addEventListener("click", openPal);
@@ -1165,7 +1231,7 @@ async function boot() {
     // status bar would still read "healthy" while every call in BioQL's own window answered 502 — a status line
     // that stops being asked is a claim, not a reading.
     await drawEngine();
-    if (SECTIONS[view].kind === "frame") await showFrame(SECTIONS[view].route, SECTIONS[view].panels);
+    if (SECTIONS[view].kind === "frame") await showFrame(SECTIONS[view]);
     else if (["findings", "ledger", "results", "usage", "board"].includes(SECTIONS[view].kind)) await draw();
   }, 6000);
 }

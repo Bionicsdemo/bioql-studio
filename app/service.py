@@ -60,8 +60,12 @@ STATIC = {"/": ("index.html", "text/html; charset=utf-8"),
 # panel. That is the whole shape of the product: BioQL's interface is not replaced, it is framed, and the Agtr
 # machinery (the orb, the findings, the board, the notebook) is added around it.
 BIOQL_UI = os.environ.get("BIOQL_UI_URL", "http://127.0.0.1:3000").rstrip("/")
+# TargetRadar is its own application with its own interface, served by BioQL's own startup script on 4000. The
+# section for it used to list the thirteen routes the allowlist holds, which is not what the owner opens on 3000:
+# a list of endpoints is not an interface. The window frames the real one, as it frames BioQL's.
+RADAR_UI = os.environ.get("BIOQL_RADAR_URL", "http://127.0.0.1:4000").rstrip("/")
 CSP = ("default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; "
-       f"frame-src {BIOQL_UI} http://localhost:3000; "
+       f"frame-src {BIOQL_UI} http://localhost:3000 {RADAR_UI} http://localhost:4000; "
        "base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'")
 
 TOKEN_MIN = 32              # secrets.token_urlsafe(32) is 43 characters; anything shorter is a broken file
@@ -237,7 +241,7 @@ class Studio:
         with self._lock:
             pend = [p.public() for p in self.pending.values() if not p.used and not p.expired()]
         return {"name": PING_NAME, "version": VERSION, "port": self.port, "home": str(self.home),
-                "bioql": self.adapter.base, "bioql_ui": BIOQL_UI,
+                "bioql": self.adapter.base, "bioql_ui": BIOQL_UI, "radar_ui": RADAR_UI,
                 "up_seconds": round(time.time() - self.started, 1),
                 "calls": self.calls, "refusals": self.refusals, "approvals": self.approvals,
                 "pending": pend, "runs": [r.public() for r in list(self.runs.values())[-RUN_MAX:]]}
@@ -536,19 +540,20 @@ class Studio:
             return {"id": tid, "since": since, "events": evs, "next": since + len(evs), "state": t["state"],
                     "asked": t["asked"]}, 200
 
-    def ui_state(self) -> dict:
-        """Whether BioQL's window answers, and nothing more. Three outcomes, kept apart: it answered (`up`), it
-        refused the connection (`up: false`, with the reason), or we could not tell. A window Studio cannot reach is
-        never reported as a window that is not there."""
-        req = urllib.request.Request(BIOQL_UI + "/", method="GET")
+    def ui_state(self, which: str = "bioql") -> dict:
+        """Whether a framed window answers, and nothing more: BioQL's on 3000, or TargetRadar's on 4000. Three
+        outcomes, kept apart: it answered (`up`), it refused the connection (`up: false`, with the reason), or we
+        could not tell. A window Studio cannot reach is never reported as a window that is not there."""
+        base = RADAR_UI if which == "radar" else BIOQL_UI
+        req = urllib.request.Request(base + "/", method="GET")
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         try:
             with opener.open(req, timeout=3) as r:
-                return {"url": BIOQL_UI, "up": 200 <= r.status < 400, "http": r.status}
+                return {"url": base, "which": which, "up": 200 <= r.status < 400, "http": r.status}
         except urllib.error.HTTPError as e:
-            return {"url": BIOQL_UI, "up": e.code < 400, "http": e.code}
+            return {"url": base, "which": which, "up": e.code < 400, "http": e.code}
         except (urllib.error.URLError, TimeoutError, OSError) as why:
-            return {"url": BIOQL_UI, "up": False, "why": f"{getattr(why, 'reason', why)}"[:120]}
+            return {"url": base, "which": which, "up": False, "why": f"{getattr(why, 'reason', why)}"[:120]}
 
     def board_write(self, b: dict) -> tuple[dict, int]:
         """One route, four acts: new, node, link, evidence. Everything the board refuses — an unknown kind, a link
@@ -753,7 +758,7 @@ def make_handler(s: Studio):
                     # Is BioQL's own window up? The page cannot ask: `connect-src 'self'` forbids it reaching
                     # another origin, and a page that cannot ask must not guess. Studio asks, and only reports —
                     # it never starts, stops or restarts BioQL's frontend.
-                    return self._json(s.ui_state())
+                    return self._json(s.ui_state((qs.get("which") or ["bioql"])[0]))
                 if p == "/api/boards":
                     return self._json({"boards": board.boards()})
                 if p == "/api/board":
