@@ -1,0 +1,10 @@
+taken: 2026-11-19 10:43:05 -0500
+HEAD: 6b16a62f3ab58771f36b889e39eb57a20c53a2e5
+branch: bioql/provenance-and-gates-20260919
+tracked-changes:
+M  src/backend/qnn_property_registry.py
+MM src/backend/script_executor_server.py
+M  src/backend/tests/test_qnn_property_registry.py
+untracked-count: 11316
+backend-5035: pid 97028 started 2026-11-19 10:26:50 (not by this session)
+frontend-3000: down
