@@ -93,6 +93,9 @@ PROSE_KEYS = ("note", "notes", "reason", "why", "description", "interpretation",
 HONEST_NOTE_KEYS = ("method", "provenance", "disclaimer", "note", "interpretation", "is_estimate", "ci90")
 
 HTTP_URL = re.compile(r"^https?://", re.I)
+# A path on this origin: one leading slash, never two. `//host/x` in an anchor is a protocol-relative URL to
+# ANOTHER origin, and a backslash is read as a slash by browsers, so both are refused.
+SAME_ORIGIN_PATH = re.compile(r"^/(?!/)[^\s\\]*$")
 PDB_MARK = re.compile(r"^(HEADER|ATOM|HETATM|MODEL|CRYST1)\b|\nATOM\s", re.M)
 # An index a series can run along. The x axis has to be a number the payload wrote, not a row counter we invented.
 INDEX_KEYS = ("iteration", "step", "cycle", "epoch", "generation", "round", "x", "time", "t")
@@ -438,7 +441,12 @@ def _links(payload: Any, consumed: set[str]) -> list[dict]:
                 url = url[0] if url and isinstance(url[0], str) else None
             if not isinstance(url, str) or not url.strip():
                 continue
-            if not (declared or HTTP_URL.match(url)) or url in seen:
+            # A link is drawn as an anchor by the window, so the scheme decides whether this is a download or a
+            # script. `javascript:`, `data:` and `vbscript:` are rejected, and so is a protocol-relative `//host`,
+            # which an anchor reads as another ORIGIN rather than a path on this one. A declared artifact may be a
+            # same-origin path; anything else must be an absolute http(s) URL.
+            url = url.strip()
+            if not (HTTP_URL.match(url) or (declared and SAME_ORIGIN_PATH.match(url))) or url in seen:
                 continue
             seen.add(url)
             items.append({"label": str(label), "url": url})

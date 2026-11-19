@@ -502,8 +502,9 @@ class Schedules:
         try:
             r = find(x["recipe"], self.recipes_file)
             why = approval_needed(r, x.get("more") or "")
-        except Exception as e:                # noqa: BLE001 - a recipe that is gone, or an allowlist that cannot
-            r, why = None, [f"the recipe could not be prepared ({type(e).__name__}: {e})"[:300]]   # be read
+        except Exception as e:                # noqa: BLE001 - a recipe that has gone, or an unreadable allowlist:
+            # both mean nobody can say what this would reach, and that asks a person rather than running.
+            r, why = None, [f"the recipe could not be prepared ({type(e).__name__}: {e})"[:300]]
         if r is None:
             # Nothing is handed to the runner when the request itself could not be built: an approval approves a
             # KNOWN request, and `run({})` would be a call nobody wrote.

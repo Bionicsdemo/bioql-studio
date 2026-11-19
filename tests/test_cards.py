@@ -603,3 +603,22 @@ def test_the_callers_provenance_cannot_turn_mixed_into_true():
     other = card({"is_real_hardware": True, "ibm_job_id": "j1"},
                  meta={"provenance": {"is_real_hardware": "mixed", "ibm_job_ids": []}})
     assert other["provenance"]["is_real_hardware"] == "mixed"
+
+
+def test_a_link_scheme_can_never_become_a_script():
+    """A link is drawn as an anchor, so the scheme decides whether it is a download or a script. The window refuses
+    these again: two barriers, because the payload comes from the engine and the window makes it clickable."""
+    from studio import cards as c
+    out = c.card({"downloads": {"files": {
+        "js": "javascript:alert(1)", "data": "data:text/html,<script>1</script>", "vb": "VBScript:x",
+        "proto": "//evil.example/x", "back": "/\\evil.example/x", "space": "/a b",
+        "rel": "/api/reports/x.pdf", "abs": "https://example.org/a.pdf"}}})
+    urls = [i["url"] for b in out["blocks"] if b["type"] == "links" for i in b["items"]]
+    assert urls == ["/api/reports/x.pdf", "https://example.org/a.pdf"], urls
+    assert not any(u.lower().startswith(("javascript:", "data:", "vbscript:", "//")) for u in urls)
+
+
+def test_an_undeclared_url_must_be_absolute_http():
+    from studio import cards as c
+    out = c.card({"report_url": "/api/x"})
+    assert [b for b in out["blocks"] if b["type"] == "links"] == []

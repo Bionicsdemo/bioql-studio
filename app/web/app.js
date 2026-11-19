@@ -453,7 +453,17 @@ function cardNode(card) {
       body.appendChild(el("p", "absent-block", (b.what || "this") + " — " + (b.why || "not computed")));
     } else if (b.type === "links") {
       const d = el("div", "row-head");
-      (b.items || []).forEach((i) => { const a = el("a", "hash", i.label); a.href = i.url; a.target = "_blank"; d.appendChild(a); });
+      // The card already refuses a bad scheme, and so does this: a link is an anchor, and `javascript:` or a
+      // protocol-relative `//host` in one is a script or another origin, not a download. Two barriers, because
+      // the payload comes from the engine and the window is where it becomes clickable.
+      (b.items || []).forEach((i) => {
+        const u = String(i.url || "");
+        const ok = /^https?:\/\//i.test(u) || (/^\/(?!\/)/.test(u) && !/[\\\s]/.test(u));
+        if (!ok) { d.appendChild(el("span", "hash", i.label + " \u2014 link refused: " + u.slice(0, 40))); return; }
+        const a = el("a", "hash", i.label);
+        a.href = u; a.target = "_blank"; a.rel = "noopener noreferrer";
+        d.appendChild(a);
+      });
       body.appendChild(d);
     } else if (b.text) {
       body.appendChild(el("p", "beat-say", b.text));
