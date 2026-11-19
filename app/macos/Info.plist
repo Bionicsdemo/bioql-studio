@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Forked from Agtr's desktop/macos/Info.plist. Its identity is changed (name, bundle id, executable) and every
+     usage description for a capability Studio does not have is removed: Studio asks for no microphone, no speech
+     recognition, no calendar, no reminders, no Apple Events and no local network. It talks to 127.0.0.1 only. -->
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key><string>BioQL Studio</string>
+  <key>CFBundleDisplayName</key><string>BioQL Studio</string>
+  <key>CFBundleIdentifier</key><string>com.molevera.bioqlstudio</string>
+  <key>CFBundleExecutable</key><string>BioQLStudio</string>
+  <key>CFBundleIconFile</key><string>AppIcon</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>__VERSION__</string>
+  <key>CFBundleVersion</key><string>__VERSION__</string>
+  <key>LSMinimumSystemVersion</key><string>13.0</string>
+  <key>LSApplicationCategoryType</key><string>public.app-category.productivity</string>
+  <key>NSHighResolutionCapable</key><true/>
+  <key>NSPrincipalClass</key><string>NSApplication</string>
+  <key>NSHumanReadableCopyright</key><string>Molevera</string>
+  <!-- An approved pipeline runs inside the service this app owns: macOS must not quit the app under memory pressure
+       (Agtr learned this the hard way; see AppDelegate.swift:19-22 of the original). -->
+  <key>NSSupportsAutomaticTermination</key><false/>
+  <key>NSSupportsSuddenTermination</key><false/>
+</dict>
+</plist>

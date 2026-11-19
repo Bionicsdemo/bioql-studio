@@ -37,6 +37,7 @@ from urllib.parse import parse_qs, urlparse
 
 import studio
 from studio import ledger
+from studio import allowlist as al
 from studio import guard as sguard
 from studio.adapter import Adapter, Refused, wants_hardware
 
@@ -69,6 +70,22 @@ class Empty(RuntimeError):
     creates the file only when it is MISSING, then service.py:1228-1229 compares that "" against a header that is
     also "" when absent — so an empty or truncated ui.token opens the whole API to any caller with the right Host).
     Studio refuses to serve instead."""
+
+
+def dotdot(entry: dict, args: dict) -> str:
+    """An empty string if no argument that becomes a PATH SEGMENT is a dot-path, else why it is refused.
+
+    This closes a hole in the sealed adapter rather than in Agtr. `studio/allowlist.py::ID` is
+    `^[A-Za-z0-9_.-]{1,128}$`, which `".."` matches, and `studio/adapter.py::_url` then quotes it with `safe=""` —
+    and `urllib.parse.quote` does not escape a dot. So `pipeline_job(job_id="..")` builds
+    `/api/pipeline/job/..`, which a server that normalises paths (Flask/Werkzeug does) reads as `/api/pipeline/`.
+    `studio/` may not be edited here, so the window's own door refuses it; the defect is reported upstream.
+    """
+    for k in set(al.PARAM.findall(entry.get("path", ""))) & set(args or {}):
+        v = str(args[k])
+        if v in (".", "..") or "." * 2 in v:
+            return f"{k!r} must look like an id, and {v!r} is a dot-path that would climb out of {entry['path']}"
+    return ""
 
 
 def read_secret(home: Path, name: str = "ui.token") -> str:
@@ -193,7 +210,10 @@ class Studio:
         if not isinstance(name, str) or not isinstance(args, dict):
             return {"state": "REFUSED", "detail": "a call is {name: str, args: object}"}, 400
         try:
-            self.adapter.check(name, args)          # makes no HTTP call and writes no ledger row
+            e = self.adapter.check(name, args)      # makes no HTTP call and writes no ledger row
+            bad = dotdot(e, args)
+            if bad:
+                raise Refused(bad)
         except Refused as why:
             self.refusals += 1
             out = {"state": "REFUSED", "detail": str(why)}
@@ -203,7 +223,13 @@ class Studio:
                 out["how"] = ("This call needs a person. The code for it was written to Studio's log and to "
                               "HOME/pending/<id>; paste it into Approve. It is single-use and bound to this call.")
             return out, 403
-        res = self.adapter.call(name, args, approved_by=None, by="window")
+        try:
+            # `check` passes but `call` can still refuse: a `{job_id}` segment is filled only from an argument that
+            # looks like an id, so `job_id: "../../api/scripts/execute"` is refused where the path is built, not here.
+            res = self.adapter.call(name, args, approved_by=None, by="window")
+        except Refused as why:
+            self.refusals += 1
+            return {"state": "REFUSED", "detail": str(why)}, 403
         self.calls += 1
         self._note(name, res, by="window", event="call")
         return self._shape(res), 200
@@ -220,7 +246,7 @@ class Studio:
             e = self.adapter.check(name, args, approved_by="window")
         except Refused:
             return None                              # refused for some other reason: there is nothing to offer
-        if e["kind"] == "hardware" or wants_hardware(args):
+        if dotdot(e, args) or e["kind"] == "hardware" or wants_hardware(args):
             return None
         with self._lock:
             for p in list(self.pending.values()):
@@ -454,6 +480,11 @@ def make_handler(s: Studio):
             except ValueError:
                 n = -1
             if n < 0 or n > MAX_POST:
+                # Drained first (bounded), then refused: answering mid-upload resets the connection and the caller
+                # sees a network error instead of the reason. Only a caller that already passed the token gets here.
+                left = min(max(n, 0), 8 * MAX_POST)
+                while left > 0 and self.rfile.read(min(left, 1 << 16)):
+                    left -= 1 << 16
                 self._json({"error": f"the body must be JSON of at most {MAX_POST} bytes"}, 413)
                 return None
             raw = self.rfile.read(n) if n else b"{}"
@@ -578,7 +609,8 @@ def run(home: Path | None = None, port: int = PORT, block: bool = True, adapter:
               f"BioQL Studio will not attach to it. Free the port, or set a different one.", flush=True)
         return None
     s = Studio(home=home, port=port, adapter=adapter)
-    srv = ThreadingHTTPServer(("127.0.0.1", s.port), make_handler(s))       # 127.0.0.1 only: never 0.0.0.0
+    srv = ThreadingHTTPServer(("127.0.0.1", s.port), make_handler(s))       # the loopback address only, never every
+                                                                            # interface, and never a LaunchAgent
     srv.daemon_threads = True
     print(f"BioQL Studio {VERSION} · http://127.0.0.1:{s.port} · data in {s.home} · BioQL at {s.adapter.base}",
           flush=True)

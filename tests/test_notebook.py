@@ -62,10 +62,24 @@ def test_a_corrupt_key_raises_and_is_left_alone(studio_home):
 def test_a_missing_public_key_is_reported_not_guessed(studio_home, tmp_path):
     f = _log(tmp_path)
     _three(f)
+    saved = notebook.pub_path().read_text()
     notebook.pub_path().unlink()
     r = notebook.verify(f)
     assert r["ok"] is False and r["broken_at"] is None and "no public key" in r["why"]
-    assert notebook.verify(f, pubkey=notebook.public_key()[0] or None) is not None   # the key can still be supplied
+    # Its own state: three signed lines left UNCHECKED is not three lines signed by somebody else.
+    assert r["unchecked_no_key"] == 3 and r["signed_by_other_key"] == 0 and r["unsigned"] == 0
+    assert notebook.export(1, f)["signature"]["state"] == notebook.NO_KEY
+    assert "UNCHECKED" in notebook.export(1, f)["text"]
+    assert notebook.verify(f, pubkey=saved)["ok"] is True          # the key can still be supplied by hand
+
+
+def test_a_corrupt_public_key_is_reported_not_raised(studio_home, tmp_path):
+    """A public key that is not a key says nothing about the log: it is a log nobody here can check."""
+    f = _log(tmp_path)
+    _three(f)
+    notebook.pub_path().write_text("deadbeef\n")
+    r = notebook.verify(f)
+    assert r["ok"] is False and r["broken_at"] is None and "cannot be read" in r["why"]
 
 
 def test_a_lost_public_half_is_rebuilt_from_the_private_one(studio_home, tmp_path):
@@ -96,7 +110,8 @@ def test_record_signs_every_line_and_the_ledger_stays_the_ledger(studio_home, tm
     assert oct(os.stat(notebook.sig_path(f)).st_mode & 0o777) == "0o600"
     r = notebook.verify(f)
     assert r == {"ok": True, "lines": 3, "broken_at": None, "why": None, "key_ids": {kid: 3},
-                 "current_key_id": kid, "unsigned": 0, "signed_by_other_key": 0, "orphan_signatures": 0}
+                 "current_key_id": kid, "unsigned": 0, "signed_by_other_key": 0, "unchecked_no_key": 0,
+                 "orphan_signatures": 0}
 
 
 def test_an_empty_notebook_is_not_a_broken_one(studio_home, tmp_path):
@@ -240,10 +255,13 @@ def test_a_forged_key_id_is_a_bad_signature_not_a_key_replacement(studio_home, t
     assert got["ok"] is False and got["broken_at"] == 1 and "does not match" in got["why"]
 
 
-def test_a_run_deleted_and_re_signed_with_the_device_key_is_still_visible(studio_home, tmp_path):
-    """The worst case this can still see: whoever deletes a run HAS the device key, so they rebuild the chain and
-    sign it properly. Hash, link and signature are then all correct — `seq` is what says a run is missing, which is
-    why it goes in before the line is hashed."""
+def test_a_run_deleted_and_re_signed_with_the_device_key_leaves_a_gap_in_seq(studio_home, tmp_path):
+    """Whoever deletes a run and HAS the device key rebuilds the chain and signs it properly: hash, link and
+    signature all come out correct, and `seq` is the only thing left that says a run is missing — which is why it
+    goes in before the line is hashed.
+
+    It is not a guarantee: the same person can renumber `seq` in the same pass and nothing here will see it (the
+    module's docstring says so). This catches the one who did not bother."""
     f = _log(tmp_path)
     _three(f)
     rows = [r for r in _rows(f) if r["seq"] != 2]          # run 2 never happened, as far as the file shows
@@ -269,6 +287,28 @@ def test_a_corrupt_signature_file_is_reported(studio_home, tmp_path):
     assert got["ok"] is False and "not a usable signature" in got["why"]
 
 
+def test_record_under_threads_does_not_fork_the_chain(studio_home, tmp_path, monkeypatch):
+    """Two threads reading the same `seq` would write two lines claiming one position and brick an honest log
+    forever. `_next_seq` is slowed here so the race is taken, not hoped for."""
+    import threading
+    import time as _t
+    f = _log(tmp_path)
+    notebook.device_key()                                   # created once, outside the race
+    real = notebook._next_seq
+    monkeypatch.setattr(notebook, "_next_seq", lambda p: (_t.sleep(0.02), real(p))[1])
+    ts = [threading.Thread(target=notebook.record, args=({**ROW, "i": i}, f)) for i in range(6)]
+    [t.start() for t in ts]
+    [t.join() for t in ts]
+    assert [r["seq"] for r in _rows(f)] == [1, 2, 3, 4, 5, 6]
+    assert notebook.verify(f) == {**notebook.verify(f), "ok": True, "lines": 6}
+
+
+def test_a_caller_cannot_choose_its_own_position(studio_home, tmp_path):
+    f = _log(tmp_path)
+    notebook.record(ROW, f)
+    assert notebook.record({**ROW, "seq": 999}, f)["seq"] == 2
+
+
 def test_signing_an_unhashed_row_is_refused(studio_home):
     with pytest.raises(ValueError):
         notebook.sign_line({"tool": "x"})
@@ -288,7 +328,8 @@ def test_export_carries_parameters_result_provenance_chain_and_signature(studio_
     assert e["provenance"] == {"recorded": True, "is_real_hardware": True,
                                "ibm_job_ids": ["dbi185ghoj4c73b5d1p0"], "quantum_backends": ["ibm_fez"]}
     assert e["verification"]["verdict"] == "contradicted" and len(e["verification"]["findings"]) == 1
-    assert e["chain"] == {"position": 2, "of": 2, "prev": _rows(f)[0]["hash"], "hash": _rows(f)[1]["hash"]}
+    assert e["chain"] == {"position": 2, "of": 2, "prev": _rows(f)[0]["hash"], "hash": _rows(f)[1]["hash"],
+                          "content_matches_hash": True}
     assert e["signature"]["state"] == notebook.VALID and e["chain_check"]["ok"] is True
     assert "REAL HARDWARE" in e["text"] and "dbi185ghoj4c73b5d1p0" in e["text"] and "quantum_twin" in e["text"]
     assert "approved by the owner" in e["text"]
@@ -307,6 +348,22 @@ def test_export_never_infers_provenance_or_a_verdict(studio_home, tmp_path):
     assert e["verification"] == {"verdict": None, "findings": [], "note": "not recorded on this line"}
     assert "not recorded" in e["text"] and "none (real-or-null: never inferred)" in e["text"]
     assert "clean" not in e["text"]
+
+
+def test_export_never_shows_a_tampered_row_as_signed(studio_home, tmp_path):
+    """The entry is what a due-diligence reader is handed, so it must not render forged parameters under a valid
+    signature: the signature covers the line's hash, so the hash is recomputed from the line itself here too. And
+    the whole notebook's verdict travels with every entry, including the lines that were not touched."""
+    f = _log(tmp_path)
+    _three(f)
+    rows = _rows(f)
+    rows[1]["args"] = {"smiles": "CCO"}
+    _write(f, rows)
+    bad = notebook.export(2, f)
+    assert bad["signature"]["state"] == notebook.BAD and bad["chain"]["content_matches_hash"] is False
+    assert "DOES NOT MATCH ITS OWN HASH" in bad["text"] and "NOT VERIFIED" in bad["text"]
+    untouched = notebook.export(3, f)                       # its own line is intact; the notebook is not
+    assert untouched["chain"]["content_matches_hash"] is True and "NOT VERIFIED" in untouched["text"]
 
 
 def test_export_reports_a_broken_signature_on_the_run_it_shows(studio_home, tmp_path):

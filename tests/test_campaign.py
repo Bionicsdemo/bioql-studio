@@ -41,10 +41,7 @@ def run(tool, args=None, why="because", **extra):
 
 
 def auditor_says(supported=True, why="re-derived from the numbers"):
-    def a(ev):
-        assert "numbers" not in json.dumps(ev["criteria"])            # the auditor gets data, not a summary
-        return [{"claim": c, "supported": supported, "why": why} for c in ev["criteria"]]
-    return a
+    return lambda ev: [{"claim": c, "supported": supported, "why": why} for c in ev["criteria"]]
 
 
 def confirmed(a, runs, **kw):
@@ -79,10 +76,18 @@ def test_a_plan_cannot_carry_its_own_approval(fake_bioql):
     assert "approved_by" in str(e.value)
 
 
-def test_an_empty_or_criterionless_plan_is_rejected(fake_bioql):
+def test_a_malformed_plan_is_rejected_never_read_charitably(fake_bioql):
     a = ad(fake_bioql)
-    for bad in ({"title": "t", "criteria": ["x"], "runs": []}, {"title": "t", "criteria": [], "runs": [run("backend_health")]},
-                {"title": "", "criteria": ["x"], "runs": [run("backend_health")]}, ["not an object"]):
+    ok = [run("backend_health")]
+    for bad in ({"title": "t", "criteria": ["x"], "runs": []},
+                {"title": "t", "criteria": [], "runs": ok},
+                {"title": "", "criteria": ["x"], "runs": ok},
+                {"title": "t", "criteria": "one criterion", "runs": ok},     # a string would become 13 criteria
+                {"title": "t", "criteria": ["x", "  "], "runs": ok},         # an empty criterion is not dropped
+                {"title": "t", "criteria": ["x", "x"], "runs": ok},         # nor is a repeated one merged
+                {"title": "t", "criteria": ["x"], "runs": ok, "approved_by": "Heinz"},
+                {"title": "t", "criteria": ["x"], "runs": [{"tool": "backend_health", "args": "none"}]},
+                ["not an object"]):
         with pytest.raises(cm.Rejected):
             cm.plan(QUESTION, lambda q, b=bad: b, adapter=a)
 
@@ -134,6 +139,17 @@ def test_a_campaign_cannot_launder_approval(fake_bioql):
     assert json.loads(ledger.path_file().read_text().splitlines()[-1])["approved_by"] == "Heinz"
 
 
+def test_a_run_added_after_the_confirmation_does_not_inherit_the_approval(fake_bioql):
+    """The person approves a plan, not a campaign object that can grow afterwards."""
+    a = ad(fake_bioql)
+    c = confirmed(a, [run("heavy", {"smiles": "CCO"})])
+    c.runs.append(cm.Run(n=2, tool="heavy", args={"smiles": "CCC"}, needs_approval=True))
+    with pytest.raises(Refused) as e:
+        cm.execute(c, approved_by="Heinz", adapter=a)
+    assert "changed after the person confirmed" in str(e.value)
+    assert not ledger.path_file().exists()
+
+
 # ------------------------------------------------------------------ 3. a failure is never a result
 def test_an_unresolvable_run_never_becomes_a_result(fake_bioql):
     a = ad(fake_bioql)
@@ -162,11 +178,34 @@ def test_two_runs_never_write_into_each_others_folder(fake_bioql):
 
 
 def test_the_pool_is_bounded_and_capped(fake_bioql):
+    assert (cm.workers_for(99), cm.workers_for(0), cm.workers_for(-4), cm.workers_for(None), cm.workers_for(3)) \
+        == (8, 1, 1, 1, 3)
     a = ad(fake_bioql)
     c = confirmed(a, [run("backend_health") for _ in range(3)])
     cm.execute(c, approved_by="Heinz", adapter=a, workers=99)
-    assert cm.MAX_WORKERS == 8
     assert not [t for t in threading.enumerate() if t.name.startswith(f"campaign-{c.id}")]
+
+
+def test_every_planned_run_runs_even_when_the_pool_is_smaller(fake_bioql):
+    """A queued run must be entered, not cancelled: a first version cancelled the pool's pending futures on the way
+    out and runs 2 and 3 silently never ran, with no record of why."""
+    a = ad(fake_bioql)
+    c = confirmed(a, [run("smiles_to_3d", {"smiles": s}) for s in ("C", "CC", "CCC")])
+    out = cm.execute(c, approved_by="Heinz", adapter=a, workers=1)
+    assert [r.state for r in out.runs] == [RESOLVED] * 3
+    assert sorted(p.name for p in out.folder.iterdir()) == ["campaign.json", "run-1", "run-2", "run-3"]
+
+
+def test_a_worker_failure_is_unresolvable_with_its_cause(fake_bioql):
+    """Nothing escapes a worker: an unexpected failure must not leave a run unexplained (or empty-but-plausible)."""
+    class Breaks:
+        def open(self, *a, **k):
+            raise ValueError("the opener broke")
+    a = Adapter(fake_bioql, entries(), opener=Breaks())
+    out = cm.execute(confirmed(a, [run("backend_health")]), approved_by="Heinz", adapter=a)
+    r = out.runs[0]
+    assert r.state == UNRESOLVABLE and "the opener broke" in r.detail and r.result_sha256 is None
+    assert out.state == cm.FAILED and any("UNRESOLVABLE run 1" in x for x in cm.report(out)["attention"])
 
 
 # ------------------------------------------------------------------ 5. the audit
@@ -195,14 +234,29 @@ def test_an_auditor_that_raises_or_says_nothing_is_unknown_too(fake_bioql):
 
 
 def test_the_auditor_gets_numbers_and_provenance_only(fake_bioql):
-    a = ad(fake_bioql)
+    """No prose from the result, no question wording, and none of Studio's own verdict: an auditor handed a conclusion
+    returns it confirmed. `/api/plain` carries a note, and the note must not reach it."""
+    a = ad(fake_bioql, plain={"method": "POST", "path": "/api/plain", "kind": "local"})
     seen = {}
-    out = cm.execute(confirmed(a, [run("mixed")]), approved_by="Heinz", adapter=a)
+    out = cm.execute(confirmed(a, [run("plain"), run("mixed")]), approved_by="Heinz", adapter=a, workers=1)
+    assert [(r.n, r.state, r.detail) for r in out.runs] == [(1, RESOLVED, "HTTP 200"), (2, RESOLVED, "HTTP 200")]
     cm.audit(out, lambda ev: seen.update(ev) or [])
-    assert set(seen["runs"][0]) == {"run", "tool", "args", "numbers", "provenance", "verdict", "findings",
-                                    "result_sha256", "ledger_position"}
-    assert seen["runs"][0]["numbers"] == {"$.a.is_real_hardware": True, "$.b[0].is_real_hardware": False}
+    got = {r["run"]: r for r in seen["runs"]}
+    assert set(got[1]) == {"run", "tool", "args", "numbers", "provenance", "result_sha256", "ledger_position"}
+    text = json.dumps(seen)
+    assert "prose only" not in text and QUESTION not in text and "contradicted" not in text
+    assert got[1]["numbers"] == {"$.value": 1}
+    assert got[2]["numbers"] == {"$.a.is_real_hardware": True, "$.b[0].is_real_hardware": False}
     assert seen["criteria"] == out.criteria
+
+
+def test_an_audit_with_no_results_does_not_ask_the_auditor(fake_bioql):
+    a = ad(fake_bioql)
+    called = []
+    out = cm.audit(cm.execute(confirmed(a, [run("dead")]), approved_by="Heinz", adapter=a),
+                   lambda ev: called.append(ev) or auditor_says(True)(ev))
+    assert called == [] and out.state == cm.FAILED
+    assert out.audited[0]["state"] == UNRESOLVABLE and "no run produced a result" in out.audited[0]["why"]
 
 
 def test_an_unsupported_criterion_is_at_the_top(fake_bioql):
@@ -226,6 +280,17 @@ def test_a_high_finding_surfaces_at_the_top_of_the_report(fake_bioql):
     assert rep["attention"][0].startswith("HIGH hardware_mixed") and not rep["clean"]
     md = cm.render(rep)
     assert md.index("hardware_mixed") < md.index("## Criteria")
+
+
+def test_an_unaudited_campaign_is_never_reported_as_clean(fake_bioql):
+    a = ad(fake_bioql)
+    out = cm.execute(confirmed(a, [run("backend_health")]), approved_by="Heinz", adapter=a)
+    rep = cm.report(out)
+    assert out.state == cm.VERIFYING and not rep["clean"]
+    assert rep["attention"][0].startswith("NOT DONE")
+    assert all(v["state"] == UNRESOLVABLE for v in rep["criteria"])
+    md = cm.render(rep)
+    assert md.index("NOT DONE") < md.index("## Criteria") and "not audited yet" in md
 
 
 def test_report_carries_provenance_real_or_null_and_the_ledger_position(fake_bioql):
@@ -267,6 +332,27 @@ def test_a_stopped_campaign_never_starts(fake_bioql):
     with pytest.raises(Refused):
         cm.execute(c, approved_by="Heinz", adapter=a)
     assert not ledger.path_file().exists()
+
+
+def test_a_stop_persists_past_this_process(fake_bioql):
+    """The stop flag is in memory; the state on disk is what a later process reads, and it must still refuse."""
+    a = ad(fake_bioql)
+    c = cm.stop(confirmed(a, [run("backend_health")]))
+    cm._STOPS.clear()                                  # another process: no event, only campaign.json
+    again = cm.load(c.id)
+    assert again.state == cm.STOPPED
+    for call in (lambda: cm.execute(again, approved_by="Heinz", adapter=a),
+                 lambda: cm.audit(again, auditor_says(True))):
+        with pytest.raises(Refused):
+            call()
+    assert cm.report(again)["campaign"]["state"] == cm.STOPPED
+
+
+def test_stop_does_not_reopen_a_finished_campaign(fake_bioql):
+    a = ad(fake_bioql)
+    out = cm.audit(cm.execute(confirmed(a, [run("backend_health")]), approved_by="Heinz", adapter=a),
+                   auditor_says(True))
+    assert cm.stop(out).state == cm.DONE
 
 
 # ------------------------------------------------------------------ 8. the state on disk

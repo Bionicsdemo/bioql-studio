@@ -34,10 +34,27 @@ def test_a_corrupt_rails_file_is_unresolvable_and_never_reads_as_no_rails():
             call()
 
 
-def test_a_rail_whose_pattern_cannot_compile_is_a_corrupt_store():
-    rails.rails_path().write_text(json.dumps(
-        {"rails": {"c": {"code": "c", "severity": "high", "why": "w", "pattern": "(unclosed"}}}))
-    assert rails.read_store().state == "UNRESOLVABLE"
+def test_a_rail_that_could_not_be_applied_is_a_corrupt_store():
+    """Not "a rail with a defect": a store that cannot be applied as written. Hand-edited into every shape that
+    would otherwise crash somewhere later, far from the file that caused it."""
+    rail = {"code": "c", "severity": "high", "why": "w"}
+    for bad in ({"rails": {"c": {**rail, "pattern": "(unclosed"}}},
+                {"rails": {"c": {**rail, "pattern": 7}}},
+                {"rails": {"c": {**rail, "why": ""}}},
+                {"rails": {"c": {**rail, "severity": "blocking"}}},
+                {"rails": {"c": {**rail, "code": "other"}}},
+                {"rails": {"c": "a rail written as a string"}},
+                {"rails": {}, "rejections": {"c": 3}},
+                {"rails": {}, "events": "not a list"},
+                "a rails file that is not an object"):
+        rails.rails_path().write_text(json.dumps(bad))
+        assert rails.read_store().state == "UNRESOLVABLE", bad
+
+
+def test_an_unfamiliar_severity_blocks_rather_than_slips_through():
+    """A rail fails closed: a finding whose severity this version does not know is not silently under every floor."""
+    rail = [{"code": "c", "severity": verify.HIGH, "why": "w", "pattern": None}]
+    assert len(rails.block([{"code": "c", "severity": "blocking", "detail": "d", "path": "$"}], rail)) == 1
 
 
 def test_a_write_never_overwrites_a_store_it_could_not_read():
@@ -116,6 +133,19 @@ def test_gate_blocks_the_report_and_counts_only_what_it_read_itself():
     assert rails.rail_for("quantum_twin")["hits"] == 1
     rails.gate(findings, rails=rails.list_rails())               # rails passed in: a pure query
     assert rails.rail_for("quantum_twin")["hits"] == 1
+
+
+def test_an_explicit_store_file_is_the_only_store_the_gate_touches(tmp_path):
+    """One store per call: reading the rails from one file while counting the hit in another would make a rail that
+    blocks nothing and a count nobody can explain."""
+    other = tmp_path / "other-rails.json"
+    rails.add_rail("quantum_twin", "the default store's rail", severity=verify.HIGH)
+    rails.add_rail("counter_vs_execution", "the other store's rail", severity=verify.HIGH, file=other)
+    findings = verify.check(rails.REAL_ADMET, provenance(rails.REAL_ADMET))
+    g = rails.gate(findings, file=other)
+    assert [b["code"] for b in g["blocked_by"]] == ["counter_vs_execution"]
+    assert rails.rail_for("counter_vs_execution", file=other)["hits"] == 1
+    assert rails.rail_for("quantum_twin")["hits"] == 0
 
 
 def test_a_rail_never_changes_a_number_and_never_hides_a_finding():
@@ -240,19 +270,17 @@ def test_a_broken_fixture_makes_the_suite_fail():
 
 
 def test_a_partially_broken_fixture_fails_on_the_missing_code_alone():
-    """Only the envelope's backend and leaf wording are repaired; the twin payload stays. The verdict is still
-    `contradicted`, so a case that only checked the verdict would pass — the codes are what catch it."""
+    """Only the COUNTER is repaired — which is exactly the partial repair the owner made on 2026-11-19: derive
+    quantum_success from what ran, and keep `admet_quantum` for compatibility. The twin stays, so the verdict is
+    still `contradicted` and a case that checked only the verdict would pass. The missing code is what catches it."""
     half = json.loads(json.dumps(rails.REAL_ADMET))
-    half["quantum_backend"] = "ibm_fez"
-    for res in half["results"]:
-        for k in ("admet_classical", "admet_quantum"):
-            res[k]["backend"], res[k]["quantum_engine"] = "Bionics engine", "ensemble"
+    half["summary"] = {"quantum_success": 0, "classical_fallback": 1, "total_analyzed": 1}
     case = next(dict(c) for c in rails.BUILTIN if c["name"] == "real_admet_envelope_2026_11_19")
     case["result_fixture"] = half
     row = rails.run_case(case)
     assert row["verdict"] == "contradicted" and row["passed"] is False
-    assert row["codes"] == ["quantum_twin"]
-    assert row["missing_codes"] == ["counter_vs_execution", "quantum_label_vs_execution"]
+    assert "counter_vs_execution" in row["missing_codes"], row
+    assert "quantum_twin" in row["codes"], row
 
 
 class Hostile(dict):

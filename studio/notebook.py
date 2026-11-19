@@ -20,6 +20,10 @@ checked — never because the content was judged bad. The same for an unsigned l
 Honest limits, stated rather than hidden:
 - truncating the ledger and its signature file by the same lines is invisible here. Only an anchor kept elsewhere
   (a printed hash, another machine) catches that; the notebook reports what it can see;
+- whoever holds the private key can rebuild the whole log — chain, `seq` and signatures — and it will verify. And
+  `notebook.pub` sits beside the log, so replacing both keys together also verifies clean. What this catches is a
+  log altered WITHOUT the key; what makes key replacement visible is the `key_id` being pinned somewhere else (a
+  report, a printout, another machine), not the files themselves;
 - the key proves the device, not the person. `by` and `approved_by` in the row are claims the row makes;
 - a signature says this line is the line that was written. It says nothing about whether BioQL's science was right —
   that is `verify.py`'s job, and a flagged result stays flagged in the entry.
@@ -41,9 +45,13 @@ from . import ledger
 KEY_NAME, PUB_NAME, SIG_SUFFIX = "notebook.key", "notebook.pub", ".sig"
 KEY_ID_LEN = 16                 # 8 bytes of sha256(public key): enough to name a key, too short to be mistaken for one
 
-_LOCK = threading.Lock()        # Studio's own: `ledger._LOCK` is not reentrant, and `record` calls `ledger.append`
+# Studio's own lock, and reentrant: `record` holds it across seq + append + signature (two threads reading the same
+# seq would brick an honest log), and `sign_line` re-enters it through `device_key`. `ledger._LOCK` is a plain Lock
+# and is not taken here: holding it around `ledger.append`, which takes it itself, would deadlock.
+_LOCK = threading.RLock()
 
-VALID, UNSIGNED, OTHER_KEY, BAD = "VALID", "UNSIGNED", "OTHER_KEY", "BAD_SIGNATURE"
+VALID, UNSIGNED, OTHER_KEY, BAD, NO_KEY = "VALID", "UNSIGNED", "OTHER_KEY", "BAD_SIGNATURE", "NO_PUBLIC_KEY_HERE"
+STATES = (VALID, UNSIGNED, OTHER_KEY, BAD, NO_KEY)
 
 
 class NoCrypto(RuntimeError):
@@ -216,10 +224,12 @@ def record(entry: dict, file: Path | None = None) -> dict:
     `seq` goes in before the line is hashed, so the position is covered by both the hash and the signature.
     """
     f = file or ledger.path_file()
-    seq = _next_seq(f)
-    row = ledger.append({"seq": seq, **entry}, f)        # the ledger's own append, untouched
-    signed = sign_line(row)
-    _append_sig(signed, f)
+    with _LOCK:                                          # seq, the line and its signature are one step, or none
+        seq = _next_seq(f)
+        # `seq` last: a caller's own `seq` must not be able to overwrite the position the notebook counted.
+        row = ledger.append({**entry, "seq": seq}, f)    # the ledger's own append, untouched
+        signed = sign_line(row)
+        _append_sig(signed, f)
     return signed
 
 
@@ -229,7 +239,10 @@ def _state_of(h: str, sigs: dict, pub, kid: str | None) -> tuple[str, str | None
     e = sigs.get(h)
     if e is None:
         return UNSIGNED, None
-    if pub is None or e["key_id"] != kid:
+    if pub is None:
+        # Signed, and there is nothing here to check it with. Not "another key": a different unverifiable.
+        return NO_KEY, e["key_id"]
+    if e["key_id"] != kid:
         return OTHER_KEY, e["key_id"]
     try:
         pub.verify(bytes.fromhex(e["sig"]), _message(h, e["key_id"]))
@@ -255,9 +268,13 @@ def verify(file: Path | None = None, pubkey=None) -> dict:
     if not lines and not sigs:
         return {**out, "ok": True, "why": "the notebook is empty"}
 
-    pub, kid = public_key(pubkey)
+    try:
+        pub, kid = public_key(pubkey)
+    except CorruptKey as why:
+        # A public key that is not a key is not a bad notebook: it is a notebook nobody here can check. Reported.
+        pub, kid, sig_complaints = None, None, sig_complaints + [f"the public key cannot be read: {why}"]
     out["current_key_id"] = kid
-    counts = {UNSIGNED: 0, OTHER_KEY: 0}
+    counts = {UNSIGNED: 0, OTHER_KEY: 0, NO_KEY: 0}
     other_keys: dict[str, int] = {}
     prev, seen = "0" * 64, set()
     n = 0
@@ -291,7 +308,8 @@ def verify(file: Path | None = None, pubkey=None) -> dict:
 
     out["key_ids"] = {**out["key_ids"], **{k: v for k, v in other_keys.items() if k not in out["key_ids"]}}
     orphans = sorted(set(sigs) - seen)
-    out["unsigned"], out["signed_by_other_key"], out["orphan_signatures"] = counts[UNSIGNED], counts[OTHER_KEY], len(orphans)
+    out["unsigned"], out["signed_by_other_key"] = counts[UNSIGNED], counts[OTHER_KEY]
+    out["unchecked_no_key"], out["orphan_signatures"] = counts[NO_KEY], len(orphans)
 
     why = []
     if orphans:
@@ -299,7 +317,8 @@ def verify(file: Path | None = None, pubkey=None) -> dict:
         why.append(f"{len(orphans)} signature(s) have no line in the ledger (lines removed, or the tail truncated): "
                    + ", ".join(x[:12] for x in orphans[:3]))
     if pub is None:
-        why.append(f"there is no public key to verify with (looked for {pub_path().name}): nothing here was checked")
+        why.append(f"there is no public key to verify with (looked for {pub_path().name}): "
+                   f"{counts[NO_KEY]} signed line(s) were left unchecked")
     if counts[UNSIGNED]:
         why.append(f"{counts[UNSIGNED]} line(s) carry no signature (written through ledger.append, not notebook.record)")
     if counts[OTHER_KEY] and pub is not None:
@@ -359,17 +378,24 @@ def export(job_or_range, file: Path | None = None, pubkey=None) -> dict:
     if not picked:
         raise LookupError(f"no line in {f.name} matches {job_or_range!r} (searched seq, line hash and job id, exactly)")
 
-    entries = [_entry(r, total, sigs, pub, kid) for r in picked]
+    check = verify(f, pubkey)
+    entries = [_entry(r, total, sigs, pub, kid, check) for r in picked]
     # `chain_check`, not `chain`: each entry has its own `chain` (its position), and merging the two would hide one.
-    out = {"notebook": str(f), "entries": entries, "chain_check": verify(f, pubkey)}
+    out = {"notebook": str(f), "entries": entries, "chain_check": check}
     out["text"] = "\n\n".join(e["text"] for e in entries)
     return out if len(entries) != 1 else {**out, **entries[0], "entries": entries}
 
 
-def _entry(row: dict, total: int, sigs: dict, pub, kid: str | None) -> dict:
+def _entry(row: dict, total: int, sigs: dict, pub, kid: str | None, check: dict | None = None) -> dict:
     prov_recorded = isinstance(row.get("provenance"), dict)
     prov = row.get("provenance") if prov_recorded else {}
     state, by = _state_of(row.get("hash", ""), sigs, pub, kid)
+    # The signature is over the line's hash, so a valid signature proves nothing about a line whose content no
+    # longer matches that hash. Recompute it here: an entry must never render forged parameters under "valid".
+    body = {k: v for k, v in row.items() if k not in ("hash", "_line")}
+    content_ok = ledger.digest(body) == row.get("hash")
+    if not content_ok and state in (VALID, NO_KEY, OTHER_KEY):
+        state, by = BAD, by
     seq = row.get("seq") or row["_line"]
     t = row.get("t")
     e = {
@@ -390,9 +416,14 @@ def _entry(row: dict, total: int, sigs: dict, pub, kid: str | None) -> dict:
         "verification": ({"verdict": row.get("verdict"), "findings": row.get("findings") or []}
                          if ("verdict" in row or "findings" in row) else {"verdict": None, "findings": [],
                                                                          "note": "not recorded on this line"}),
-        "chain": {"position": seq, "of": total, "prev": row.get("prev"), "hash": row.get("hash")},
+        "chain": {"position": seq, "of": total, "prev": row.get("prev"), "hash": row.get("hash"),
+                  "content_matches_hash": content_ok},
         "signature": {"state": state, "key_id": by, "sig": (sigs.get(row.get("hash", "")) or {}).get("sig"),
                       "current_key_id": kid},
+        # The whole notebook's verdict travels with the entry: one page that does not need a second document to be
+        # read honestly.
+        "notebook_ok": None if check is None else check["ok"],
+        "notebook_why": None if check is None else check["why"],
     }
     e["text"] = _render(e)
     return e
@@ -402,6 +433,7 @@ _SIG_SAYS = {
     VALID: "valid, made by this device's key",
     UNSIGNED: "none on record for this line (it was written through the plain ledger)",
     OTHER_KEY: "made by another key than the one here: it cannot be checked with this public key",
+    NO_KEY: "present and UNCHECKED: there is no public key here to check it with",
     BAD: "present and does NOT match this line",
 }
 
@@ -431,8 +463,11 @@ def _render(e: dict) -> str:
     lines += [f"    {f.get('severity')} {f.get('code')} at {f.get('path')}: {f.get('detail')}" for f in findings[:12]]
     lines += [
         f"  chain             line {e['chain']['position']} of {e['chain']['of']}, prev {str(e['chain']['prev'])[:12]}…,"
-        f" hash {str(e['chain']['hash'])[:12]}…",
+        f" hash {str(e['chain']['hash'])[:12]}…"
+        + ("" if e["chain"]["content_matches_hash"] else "  — THIS LINE DOES NOT MATCH ITS OWN HASH: it was changed"),
         f"  signature         {_SIG_SAYS.get(s['state'], s['state'])}"
         + (f" (key {s['key_id']})" if s["key_id"] else ""),
+        "  notebook          " + {True: "verified end to end", False: f"NOT VERIFIED — {e['notebook_why']}",
+                                  None: "not checked"}[e["notebook_ok"]],
     ]
     return "\n".join(lines)

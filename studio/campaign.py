@@ -284,11 +284,13 @@ def execute(c: Campaign, approved_by: str | None = None, adapter: Adapter | None
     claimed: set[int] = set()
     pool = ThreadPoolExecutor(max_workers=workers_for(workers), thread_name_prefix=f"campaign-{c.id}")
     try:
-        # cancel_futures leaves nothing queued, and shutdown(wait=True) returns only when no worker is still running.
         for r in c.runs:
             pool.submit(_one, c, r, a, claimed)
     finally:
-        pool.shutdown(wait=True, cancel_futures=True)
+        # `wait=True` and NOT cancel_futures: a queued run must still be entered, because what makes `stop()` stop is
+        # the check at the top of `_one` — cancelling the future instead would also drop runs of a campaign nobody
+        # stopped, which is how a run silently never ran (caught by the PLANNED guard below).
+        pool.shutdown(wait=True)
     with _LOCK:
         if _stopped(c):
             c.state, c.stopped_at = STOPPED, c.stopped_at or time.time()
@@ -463,13 +465,14 @@ def _record_audit(c: Campaign, was: str, said: Any, unknown_why: str) -> Campaig
         else:
             out.append({"claim": claim, "state": UNRESOLVABLE, "supported": None,
                         "why": why or unknown_why})
-    c.audited = out
-    if _stopped(c):
-        c.state, c.stopped_at = STOPPED, c.stopped_at or time.time()
-    else:
-        # A campaign whose runs produced nothing stays failed: an audit does not promote it.
-        c.state = FAILED if was == FAILED else DONE
-    return save(c)
+    with _LOCK:
+        c.audited = out
+        if _stopped(c):
+            c.state, c.stopped_at = STOPPED, c.stopped_at or time.time()
+        else:
+            # A campaign whose runs produced nothing stays failed: an audit does not promote it.
+            c.state = FAILED if was == FAILED else DONE
+        return save(c)
 
 
 # ---------------------------------------------------------------------------- 5. report
@@ -477,13 +480,19 @@ def report(c: Campaign) -> dict:
     """The campaign as a reader needs it: what is wrong first, then the criteria, then every run with its provenance
     (real-or-null) and the ledger position that leads back to the raw call."""
     highs = [(r, f) for r in c.runs for f in (r.findings or []) if f.get("severity") == verify.HIGH]
-    unsupported = [v for v in c.audited if v.get("state") == RESOLVED and v.get("supported") is False]
-    unknown = [v for v in c.audited if v.get("state") == UNRESOLVABLE]
+    # The criteria of an unaudited campaign are UNKNOWN, not met: a report of one is never clean.
+    criteria = list(c.audited) or [{"claim": x, "state": UNRESOLVABLE, "supported": None,
+                                    "why": "not audited yet: no independent auditor has re-derived this"}
+                                   for x in c.criteria]
+    unsupported = [v for v in criteria if v.get("state") == RESOLVED and v.get("supported") is False]
+    unknown = [v for v in criteria if v.get("state") == UNRESOLVABLE]
     attention = []
     if c.state == STOPPED:
         attention.append(f"STOPPED: {c.reason or 'the campaign was stopped'} — this campaign is not done")
     if c.state == FAILED:
         attention.append(f"FAILED: {c.reason or 'no run produced a result'}")
+    if c.state not in (DONE, STOPPED, FAILED):
+        attention.append(f"NOT DONE: this campaign is `{c.state}` — read it as work in progress, not as a conclusion")
     for r, f in highs:
         attention.append(f"HIGH {f['code']} in run {r.n} ({r.tool}) at {f.get('path')}: {f.get('detail')}")
     for v in unsupported:
@@ -500,8 +509,7 @@ def report(c: Campaign) -> dict:
                          "reason": c.reason},
             "attention": attention,
             "clean": not attention,
-            "criteria": list(c.audited) or [{"claim": x, "state": UNRESOLVABLE, "supported": None,
-                                             "why": "not audited yet"} for x in c.criteria],
+            "criteria": criteria,
             "runs": [{"n": r.n, "tool": r.tool, "args": r.args, "why": r.why, "state": r.state, "detail": r.detail,
                       "needs_approval": r.needs_approval, "approved_by": r.approved_by,
                       "result_sha256": r.result_sha256, "provenance": r.provenance, "verdict": r.verdict,

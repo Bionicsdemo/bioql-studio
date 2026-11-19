@@ -56,13 +56,13 @@ SAYS_CLASSICAL = re.compile(r"\b(classical|classic|lightgbm|xgboost|sklearn|heur
 ASSERTS = re.compile(r"\b(ibm_[a-z]+|ibmq|heron|real[ _]hardware|on[ _]hardware|qpu\b|quantum[ _]hardware|"
                      r"executed[ _]on[ _]ibm)\b", re.I)
 # A backend string that names an actual quantum lane: a device, a quantum simulator, or the algorithm that ran on
-# one. Matched against the TOKENISED value (see `_tokens`), so "CUDA-Q", "cudaq" and "CUDA Q" all land the same.
+# one. Matched against the TOKENISED value (see `tokens`), so "CUDA-Q", "cudaq" and "CUDA Q" all land the same.
 REAL_BACKEND = re.compile(r"\b(ibm|ibmq|fez|kingston|marrakesh|torino|heron|garnet|ionq|quantinuum|rigetti|braket|"
                           r"aer|statevector|cudaq|cuda|cuquantum|mps|qasm|qiskit|vqe|qaoa|qsvm|qnn|grover|sqd|"
                           r"uccsd)\b", re.I)
 
 
-def _tokens(s: str) -> str:
+def tokens(s: str) -> str:
     """The value with every non-alphanumeric run turned into a space, so `\\b` behaves.
 
     Without this, `CLASSICAL_FALLBACK` does not match `\\bclassical\\b` — `_` is a word character — and the honest
@@ -128,8 +128,8 @@ def execution_record(payload: Any) -> dict:
 
     # POSITIVE EVIDENCE is required. "This string is not a denial" is not evidence that quantum ran — reading it that
     # way is the same mistake as reading a missing record as a denial, pointed the other way.
-    names_quantum = [s for s in backends + modes if REAL_BACKEND.search(_tokens(s))]
-    accounted = [s for s in backends + modes if DENIES.match(s) or SAYS_CLASSICAL.search(_tokens(s))]
+    names_quantum = [s for s in backends + modes if REAL_BACKEND.search(tokens(s))]
+    accounted = [s for s in backends + modes if DENIES.match(s) or SAYS_CLASSICAL.search(tokens(s))]
     record = backends + modes + [str(x) for x in real + flags]
     if jobs or any(real) or any(flags) or names_quantum:
         ran: bool | None = True
@@ -169,9 +169,9 @@ def _asserts(path: str, value: Any) -> str | None:
     if isinstance(value, (int, float)):
         return "a count above zero" if (named and value > 0) else None
     if isinstance(value, str):
-        if DENIES.match(value) or SAYS_CLASSICAL.search(_tokens(value)):
+        if DENIES.match(value) or SAYS_CLASSICAL.search(tokens(value)):
             return None
-        if ASSERTS.search(_tokens(value)):
+        if ASSERTS.search(tokens(value)):
             return "a value naming quantum execution"
         return "a non-empty value" if named else None
     if isinstance(value, (dict, list)):

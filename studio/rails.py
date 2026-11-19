@@ -59,8 +59,11 @@ def _check_rail(code: str, rail: Any) -> None:
         raise ValueError(f"rail {code!r} carries code {rail.get('code')!r}")
     if rail.get("severity") not in SEVERITIES:
         raise ValueError(f"rail {code!r} has severity {rail.get('severity')!r}")
-    if rail.get("pattern"):
-        re.compile(rail["pattern"])             # a pattern that cannot compile is a corrupt store, not "no pattern"
+    if not isinstance(rail.get("why"), str) or not rail["why"]:
+        raise ValueError(f"rail {code!r} has no why: nobody could read why a report was blocked")
+    if rail.get("pattern") is not None:
+        # A pattern that cannot compile, or is not even a string, is a corrupt store — not "no pattern".
+        re.compile(rail["pattern"])
 
 
 def read_store(file: Path | None = None) -> Resolution:
@@ -83,7 +86,10 @@ def read_store(file: Path | None = None) -> Resolution:
             raise ValueError("'events' is not a list")
         for code, rail in store["rails"].items():
             _check_rail(code, rail)
-    except (ValueError, re.error) as e:
+        for code, rejections in store["rejections"].items():
+            if not isinstance(rejections, list):
+                raise ValueError(f"the rejections of {code!r} are not a list")
+    except (ValueError, TypeError, re.error) as e:
         return unresolvable(SOURCE, f"{f.name} exists but cannot be trusted: {e}")
     store.setdefault("version", 1)
     return resolved(store, SOURCE, f"{len(store['rails'])} rail(s)")
@@ -167,13 +173,14 @@ def block(findings: list[dict], rails: list[dict] | None = None, file: Path | No
 
     Pure: it reads, it never writes, and it never mutates the findings handed to it. `rails=[]` means no rails (and
     so nothing blocks); `rails=None` means read the store."""
-    known = {r["code"]: r for r in (list_rails() if rails is None else rails)}
+    known = {r["code"]: r for r in (list_rails(file) if rails is None else rails)}
     out = []
     for f in findings:
         rail = known.get(f.get("code"))
         if rail is None:
             continue
-        if _ORDER.get(f.get("severity"), 9) > _ORDER[rail["severity"]]:
+        # An unfamiliar severity blocks rather than slips through: a rail fails CLOSED.
+        if _ORDER.get(f.get("severity"), 0) > _ORDER[rail["severity"]]:
             continue
         if rail.get("pattern") and not re.search(rail["pattern"], f"{f.get('detail', '')} {f.get('path', '')}", re.I):
             continue
@@ -191,7 +198,7 @@ def gate(findings: list[dict], rails: list[dict] | None = None, file: Path | Non
 
     `hits` is counted only when this call read the store itself (`rails=None`), so passing rails in stays a pure
     query and a caller cannot inflate the count by re-checking."""
-    blocked = block(findings, rails)
+    blocked = block(findings, rails, file)
     if blocked and rails is None:
         store = _store(file)
         for b in blocked:

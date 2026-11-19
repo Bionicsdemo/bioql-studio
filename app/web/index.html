@@ -7,8 +7,9 @@
 <link rel="stylesheet" href="app.css">
 </head>
 <body>
-<!-- The token is never written into this file. Agtr substitutes __AGTR_TOKEN__ into any .html it serves
-     (service.py:1255); here app.js reads it from the URL fragment, which a browser never sends to a server, and
+<!-- The token is never written into this file, and this file holds no placeholder for one. Agtr substitutes its own
+     token placeholder into any .html it serves (service.py:1255); here app.js reads the token from the URL
+     fragment, which a browser never sends to a server, and
      clears it from the address bar immediately. No CDN, no framework: the CSP is default-src 'none' plus 'self'. -->
 <header>
   <h1>BioQL Studio</h1>

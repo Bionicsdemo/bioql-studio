@@ -22,11 +22,17 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from .claims import tokens
+
 HIGH, WARN, NOTE = "high", "warn", "note"
 
 QUANTUM_WORD = re.compile(r"(?:^|_)(quantum|qpu|vqe|sqd|qaoa|uccsd)(?:$|_)", re.I)
 CLASSICAL_SAYS = re.compile(r"\b(classical|classic|fallback|no quantum|simulator|aer|statevector|lightgbm|mock)\b", re.I)
-HARDWARE_SAYS = re.compile(r"\b(ibm_[a-z]+|ibmq|heron|real hardware|on hardware)\b", re.I)
+# Matched against TOKENISED text, where `ibm_fez` has already become `ibm fez` — so the pattern names the words,
+# never the underscore. Written as `ibm_[a-z]+` it matched nothing after tokenising, which is how this check went
+# quiet the moment the tokeniser was added.
+HARDWARE_SAYS = re.compile(r"\b(ibm|ibmq|heron|fez|kingston|marrakesh|torino|garnet|ionq|quantinuum|rigetti|"
+                           r"real hardware|on hardware)\b", re.I)
 SELECTION = re.compile(r"(?:^|_)(sqd|determinant|selected_determinants|cisd|subspace)(?:$|_)", re.I)
 ADVANTAGE = re.compile(r"\b(quantum advantage|outperform|better than classical|speedup|supremacy)\b", re.I)
 CLASSICAL_ARM = ("classical_baseline", "classical_arm", "baseline", "hdiag", "bare_coupling", "classical_reference",
@@ -71,14 +77,24 @@ def check(result: Any, provenance: dict | None = None) -> list[dict]:
     modes = [(p, str(v)) for p, v in _walk(result)
              if p.rsplit(".", 1)[-1] in ("quantum_execution", "execution_mode", "quantum_engine", "backend",
                                           "quantum_backend", "method") and isinstance(v, (str, int, float))]
-    classical = [(p, v) for p, v in modes if CLASSICAL_SAYS.search(v) or v.strip().upper() in ("NONE", "N/A")]
-    hardware = [(p, v) for p, v in modes if HARDWARE_SAYS.search(v)]
+    # Every comparison goes through `tokens` first. `\bclassical\b` cannot see into `CLASSICAL_FALLBACK` — the
+    # underscore is a word character — so BioQL's own word for this very defect was invisible here, and the real
+    # ADMET run was caught only through `quantum_backend: "NONE"` and some leaf prose. Same blind spot hid
+    # `aer_simulator`.
+    classical = [(p, v) for p, v in modes if CLASSICAL_SAYS.search(tokens(v)) or v.strip().upper() in ("NONE", "N/A")]
+    hardware = [(p, v) for p, v in modes if HARDWARE_SAYS.search(tokens(v))]
     real = prov.get("is_real_hardware")
     jobs = list(prov.get("ibm_job_ids") or [])
 
     # --- provenance against itself (real-or-null)
     if real is True and not jobs:
         say(HIGH, "hardware_without_job", "the answer says is_real_hardware true but carries no job id to prove it", "$")
+    if hardware and not jobs and real is not True:
+        # A field naming a real device IS a hardware claim, even when no `is_real_hardware` flag was set. Reading
+        # only the flag let `quantum_backend: "ibm_fez"` with no job id pass in silence.
+        say(HIGH, "hardware_named_without_job",
+            f"{hardware[0][1]!r} at {hardware[0][0]} names real quantum hardware, and the answer carries no job id "
+            f"to prove anything ran there", hardware[0][0])
     if jobs and real is False:
         say(HIGH, "job_without_hardware", f"an IBM job id is present ({jobs[0]}) while is_real_hardware says false", "$")
     if real == "mixed":
@@ -111,10 +127,14 @@ def check(result: Any, provenance: dict | None = None) -> list[dict]:
         if not isinstance(v, dict):
             continue
         qs, cf = v.get("quantum_success"), v.get("classical_fallback")
-        if isinstance(qs, int) and isinstance(cf, int) and classical and qs > 0 and cf == 0:
+        # The contradiction is `quantum_success > 0` on a run the envelope calls classical. Requiring
+        # `classical_fallback == 0` as well gave two free escapes: omit the companion counter, or set it above zero
+        # — so "5 quantum successes, 1 fallback" on a fully classical run passed in silence.
+        if isinstance(qs, (int, float)) and not isinstance(qs, bool) and classical and qs > 0:
+            seen = f"quantum_success={qs}" + (f" and classical_fallback={cf}" if isinstance(cf, (int, float)) else
+                                              " with no classical_fallback beside it")
             say(HIGH, "counter_vs_execution",
-                f"this summary counts quantum_success={qs} and classical_fallback={cf}, while the run reports "
-                f"{classical[0][1]!r} at {classical[0][0]}", p)
+                f"this summary counts {seen}, while the run reports {classical[0][1]!r} at {classical[0][0]}", p)
 
     # --- determinant selection with no subspace fraction (CLAUDE.md 2026-10-07)
     if any(SELECTION.search(p.rsplit(".", 1)[-1]) for p, _ in _walk(result)):
