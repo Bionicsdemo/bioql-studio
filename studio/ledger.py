@@ -24,6 +24,7 @@ instead of raising; and the lock is an `flock` on the file itself, which holds a
 """
 from __future__ import annotations
 
+import contextlib
 import errno
 import hashlib
 import json
@@ -40,6 +41,8 @@ except ImportError:                       # not POSIX: the in-process lock is al
     fcntl = None                          # type: ignore[assignment]
 
 _LOCK = threading.RLock()
+_HELD = threading.local()    # ledgers whose cross-process lock THIS THREAD already holds; shared, it would let
+                             # another thread skip the lock entirely
 READ_BACK = 8192                          # the first window to look back for a line boundary; it grows as needed
 
 
@@ -103,7 +106,23 @@ def _quarantine(f: Path, keep: int, why: str) -> dict:
         out.write(bad)
     with f.open("r+b") as fh:
         fh.truncate(keep)
-    return {"bytes": len(bad), "sha256": hashlib.sha256(bad).hexdigest(), "moved_to": hurt.name, "why": why}
+    # The hashes of any COMPLETE lines in what was moved aside. A signature for one of them is about to look
+    # orphaned, and without this the notebook could never tell "a repair set this line aside, and the repair is on
+    # the record" from "a line was removed and nobody said so". Both are reported; only the first is explained.
+    moved_hashes = []
+    for line in bad.splitlines():
+        try:
+            h = json.loads(line).get("hash")
+        except (ValueError, AttributeError):
+            continue
+        if isinstance(h, str) and len(h) == 64:
+            moved_hashes.append(h)
+    # `partial` when what was moved does not end in a complete, parseable line: the signature of the line that was
+    # cut cannot be named, but the fact that bytes were set aside HERE is on the record, and that is what tells a
+    # reader "a repair explains this" from "a line vanished and nobody said so".
+    partial = not bad.endswith(b"\n") or len(moved_hashes) * 1 == 0
+    return {"bytes": len(bad), "sha256": hashlib.sha256(bad).hexdigest(), "moved_to": hurt.name, "why": why,
+            "line_hashes": moved_hashes, "partial": bool(partial)}
 
 
 def _state(f: Path, found: list | None = None) -> tuple[str, list]:
@@ -162,11 +181,22 @@ def _write(f: Path, row: dict) -> dict:
 _PREV = [""]                              # the hash the next line chains onto, held only inside a locked section
 
 
-def append(row: dict, file: Path | None = None) -> dict:
-    """Add one line. Takes an flock on the ledger itself, so two PROCESSES — the window and the MCP server — cannot
-    read the same `prev` and fork the chain."""
+def held_here() -> set:
+    got = getattr(_HELD, "files", None)
+    if got is None:
+        got = _HELD.files = set()
+    return got
+
+
+@contextlib.contextmanager
+def held(file: Path | None = None):
+    """Hold the ledger's cross-process lock across SEVERAL writes.
+
+    `notebook.record` needs this: it counts the next position, writes the line and writes its signature, and those
+    three are one step or none. Taking the lock only inside `append` let two processes count the same position.
+    """
     f = file or path_file()
-    f.parent.mkdir(parents=True, exist_ok=True)      # (5) a ledger that cannot be created records nothing
+    f.parent.mkdir(parents=True, exist_ok=True)
     with _LOCK:
         lock = os.open(f, os.O_RDWR | os.O_CREAT, 0o600)
         try:
@@ -176,14 +206,39 @@ def append(row: dict, file: Path | None = None) -> dict:
                 except OSError as why:               # a filesystem without locks: the in-process lock still holds
                     if why.errno not in (errno.ENOLCK, errno.EOPNOTSUPP, errno.EINVAL):
                         raise
-            prev, repairs = _state(f)
-            _PREV[0] = prev
-            for repair in repairs:
-                _write(f, {"tool": "ledger_repair", "state": "REPAIRED", "detail": repair["why"],
-                           "damaged": repair, "by": "ledger"})
-            return _write(f, row)
+            held_here().add(str(f))
+            yield f
         finally:
+            held_here().discard(str(f))
             os.close(lock)
+
+
+def append(row: dict, file: Path | None = None, on_line=None) -> dict:
+    """Add one line. Takes an flock on the ledger itself, so two PROCESSES — the window and the MCP server — cannot
+    read the same `prev` and fork the chain.
+
+    `on_line` is called for EVERY line this writes, repair lines included, so a caller that signs lines can sign
+    the ones it did not ask for: a `ledger_repair` written here used to stay unsigned for ever.
+    """
+    f = file or path_file()
+
+    def body() -> dict:
+        prev, repairs = _state(f)
+        _PREV[0] = prev
+        for repair in repairs:
+            line = _write(f, {"tool": "ledger_repair", "state": "REPAIRED", "detail": repair["why"],
+                              "damaged": repair, "by": "ledger"})
+            if on_line:
+                on_line(line)
+        out = _write(f, row)
+        if on_line:
+            on_line(out)
+        return out
+
+    if str(f) in held_here():                              # the caller already holds it; taking it again would deadlock
+        return body()
+    with held(f):
+        return body()
 
 
 def verify(file: Path | None = None) -> dict:

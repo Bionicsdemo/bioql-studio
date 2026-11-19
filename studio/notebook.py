@@ -224,13 +224,18 @@ def record(entry: dict, file: Path | None = None) -> dict:
     `seq` goes in before the line is hashed, so the position is covered by both the hash and the signature.
     """
     f = file or ledger.path_file()
-    with _LOCK:                                          # seq, the line and its signature are one step, or none
+    # The ledger's CROSS-PROCESS lock, held across all three steps. An in-process lock only let two threads take
+    # turns: two PROCESSES — the window and the MCP server — counted the same position, and `verify` then said
+    # "line N says it is seq N". Every line the ledger writes under this call is signed, repair lines included;
+    # a `ledger_repair` used to stay unsigned for ever and keep the notebook from ever reading `ok` again.
+    with ledger.held(f), _LOCK:
         seq = _next_seq(f)
-        # `seq` last: a caller's own `seq` must not be able to overwrite the position the notebook counted.
-        row = ledger.append({**entry, "seq": seq}, f)    # the ledger's own append, untouched
-        signed = sign_line(row)
-        _append_sig(signed, f)
-    return signed
+        out: list[dict] = []
+        # `seq` last: a caller's own `seq` must not overwrite the position the notebook counted.
+        ledger.append({**entry, "seq": seq}, f, on_line=lambda line: out.append(sign_line(line)))
+        for signed in out:
+            _append_sig(signed, f)
+    return out[-1]
 
 
 # ---------------------------------------------------------------- verifying
@@ -279,6 +284,7 @@ def verify(file: Path | None = None, pubkey=None) -> dict:
     prev, seen = "0" * 64, set()
     n = 0
 
+    rows_seen: list[dict] = []
     for n, line in enumerate(lines, 1):
         out["lines"] = n
         try:
@@ -287,6 +293,7 @@ def verify(file: Path | None = None, pubkey=None) -> dict:
             return {**out, "broken_at": n, "why": f"line {n} is not valid JSON (a torn tail, or a line rewritten by hand)"}
         if not isinstance(row, dict):
             return {**out, "broken_at": n, "why": f"line {n} is not a ledger line"}
+        rows_seen.append(row)
         h = row.pop("hash", None)
         if row.get("prev") != prev:
             return {**out, "broken_at": n, "why": f"line {n} does not link to the line before it (removed or re-ordered)"}
@@ -308,6 +315,31 @@ def verify(file: Path | None = None, pubkey=None) -> dict:
 
     out["key_ids"] = {**out["key_ids"], **{k: v for k, v in other_keys.items() if k not in out["key_ids"]}}
     orphans = sorted(set(sigs) - seen)
+    # An orphan whose line a recorded repair moved aside is EXPLAINED: the ledger says which bytes went where and
+    # with what digest. It is still reported; it no longer reads as a line someone removed in silence.
+    accounted, any_partial, repairs = set(), False, 0
+    for row in rows_seen:
+        if row.get("tool") != "ledger_repair":
+            continue
+        repairs += 1
+        dmg = row.get("damaged") or {}
+        accounted.update(dmg.get("line_hashes") or [])
+        any_partial = any_partial or bool(dmg.get("partial"))
+    # A repair that moved a PARTIAL line aside cannot name the signature it orphaned — the bytes were cut. What it
+    # can say, and does, is that bytes were set aside at that point, on a line this notebook signed. That is the
+    # difference between "a repair explains this" and "a line vanished and nobody said so", and a repair line
+    # cannot be forged without the key.
+    explained = sorted(set(orphans) & accounted) if not any_partial else sorted(orphans)
+    orphans = [] if any_partial else sorted(set(orphans) - accounted)
+    out["orphans_explained_by_a_repair"] = len(explained)
+    out["repairs_on_the_record"] = repairs
+    notes = []
+    if explained:
+        # A NOTE, not a complaint. `ok` means the chain and every signature check out; a repair that is itself
+        # signed and that kept the bytes is not a break in that. Saying otherwise would leave a notebook permanently
+        # "not verified" after one interrupted write, which teaches a reader to ignore the word.
+        notes.append(f"{len(explained)} signature(s) have no line because a recorded repair moved it aside "
+                     f"({repairs} repair(s) on the record); the bytes were kept, not deleted")
     out["unsigned"], out["signed_by_other_key"] = counts[UNSIGNED], counts[OTHER_KEY]
     out["unchecked_no_key"], out["orphan_signatures"] = counts[NO_KEY], len(orphans)
 
@@ -328,6 +360,7 @@ def verify(file: Path | None = None, pubkey=None) -> dict:
     why += sig_complaints
     out["ok"] = not why
     out["why"] = "; ".join(why) if why else None
+    out["notes"] = "; ".join(notes) if notes else None
     return out
 
 

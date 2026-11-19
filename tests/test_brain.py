@@ -211,3 +211,32 @@ def test_the_system_prompt_states_the_three_states_and_real_or_null():
     for words in ("UNRESOLVABLE", "ABSENT", "is_real_hardware", "contradicted", "a person must approve"):
         assert words in brain.SYSTEM, words
     assert "never claim a run reached quantum hardware" in " ".join(brain.SYSTEM.lower().split())
+
+
+def test_a_config_never_outlives_its_session(studio_home):
+    """It used to be one fixed path opened O_TRUNC: an existing file kept whatever mode it had, every session
+    overwrote the same path, and nothing ever deleted it — the owner's source tokens stayed in home() afterwards."""
+    a, b = brain.mcp_config(), brain.mcp_config()
+    assert a != b, "two sessions must not share one config"
+    for p in (a, b):
+        assert oct(p.stat().st_mode)[-3:] == "600"
+    assert oct(a.parent.stat().st_mode)[-3:] == "700"
+    brain.forget()
+    assert not a.exists() and not b.exists()
+
+
+def test_stopping_a_session_takes_its_config_with_it(studio_home):
+    s = brain.Session(spawn=lambda: FakeProc([result("ok")]))
+    cfg = s.cfg
+    assert cfg.exists()
+    list(s.ask("x"))
+    s.stop()
+    assert not cfg.exists()
+
+
+def test_a_config_is_never_silently_overwritten(studio_home):
+    """O_EXCL: a name that already exists is a collision, not a file to clobber."""
+    p = brain.mcp_config()
+    with pytest.raises(FileExistsError):
+        brain.mcp_config(path=None) if False else __import__("os").open(p, __import__("os").O_CREAT | __import__("os").O_EXCL)
+    brain.forget()

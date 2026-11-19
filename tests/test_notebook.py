@@ -109,9 +109,9 @@ def test_record_signs_every_line_and_the_ledger_stays_the_ledger(studio_home, tm
     assert "sig" not in _rows(f)[0] and ledger.verify(f)["ok"] is True
     assert oct(os.stat(notebook.sig_path(f)).st_mode & 0o777) == "0o600"
     r = notebook.verify(f)
-    assert r == {"ok": True, "lines": 3, "broken_at": None, "why": None, "key_ids": {kid: 3},
+    assert r == {"ok": True, "lines": 3, "broken_at": None, "why": None, "notes": None, "key_ids": {kid: 3},
                  "current_key_id": kid, "unsigned": 0, "signed_by_other_key": 0, "unchecked_no_key": 0,
-                 "orphan_signatures": 0}
+                 "orphan_signatures": 0, "orphans_explained_by_a_repair": 0, "repairs_on_the_record": 0}
 
 
 def test_an_empty_notebook_is_not_a_broken_one(studio_home, tmp_path):
@@ -382,3 +382,55 @@ def test_export_matches_exactly_and_raises_when_there_is_no_such_run(studio_home
         notebook.export("dbi185ghoj4c73b5d1p0", f)     # it appears in `detail` only: a mention is not a provenance
     with pytest.raises(LookupError):
         notebook.export(99, f)
+
+
+def test_a_repaired_notebook_verifies_again_and_says_a_repair_happened(tmp_path):
+    """A notebook used to be "NOT VERIFIED" for ever after one interrupted write: the quarantined line left an
+    orphan signature and the `ledger_repair` line itself went unsigned. A word that can never go back to true
+    teaches a reader to ignore it."""
+    f = tmp_path / "runs.jsonl"
+    notebook.record({"tool": "a"}, f)
+    notebook.record({"tool": "b"}, f)
+    f.write_bytes(f.read_bytes()[:-14])                 # line 2, already signed, is cut
+    notebook.record({"tool": "c"}, f)
+    r = notebook.verify(f)
+    assert r["ok"] is True and r["why"] is None
+    assert r["unsigned"] == 0, "the repair line must be signed too"
+    assert r["repairs_on_the_record"] == 1 and r["orphan_signatures"] == 0
+    assert "kept, not deleted" in r["notes"]
+
+
+def test_a_real_removal_still_fails_after_that_change(tmp_path):
+    """The note must not become a way to launder a deletion: a removed line breaks the chain, and the repair line
+    that would explain one cannot be forged without the key."""
+    f = tmp_path / "runs.jsonl"
+    for t in "abc":
+        notebook.record({"tool": t}, f)
+    lines = f.read_text().splitlines()
+    f.write_text(lines[0] + "\n" + lines[2] + "\n")
+    r = notebook.verify(f)
+    assert r["ok"] is False and "removed or re-ordered" in r["why"]
+
+
+def test_two_processes_cannot_take_the_same_position(tmp_path):
+    """`_next_seq` ran under an in-process lock only, so two PROCESSES counted the same seq and `verify` then said
+    "line N says it is seq N"."""
+    import os
+    import subprocess
+    import sys
+    repo = str(Path(__file__).resolve().parents[1])
+    f = tmp_path / "runs.jsonl"
+    script = ("import sys; sys.path.insert(0, %r)\n"
+              "from pathlib import Path\n"
+              "from studio import notebook\n"
+              "for i in range(25):\n"
+              "    notebook.record({'tool': 'other', 'i': i}, Path(%r))\n" % (repo, str(f)))
+    procs = [subprocess.Popen([sys.executable, "-c", script], env={**os.environ, "PYTHONPATH": repo})
+             for _ in range(3)]
+    for i in range(25):
+        notebook.record({"tool": "mine", "i": i}, f)
+    for p in procs:
+        assert p.wait(timeout=180) == 0
+    r = notebook.verify(f)
+    assert r["ok"] is True, r
+    assert r["lines"] == 100 and r["unsigned"] == 0

@@ -17,9 +17,11 @@ per turn, replaced when it dies, after 40 turns or after 20 minutes idle.
 """
 from __future__ import annotations
 
+import atexit
 import json
 import os
 import queue
+import secrets
 import shutil
 import subprocess
 import sys
@@ -70,18 +72,40 @@ def binary() -> str:
 
 
 def mcp_config(path: Path | None = None, extra: dict | None = None) -> Path:
-    """The private per-turn MCP config Claude is given: Studio's own server, plus whatever external sources the
-    owner enabled. Written 0600 from the first byte, never written-then-chmod'ed."""
-    p = path or (home() / "mcp.claude.json")
+    """The private MCP config Claude is given: Studio's own server, plus whatever external sources the owner
+    enabled. Written 0600 from the first byte, never written-then-chmod'ed.
+
+    A NEW file each time, with O_EXCL, and `forget()` deletes it. It used to be one fixed path opened O_TRUNC: a
+    file that already existed kept whatever mode it had, every session overwrote the same path, and NOTHING ever
+    removed it — so the owner's source tokens sat in `home()` after the session ended. A warm `claude` holds its
+    config for the life of the process, so the file lives as long as the session and is deleted with it.
+    """
+    p = path or (home() / "mcp" / f"claude-{os.getpid()}-{secrets.token_hex(6)}.json")
+    p.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     repo = str(Path(__file__).resolve().parents[1])
     servers = {"bioql": {"command": sys.executable, "args": ["-m", "studio", "mcp"], "cwd": repo,
                          "env": {"BIOQL_STUDIO_HOME": str(home())}}}
     servers.update(extra or {})
     body = json.dumps({"mcpServers": servers}, indent=1) + "\n"
-    fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    flags = os.O_WRONLY | os.O_CREAT | (os.O_TRUNC if path is not None else os.O_EXCL)
+    fd = os.open(p, flags, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         f.write(body)
+    _MADE.add(p)
     return p
+
+
+_MADE: set[Path] = set()
+
+
+def forget(p: Path | None = None) -> None:
+    """Delete a config this module wrote. A token-bearing file that outlives its session is a leak, not a cache."""
+    for q in ([p] if p else list(_MADE)):
+        _MADE.discard(q)
+        try:
+            q.unlink()
+        except OSError:
+            pass
 
 
 def command(prompt: str | None, cfg: Path, model: str | None = None, allowed: list[str] | None = None) -> list[str]:
@@ -171,6 +195,8 @@ class Session:
         return True
 
     def stop(self) -> None:
+        if self.cfg is not None:
+            forget(self.cfg)
         p, self.proc = self.proc, None
         self.turns = 0
         if p and p.poll() is None:
@@ -250,3 +276,7 @@ def shut_all() -> None:
         for s in list(_SESSION.values()):
             s.stop()
         _SESSION.clear()
+    forget()
+
+
+atexit.register(shut_all)   # a config that outlives the process is the leak this exists to stop
