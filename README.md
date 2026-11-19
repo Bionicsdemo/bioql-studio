@@ -47,6 +47,18 @@ What is **not** proven yet: no pipeline job has actually been submitted. The sub
 stand-in, and its shapes are read from BioQL's own UI, but the first real run needs an approval only the owner can
 give — which is the design working, not a gap in it.
 
+## Claude Code behind it
+
+```sh
+claude -p "..." --mcp-config mcp.bioql.json --strict-mcp-config \
+       --allowedTools "mcp__bioql__backend_health,mcp__bioql__live_status" \
+       --disallowedTools "Bash,Edit,Write,Read"
+```
+
+Proven on 2026-11-19 with the real CLI and the owner's own account: Claude read the engine's live state correctly and
+was refused on the ADMET pipeline, quoting the refusal and noting it did not try to route around it. Both calls are in
+the ledger as `by: claude`.
+
 ## Layout
 
 ```

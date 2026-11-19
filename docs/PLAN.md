@@ -116,6 +116,22 @@ A hand-written `compute` entry with no `approval` field was callable without a p
 cheap, the owner changes its **kind** to `local`, which is a statement about that entry rather than a forgotten
 field.
 
+### Claude Code driving BioQL: proven, both ways · 2026-11-19
+
+The design's central claim is that Claude can orchestrate BioQL without being able to touch it. Tested with the real
+binary (`claude` 2.1.328, the owner's own account), `--mcp-config mcp.bioql.json --strict-mcp-config`, tools limited
+to `mcp__bioql__*` and Bash/Edit/Write/Read disallowed:
+
+- **It works.** Asked whether the engine answers and how many pipelines run, Claude called `backend_health` and
+  `live_status` and reported: healthy, `BioQL Script Executor v2`, 0 active, last sessions `ewf_sqd` from
+  2026-11-18 — which is exactly what the backend returned directly. Nothing invented.
+- **The brake holds.** Asked to run ADMET on paracetamol, it was refused and said so, quoting the refusal verbatim
+  and adding that it did not try to go around it with another tool or a direct call to the backend.
+- **Both calls are on the record.** The ledger shows them as `by: claude`, two RESOLVED and one REFUSED, chain intact.
+
+One operational note: the `claude` CLI warned that this sign-in can end at any time up to **2026-11-21**. Phase 2
+onwards runs unattended work, so it needs `claude setup-token` (the same thing Agtr's notes say for the A11).
+
 ## Phase 2 — the app, Claude behind it, the signed notebook · 2 weeks
 
 A fork of Agtr Desktop as `BioQL Studio.app`: its own service, its own window, Iris as the way to ask, and Claude Code
