@@ -148,6 +148,18 @@ def load(file: Path | None = None) -> dict[str, dict]:
                     if key in base:
                         merged[key] = base[key]
             entries[k] = _norm(k, merged)
+    # The same door under two names must not have two locks. 34 routes are in this list twice — a built-in written
+    # by hand and an entry a discovery sweep wrote for the same `METHOD path` — and wherever the two gates
+    # disagreed the loose name was a way round the strict one: `chem_amp_bms` reached POST /api/chem/amp_bms with
+    # no approval while `amp_bms_md` asked a person for that very route. The strictest gate a route carries under
+    # ANY of its names applies to all of them.
+    gate: dict[tuple[str, str], bool] = {}
+    for e in entries.values():
+        key = (e["method"], e["path"])
+        gate[key] = gate.get(key, False) or bool(e["approval"])
+    for e in entries.values():
+        if gate[(e["method"], e["path"])]:
+            e["approval"] = True
     return entries
 
 

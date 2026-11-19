@@ -325,3 +325,38 @@ def test_a_hand_edit_of_a_builtin_is_still_honoured(studio_home):
     f.parent.mkdir(parents=True, exist_ok=True)
     f.write_text(json.dumps({"smiles_to_3d": {"method": "GET", "path": "/api/smiles-to-3d", "kind": "status"}}))
     assert al.load()["smiles_to_3d"]["method"] == "GET"
+
+
+# ------------------------------------------------------------------ one route, one gate
+def test_two_names_for_one_route_cannot_carry_two_gates(tmp_path):
+    """`chem_amp_bms` reached POST /api/chem/amp_bms with no approval while `amp_bms_md` asked a person for the
+    same route: the gate depended on which NAME was used, which is no gate at all. The strictest gate a route
+    carries under any of its names now applies to all of them."""
+    f = tmp_path / "allow.json"
+    f.write_text(json.dumps({
+        "amp_bms_md": {"method": "POST", "path": "/api/chem/amp_bms", "kind": "compute", "via": "submit",
+                       "why": "MD, asks a person"},
+        "chem_amp_bms": {"method": "POST", "path": "/api/chem/amp_bms", "kind": "local", "approval": False,
+                         "why": "the same door under another name"},
+        "render_2d_other": {"method": "POST", "path": "/api/render/2d", "kind": "local", "approval": False,
+                            "why": "a route nobody gated"},
+    }), encoding="utf-8")
+    ents = al.load(f)
+    assert ents["amp_bms_md"]["approval"] is True
+    assert ents["chem_amp_bms"]["approval"] is True          # it was False, and that was the way round
+    assert ents["render_2d_other"]["approval"] is False      # an ungated route is not gated by contagion
+
+
+def test_the_real_list_has_no_route_with_two_gates(monkeypatch):
+    """The owner's OWN list, not the fixture's empty home: every test runs under a temporary
+    `BIOQL_STUDIO_HOME`, so reading `al.load()` here would have read 60 built-ins and found nothing — a guard that
+    cannot fail is the defect it prevents. This one reads the real file, and says so when there is none."""
+    monkeypatch.delenv("BIOQL_STUDIO_HOME", raising=False)
+    f = al.path_file()
+    if not f.exists():
+        pytest.skip(f"no allowlist on this machine at {f}")
+    by_route = {}
+    for e in al.load(f).values():
+        by_route.setdefault((e["method"], e["path"]), set()).add(e["approval"])
+    split = {k: v for k, v in by_route.items() if len(v) > 1}
+    assert not split, f"routes whose gate depends on the name used: {split}"
