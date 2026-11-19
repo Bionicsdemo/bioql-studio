@@ -105,7 +105,8 @@ def main() -> int:
     added, skipped = 0, []
     for r in fresh:
         name = re.sub(r"[^a-z0-9]+", "_", r["path"][1:].lower()).strip("_")[:60]
-        if not name or name in raw:
+        # Never overwrite a built-in: those were written by hand and this only guesses from a route.
+        if not name or name in raw or name in al.DEFAULTS:
             continue
         e = entry_for(r["path"], r["methods"], r["http"], r.get("allow"))
         e["why"] = f"[{r['area']}] declared by BioQL in {sorted(r['files'])[0]}"

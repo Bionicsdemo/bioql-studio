@@ -304,3 +304,24 @@ def test_a_file_entry_never_erases_a_builtins_schema(studio_home):
                                            "required": [], "optional": []}}))
     e = al.load()["render_2d"]
     assert e["required"] == ["smiles"] and e["schema_known"] is True
+
+
+def test_discovery_can_never_overwrite_a_builtin(studio_home):
+    """A built-in was written by hand; a discovery tool only guesses from a route's Allow header. One such guess
+    turned smiles_to_3d from POST/local into GET/status — and a GET carries no body, so the engine answered
+    "No SMILES provided" to a call that carried the SMILES."""
+    f = al.path_file()
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(json.dumps({"smiles_to_3d": {
+        "method": "GET", "path": "/api/smiles-to-3d", "kind": "status", "via": "direct", "required": [],
+        "from_registry": {"route_from": "bioql-ui"}}}))
+    e = al.load()["smiles_to_3d"]
+    assert e["method"] == "POST" and e["kind"] == "local" and e["required"] == ["smiles"]
+
+
+def test_a_hand_edit_of_a_builtin_is_still_honoured(studio_home):
+    """Only a DISCOVERY entry is overruled. The owner editing their own file still wins."""
+    f = al.path_file()
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(json.dumps({"smiles_to_3d": {"method": "GET", "path": "/api/smiles-to-3d", "kind": "status"}}))
+    assert al.load()["smiles_to_3d"]["method"] == "GET"

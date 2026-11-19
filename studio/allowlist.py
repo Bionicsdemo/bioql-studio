@@ -140,6 +140,13 @@ def load(file: Path | None = None) -> dict[str, dict]:
             for key in ("required", "optional"):
                 if base.get(key) and not v.get(key):
                     merged[key] = base[key]
+            # A built-in was written by hand; a discovery tool only GUESSES these from a route's Allow header.
+            # One such guess turned `smiles_to_3d` from POST/local into GET/status, and a GET carries no body, so
+            # the engine answered "No SMILES provided" to a call that carried the SMILES.
+            if base and v.get("from_registry", {}).get("route_from") in ("bioql-ui", "bioql-backend"):
+                for key in ("method", "kind", "via", "approval", "absent_on_404", "timeout", "why"):
+                    if key in base:
+                        merged[key] = base[key]
             entries[k] = _norm(k, merged)
     return entries
 

@@ -136,7 +136,8 @@ def main() -> int:
             skipped.append(r["path"])
             continue
         name = re.sub(r"[^a-z0-9]+", "_", r["path"][len("/api/"):].lower()).strip("_")[:60]
-        if not name or name in raw:
+        # Never overwrite a built-in: those were written by hand and this only guesses from a route.
+        if not name or name in raw or name in al.DEFAULTS:
             continue
         e = entry_for(r["path"], r["methods"], r["http"], r.get("allow"))
         bad = al.problems(al._norm(name, e))
