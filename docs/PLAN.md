@@ -76,11 +76,45 @@ Still unproven, and it blocks allowing the first heavy pipeline rather than Phas
 submitted. The shapes are read from the UI's code, not observed from a run. The first allowed pipeline is also the
 first real test of them.
 
-**Open question for the owner, before Phase 2:** the 37 registry pipelines with no endpoint (`admet_standalone`,
-`peptide_discovery`, `antibody_discovery`, the `quantum_*` family…) are dispatched inside the backend by kind. The
-frontend reaches them through a route map in `src/frontend/src/services/MCPClient.ts` (e.g. `admet_standalone` →
-`/api/pipeline/admet_standalone`). Confirm that map is the right source for their routes, or name the routes, and they
-can be allowed one by one.
+### The route question, answered from BioQL itself (not asked of the owner)
+
+`tools/discover_routes.py` finds every pipeline's real route from four sources and then **proves each route exists
+without running anything**: a GET on a POST-only Flask route answers `405` with an `Allow` header, so the route is
+confirmed live while no pipeline body is ever sent.
+
+| Source | What it gives | Authority |
+|---|---|---|
+| `/api/tools/registry` | 26 pipelines state their own endpoint | BioQL's own |
+| `MCPClient.ts` + `VSIXService.ts` | 94 name → route pairs the UI uses | BioQL's own |
+| `src/mcp/server.py` | 70 routes BioQL's MCP server posts to | BioQL's own |
+| derivation | the nested family form, e.g. `quantum_ppi_binding_affinity` → `/api/quantum/ppi/binding_affinity` | inferred, marked |
+
+**Result: 61 of 63 pipelines routed and verified live.** The two left are `replicon_workbench` and
+`viral_replicon_design`: both registered with handlers, neither answering on any prefix tried. They stay out rather
+than be guessed at.
+
+18 of the 61 routes are *derived*: the route is proven to exist, but the binding of that name to that route is
+inferred rather than stated by BioQL. Each entry records `route_confirmed_by_bioql: false`, and since every one needs
+a person's approval, a wrong binding cannot fire unattended.
+
+**A derivation rule had to be thrown away.** A first version also matched a route whose *last word* equalled the
+pipeline's last word, and it sent `viral_replicon_design` to `/api/quantum/combination/design`. A wrong route is
+worse than no route: it would run the wrong science under the right name. The rule now matches whole path segments
+only — the same trap CLAUDE.md records under "match field names by token, not substring".
+
+### How a heavy pipeline is called: BioQL's own async door
+
+Every one of the 61 goes through `POST /api/pipeline/submit {endpoint, params}` and is then followed on
+`/api/pipeline/job/<id>` — the path BioQL's own UI uses for long pipelines, because a held connection drops on a
+proxy timeout and the result is lost. The `endpoint` sent is **the allowlist entry's own path**; a caller naming an
+`endpoint` argument is refused. Tested both ways.
+
+### One more gap the tests found
+
+A hand-written `compute` entry with no `approval` field was callable without a person — the README claimed otherwise.
+`approval` is now forced for every `compute` and `hardware` entry and cannot be turned off in the file: to make one
+cheap, the owner changes its **kind** to `local`, which is a statement about that entry rather than a forgotten
+field.
 
 ## Phase 2 — the app, Claude behind it, the signed notebook · 2 weeks
 

@@ -16,6 +16,7 @@ def studio_home(tmp_path, monkeypatch):
 class FakeBioQL(BaseHTTPRequestHandler):
     """A stand-in for BioQL's backend: only the shapes the adapter must handle."""
     polls: dict = {}
+    submits: list = []
 
     def log_message(self, *a):
         pass
@@ -74,6 +75,9 @@ class FakeBioQL(BaseHTTPRequestHandler):
             return self._send(200, {"error": "no pocket found"})
         if p == "/api/submit":
             return self._send(202, {"job_id": body.get("which", "j2"), "status": "queued", "poll_url": "/evil/route"})
+        if p == "/api/pipeline/submit":          # BioQL's own async door: {endpoint, params} -> a job
+            FakeBioQL.submits.append(body)
+            return self._send(202, {"job_id": (body.get("params") or {}).get("which", "j1"), "status": "queued"})
         if p == "/api/mixed":
             return self._send(200, {"a": {"is_real_hardware": True}, "b": [{"is_real_hardware": False}]})
         if p == "/api/plain":
@@ -82,8 +86,15 @@ class FakeBioQL(BaseHTTPRequestHandler):
 
 
 @pytest.fixture
+def fake_log():
+    """The running fake's own class, so a test reads the same object the server writes (importing tests.conftest
+    would build a second module and a second class)."""
+    return FakeBioQL
+
+
+@pytest.fixture
 def fake_bioql():
-    FakeBioQL.polls = {}
+    FakeBioQL.polls, FakeBioQL.submits = {}, []
     srv = ThreadingHTTPServer(("127.0.0.1", 0), FakeBioQL)
     t = threading.Thread(target=srv.serve_forever, daemon=True)
     t.start()

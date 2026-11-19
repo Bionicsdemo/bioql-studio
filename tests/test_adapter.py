@@ -89,7 +89,7 @@ def test_refusals(fake_bioql):
 
 def test_hardware_needs_a_person(fake_bioql):
     a = ad(fake_bioql, q={"method": "POST", "path": "/api/mixed", "kind": "hardware"},
-           sim={"method": "POST", "path": "/api/smiles-to-3d", "kind": "compute", "required": ["smiles"],
+           sim={"method": "POST", "path": "/api/smiles-to-3d", "kind": "local", "required": ["smiles"],
                 "optional": ["backend", "use_real_hardware"]})
     with pytest.raises(Refused):
         a.call("q")
@@ -132,12 +132,35 @@ def test_provenance_is_copied_never_inferred(fake_bioql):
 
 # ------------------------------------------------------------------ jobs
 def test_job_is_followed_on_bioqls_own_route(fake_bioql):
-    a = ad(fake_bioql, s={"method": "POST", "path": "/api/submit", "kind": "compute", "optional": ["which"]})
+    a = ad(fake_bioql, s={"method": "POST", "path": "/api/submit", "kind": "local", "optional": ["which"]})
     res = a.call("s", {"which": "j2"})
     assert res.state == RESOLVED and res.value["status"] == "completed"
     assert res.meta["provenance"] == {"is_real_hardware": True, "ibm_job_ids": ["d0abc123"], "quantum_backends": []}
     failed = a.call("s", {"which": "j3"})
     assert failed.state == UNRESOLVABLE and "boom" in failed.detail
+
+
+def test_via_submit_uses_bioqls_async_door_with_the_allowlists_own_endpoint(fake_bioql, fake_log):
+    """A heavy pipeline goes through POST /api/pipeline/submit {endpoint, params}, as BioQL's own UI does. The
+    endpoint sent is the ENTRY's path — a caller cannot name one."""
+    FakeBioQL = fake_log
+    a = ad(fake_bioql, heavy={"method": "POST", "path": "/api/quantum/peptide_design", "via": "submit",
+                              "kind": "compute", "required": ["target"], "optional": ["which"]})
+    res = a.call("heavy", {"target": "GLP-1R", "which": "j1"}, approved_by="a person")
+    assert res.state == RESOLVED and res.value["status"] == "completed"
+    assert FakeBioQL.submits == [{"endpoint": "/api/quantum/peptide_design",
+                                  "params": {"target": "GLP-1R", "which": "j1"}}]
+    with pytest.raises(Refused):                       # still needs a person, submit door or not
+        a.call("heavy", {"target": "GLP-1R"})
+    with pytest.raises(Refused):                       # and cannot be told to post somewhere else
+        a.call("heavy", {"target": "GLP-1R", "endpoint": "/api/ssh/execute"}, approved_by="a person")
+
+
+def test_via_must_be_known(fake_bioql, studio_home):
+    with pytest.raises(ValueError):
+        al.save_entry("odd", {"method": "POST", "path": "/api/x", "via": "sideways", "kind": "local"})
+    with pytest.raises(ValueError):
+        al.save_entry("getsubmit", {"method": "GET", "path": "/api/x", "via": "submit", "kind": "local"})
 
 
 def test_ledger_detects_tampering(fake_bioql):

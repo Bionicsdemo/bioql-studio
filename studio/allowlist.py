@@ -22,6 +22,13 @@ from . import home, write_private
 
 KINDS = ("status", "local", "compute", "hardware")
 METHODS = ("GET", "POST")
+# How the call reaches BioQL. "direct": POST straight at the entry's own path. "submit": POST to BioQL's own async
+# door, /api/pipeline/submit, with {endpoint: <this entry's path>, params: <the arguments>}, then follow the job —
+# the path still comes from the allowlist, never from the caller. BioQL's own UI uses the second for every long
+# pipeline, because a held connection drops on a proxy timeout and the result is lost
+# (src/frontend/src/components/chat/ChatInterface.tsx).
+VIA = ("direct", "submit")
+SUBMIT_PATH = "/api/pipeline/submit"
 
 DENY = re.compile(r"(^|/)(ssh|scripts|exec|execute|repl|shell|terminal|localllm|auth|admin|login|secrets?|keys?|"
                   r"cancel_queued|delete|remove|purge|reset|kill|restart|shutdown|deploy|upload)(/|$|_)", re.I)
@@ -51,13 +58,16 @@ PARAM = re.compile(r"\{([a-z_][a-z0-9_]*)\}")
 
 def _norm(name: str, e: dict) -> dict:
     out = {"name": name, "method": str(e.get("method", "GET")).upper(), "path": str(e.get("path", "")),
-           "kind": e.get("kind", "compute"), "required": list(e.get("required") or []),
+           "via": e.get("via", "direct"), "kind": e.get("kind", "compute"), "required": list(e.get("required") or []),
            "optional": list(e.get("optional") or []), "timeout": float(e.get("timeout") or 43200),
            "approval": bool(e.get("approval", False)), "enabled": bool(e.get("enabled", True)),
            "absent_on_404": bool(e.get("absent_on_404", False)), "why": str(e.get("why", "")),
            "from_registry": e.get("from_registry")}
-    if out["kind"] == "hardware":
-        out["approval"] = True                     # a real QPU always needs a person
+    if out["kind"] in ("compute", "hardware"):
+        # Not a default the file can override: BioQL's registry never says whether a pipeline reaches a QPU, so
+        # anything heavier than a local computation asks a person. To make one cheap, the owner changes its KIND to
+        # "local" — a deliberate statement about that entry, not a forgotten field.
+        out["approval"] = True
     return out
 
 
@@ -70,6 +80,10 @@ def problems(e: dict) -> list[str]:
         why.append(f"method {e['method']} not allowed")
     if e["kind"] not in KINDS:
         why.append(f"unknown kind {e['kind']}")
+    if e["via"] not in VIA:
+        why.append(f"unknown via {e['via']}")
+    if e["via"] == "submit" and e["method"] != "POST":
+        why.append("via=submit is a POST")
     p = e["path"]
     if not p.startswith("/") or "//" in p or ".." in p or "?" in p or "#" in p:
         why.append("bad path")

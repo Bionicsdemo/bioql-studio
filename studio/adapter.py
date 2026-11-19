@@ -151,6 +151,9 @@ class Adapter:
         try:
             e = self.check(name, args, approved_by)
             url, body = self._url(e, args)
+            if e["via"] == "submit":
+                # BioQL's own async door; the endpoint is this entry's, from the allowlist, never from the caller.
+                url, body = self.base + al.SUBMIT_PATH, {"endpoint": e["path"], "params": body}
         except Refused as why:
             self._note(name, None, args, "REFUSED", str(why), None, None, began, by, approved_by)
             raise

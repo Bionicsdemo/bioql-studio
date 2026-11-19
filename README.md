@@ -25,19 +25,27 @@ another person working in the repository at the same time, show up too — so it
 ## Try it (BioQL's backend must already be running; Studio never starts it)
 
 ```sh
-python3 -m pytest -q                 # 21 tests
-python3 tools/e2e_live.py            # real calls to 127.0.0.1:5035, wrapped in the guard
-python3 -m studio tools              # what Studio may call
-python3 -m studio registry           # BioQL's own pipelines, and which could be allowed
+python3 -m pytest -q                      # 26 tests
+python3 tools/e2e_live.py                 # real calls to 127.0.0.1:5035, wrapped in the guard
+python3 tools/discover_routes.py          # every pipeline's route, verified live without running one
+python3 -m studio tools                   # the 68 entries Studio may call
 python3 -m studio call smiles_to_3d '{"smiles":"CC(=O)Nc1ccc(O)cc1"}'
 python3 -m studio ledger verify
 ```
 
-Measured on this Mac, 2026-11-19: 24 unit tests pass, and the live check passed 9/9 with the guard clean over 46,819
-BioQL files (~35 s, most of it the two fingerprints).
+The 61 pipelines all need a person. The first real run is one command, and only you can give it:
 
-What is **not** proven yet: no pipeline job has been submitted. The submit-and-poll shapes are read from BioQL's own
-UI, not observed from a run, and the first pipeline the owner allows is also the first real test of them.
+```sh
+python3 -m studio call admet_standalone '{"smiles":"CC(=O)Nc1ccc(O)cc1"}' --approve "Heinz"
+```
+
+Measured on this Mac, 2026-11-19: 26 unit tests pass; the live check passes 9/9 with the guard clean over 46,819
+BioQL files; and 61 of BioQL's 63 registered pipelines are routed and verified live (`docs/PLAN.md` says how, and
+which two are not).
+
+What is **not** proven yet: no pipeline job has actually been submitted. The submit-and-poll path is tested against a
+stand-in, and its shapes are read from BioQL's own UI, but the first real run needs an approval only the owner can
+give — which is the design working, not a gap in it.
 
 ## Layout
 
