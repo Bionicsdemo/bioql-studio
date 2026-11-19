@@ -1,0 +1,82 @@
+/* BioQL Studio's window. Plain, dark/light aware, no framework, no web font, no CDN.
+   The CSP the service sends is default-src 'none' with 'self' for scripts and styles, so there is no inline rule
+   anywhere and nothing is fetched from outside this Mac. */
+:root {
+  color-scheme: light dark;
+  --bg: #f6f6f7;
+  --panel: #ffffff;
+  --ink: #16181d;
+  --muted: #5d6270;
+  --line: #d9dbe1;
+  --high: #a4133c;
+  --warn: #8a5a00;
+  --note: #2b5f8f;
+  --ok: #1d6f42;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #15171b;
+    --panel: #1d2026;
+    --ink: #e8eaef;
+    --muted: #9aa1b0;
+    --line: #2e323b;
+    --high: #ff8097;
+    --warn: #e0b060;
+    --note: #85b8e8;
+    --ok: #74d39b;
+  }
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  padding: 0 20px 48px;
+  background: var(--bg);
+  color: var(--ink);
+  font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
+}
+header { padding: 22px 0 10px; border-bottom: 1px solid var(--line); }
+h1 { margin: 0; font-size: 19px; font-weight: 600; letter-spacing: -0.01em; }
+h2 { margin: 0 0 6px; font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+p { margin: 4px 0; }
+code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+.muted { color: var(--muted); font-size: 12px; }
+.state { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: var(--muted); }
+
+.engine { margin: 16px 0; padding: 12px 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
+.engine-line { font-size: 15px; font-weight: 500; }
+
+.tabs { display: flex; gap: 4px; margin: 18px 0 0; flex-wrap: wrap; }
+.tab {
+  appearance: none; border: 1px solid var(--line); border-bottom: none;
+  background: transparent; color: var(--muted); cursor: pointer;
+  padding: 7px 14px; border-radius: 8px 8px 0 0; font: inherit; font-size: 13px;
+}
+.tab.on { background: var(--panel); color: var(--ink); font-weight: 600; }
+
+main { background: var(--panel); border: 1px solid var(--line); border-radius: 0 8px 8px 8px; padding: 14px; }
+.panel.hidden, .pending.hidden { display: none; }
+
+.row { padding: 9px 0; border-bottom: 1px solid var(--line); display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+.row:last-child { border-bottom: none; }
+.row .name { font-weight: 600; min-width: 11em; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+.row .why { color: var(--muted); font-size: 12px; flex: 1 1 18em; }
+.row .t { color: var(--muted); font-size: 11px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+.pill { font-size: 11px; padding: 1px 7px; border-radius: 999px; border: 1px solid currentColor; white-space: nowrap; }
+.pill.high { color: var(--high); }
+.pill.warn { color: var(--warn); }
+.pill.note { color: var(--note); }
+.pill.clean { color: var(--ok); }
+.pill.unknown { color: var(--muted); }
+
+.finding { margin: 4px 0 0 0; padding-left: 10px; border-left: 2px solid var(--line); }
+.finding .path { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; color: var(--muted); }
+
+.pending { margin: 18px 0 0; padding: 12px 14px; background: var(--panel); border: 1px solid var(--high); border-radius: 8px; }
+.pending input { font: inherit; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; padding: 5px 7px;
+  border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--ink); width: 12em; }
+.pending button { font: inherit; font-size: 13px; padding: 5px 12px; border-radius: 6px; cursor: pointer;
+  border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
+
+footer { padding-top: 14px; }

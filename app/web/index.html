@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BioQL Studio</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<!-- The token is never written into this file. Agtr substitutes __AGTR_TOKEN__ into any .html it serves
+     (service.py:1255); here app.js reads it from the URL fragment, which a browser never sends to a server, and
+     clears it from the address bar immediately. No CDN, no framework: the CSP is default-src 'none' plus 'self'. -->
+<header>
+  <h1>BioQL Studio</h1>
+  <p id="state" class="state">reading the service…</p>
+</header>
+
+<section class="engine">
+  <h2>Engine</h2>
+  <p id="engine" class="engine-line">asking BioQL…</p>
+  <p class="muted">Studio never starts, stops or restarts BioQL. It reads it through the allowlist.</p>
+</section>
+
+<nav class="tabs" role="tablist">
+  <!-- Findings first, and selected on load: the easy path is the verified one. -->
+  <button id="tab-findings" class="tab on" role="tab" aria-selected="true" aria-controls="panel-findings">Findings</button>
+  <button id="tab-ledger" class="tab" role="tab" aria-selected="false" aria-controls="panel-ledger">Ledger</button>
+  <button id="tab-tools" class="tab" role="tab" aria-selected="false" aria-controls="panel-tools">Tools</button>
+  <button id="tab-guard" class="tab" role="tab" aria-selected="false" aria-controls="panel-guard">Guard</button>
+</nav>
+
+<main>
+  <section id="panel-findings" class="panel" role="tabpanel" aria-labelledby="tab-findings">
+    <p class="muted">Every verdict the verifier recorded, newest first. A row whose line recorded no verdict says
+      <em>not recorded</em> — it is never read as clean.</p>
+    <div id="findings"></div>
+  </section>
+
+  <section id="panel-ledger" class="panel hidden" role="tabpanel" aria-labelledby="tab-ledger">
+    <p id="chain" class="muted"></p>
+    <div id="ledger"></div>
+  </section>
+
+  <section id="panel-tools" class="panel hidden" role="tabpanel" aria-labelledby="tab-tools">
+    <p class="muted">The closed list Studio may call. An entry marked <strong>needs a person</strong> is refused from
+      this window; it offers an approval instead. Anything that could reach real quantum hardware is not offered here
+      at all — that stays with <code>python3 -m studio call … --approve "&lt;name&gt;"</code>.</p>
+    <div id="tools"></div>
+  </section>
+
+  <section id="panel-guard" class="panel hidden" role="tabpanel" aria-labelledby="tab-guard">
+    <p class="muted">The two most recent saved snapshots of BioQL's source trees, compared. Opening this page takes no
+      new snapshot. Take one with <code>python3 -m studio guard snapshot &lt;name&gt;</code>.</p>
+    <div id="guard"></div>
+  </section>
+</main>
+
+<section id="pending-box" class="pending hidden">
+  <h2>Waiting for a person</h2>
+  <p class="muted">The code for a pending call is in Studio's log and in <code>HOME/pending/&lt;id&gt;</code>. It was
+    never sent to this page. Pasting it is an explicit, single-use, call-bound act — <strong>not</strong> a proof that
+    a human is present (see <code>app/README.md</code>).</p>
+  <div id="pending"></div>
+</section>
+
+<footer>
+  <p id="footer" class="muted"></p>
+</footer>
+<script src="app.js"></script>
+</body>
+</html>
