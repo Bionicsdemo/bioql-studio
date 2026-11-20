@@ -116,3 +116,71 @@ def test_the_gate_is_not_what_this_widens():
     with pytest.raises(Refused):
         a.check("pipe", {})                                  # no approval: refused, whoever is calling
     assert a.check("pipe", {}, approved_by="a person")        # and only a person changes that
+
+
+def test_a_write_by_the_client_itself_is_not_thrown_away(clients, monkeypatch):
+    """`~/.claude.json` is a LIVE file: Claude Code writes to it while it runs, so read-modify-write over it is
+    last-writer-wins.
+
+    This was not theoretical. Between the backup copy taken by a registration and the check made seconds later,
+    Claude Code had already updated its own `pluginUsage` counter. Today that was a counter; the same file holds
+    each project's allowed tools.
+    """
+    p = clients["code"]
+    other = {"wrote": False}
+    real_copy = cn.shutil.copy2
+
+    def meddle(src, dst):
+        # stands in for the other process: it writes between this edit's read and its replace
+        out = real_copy(src, dst)
+        if not other["wrote"]:
+            other["wrote"] = True
+            d = json.loads(Path(src).read_text())
+            d["pluginUsage"] = {"someplugin": {"usageCount": 7}}
+            Path(src).write_text(json.dumps(d, indent=2))
+        return out
+
+    monkeypatch.setattr(cn.shutil, "copy2", meddle)
+    res = cn.apply()
+    assert res.resolved
+    after = json.loads(p.read_text())
+    assert after["pluginUsage"] == {"someplugin": {"usageCount": 7}}, "the other process's write was clobbered"
+    assert "bioql" in after["mcpServers"]                       # and ours landed too
+    assert after["anonymousId"] == "keep-me"
+
+
+def test_a_file_that_will_not_hold_still_is_reported_rather_than_forced(clients, monkeypatch):
+    p = clients["code"]
+
+    # The churn has to happen on EVERY attempt, inside the window between this edit's read and its verification —
+    # patching the one-time backup only proved the retry works (it did, and that was the earlier version of this
+    # test passing for the wrong reason). `json.dump` runs once per attempt, in exactly that window.
+    real_dump = cn.json.dump
+
+    def dump_and_churn(obj, fh, **kw):
+        out = real_dump(obj, fh, **kw)
+        d = json.loads(p.read_text())
+        d["churn"] = os.urandom(4).hex()
+        p.write_text(json.dumps(d))
+        return out
+
+    monkeypatch.setattr(cn.json, "dump", dump_and_churn)
+    res = cn.apply()
+    # RESOLVED carries the detail as the value (Claude Desktop did change); ABSENT and UNRESOLVABLE carry it as
+    # meta, because `.value` raises on those by design.
+    data = res.value if res.resolved else res.meta
+    assert [f["client"] for f in data["failed"]] == ["Claude Code"]
+    assert "kept changing" in data["failed"][0]["detail"]
+    assert "bioql" not in json.loads(p.read_text()).get("mcpServers", {})
+
+
+def test_the_installed_app_is_preferred_over_a_checkout(monkeypatch, tmp_path):
+    """A registration pointing at somebody's working copy dies the day they move the folder and never picks up an
+    update. The bundle's copy is what the update channel replaces, so that is what gets registered."""
+    fake = tmp_path / "BundleResources"
+    (fake / "studio").mkdir(parents=True)
+    (fake / "studio" / "__init__.py").write_text("")
+    monkeypatch.setattr(cn, "INSTALLED", fake)
+    assert cn.package_root() == fake
+    monkeypatch.setattr(cn, "INSTALLED", tmp_path / "nothing-here")
+    assert (cn.package_root() / "studio" / "__init__.py").is_file()      # falls back to the checkout

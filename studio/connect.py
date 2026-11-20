@@ -44,9 +44,19 @@ CLIENTS = (
 )
 
 
+INSTALLED = Path("/Applications/BioQL Studio.app/Contents/Resources/bioql-studio")
+
+
 def package_root() -> Path:
-    """The directory `python3 -m studio` must run from: the one holding `studio/`. Inside the app this is the
-    bundle's own copy, so a registration keeps working after the repository is moved or deleted."""
+    """The directory `python3 -m studio` must run from: the one holding `studio/`.
+
+    The INSTALLED app's copy wins when it is there, even when this command is being run from a checkout. A
+    registration pointing at somebody's working copy is a registration that dies the day they move the folder,
+    and that never picks up an update; the bundle's copy is replaced by the update channel and is the thing that
+    is actually supported. The checkout is used only when there is no installed app.
+    """
+    if (INSTALLED / "studio" / "__init__.py").is_file():
+        return INSTALLED
     return Path(__file__).resolve().parent.parent
 
 
@@ -103,18 +113,40 @@ def status() -> list[dict]:
     return out
 
 
-def _write(p: Path, d: dict) -> None:
-    # The copy aside first, with the time in its name: this file is somebody's whole Claude setup, and an edit to
-    # it that cannot be undone is not an edit anybody should accept from a program.
-    if p.exists():
-        shutil.copy2(p, p.with_name(p.name + f".bioql-backup-{time.strftime('%Y%m%d-%H%M%S')}"))
-    tmp = p.with_name(p.name + ".tmp")
-    mode = (p.stat().st_mode & 0o777) if p.exists() else 0o600
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        json.dump(d, f, indent=2, ensure_ascii=False)
-        f.write("\n")
-    os.replace(tmp, p)
+TRIES = 5
+
+
+def _edit(p: Path, change) -> None:
+    """Apply `change` to the file's CURRENT contents, re-read immediately before writing.
+
+    `~/.claude.json` is a live file: Claude Code writes to it while it runs. Read-modify-write over a live file is
+    last-writer-wins, so a plain version of this would silently throw away whatever that process wrote in between.
+    It was not theoretical — between the backup copy and the check afterwards, Claude Code had already updated its
+    own `pluginUsage` counter. Today that was a counter; the same file also holds each project's allowed tools.
+
+    So: read, apply the change, and only replace while the file is still exactly the bytes that were read. If it
+    moved, start over. This is not a lock — nothing here can lock a file another program does not cooperate on —
+    and the window it leaves is between the last read and `os.replace`. That is said rather than papered over.
+    """
+    for attempt in range(TRIES):
+        raw = p.read_bytes() if p.exists() else b""
+        d = json.loads(raw.decode("utf-8")) if raw.strip() else {}
+        change(d)
+        if attempt == 0 and p.exists():
+            # The copy aside, once, before anything: this file is somebody's whole Claude setup, and an edit to it
+            # that cannot be undone is not an edit anybody should accept from a program.
+            shutil.copy2(p, p.with_name(p.name + f".bioql-backup-{time.strftime('%Y%m%d-%H%M%S')}"))
+        tmp = p.with_name(p.name + ".tmp")
+        mode = (p.stat().st_mode & 0o777) if p.exists() else 0o600
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(d, f, indent=2, ensure_ascii=False)
+            f.write("\n")
+        if (p.read_bytes() if p.exists() else b"") == raw:
+            os.replace(tmp, p)
+            return
+        os.unlink(tmp)                      # somebody else wrote while we worked: take their version and redo
+    raise OSError(f"{p} kept changing under this edit ({TRIES} tries); nothing was written")
 
 
 def apply(remove: bool = False) -> Resolution:
@@ -144,10 +176,20 @@ def apply(remove: bool = False) -> Resolution:
                 skipped.append({"client": c["name"], "path": str(p), "detail": "already registered, unchanged"})
                 continue
             servers[KEY] = want
-        d["mcpServers"] = servers
+        def change(fresh: dict, _remove=remove) -> None:
+            """Applied to the file as it is at the moment of writing, not to the copy read earlier."""
+            srv = fresh.get("mcpServers")
+            if not isinstance(srv, dict):
+                srv = {}
+            if _remove:
+                srv.pop(KEY, None)
+            else:
+                srv[KEY] = want
+            fresh["mcpServers"] = srv
+
         try:
-            _write(p, d)
-        except OSError as why:
+            _edit(p, change)
+        except (OSError, ValueError) as why:
             failed.append({"client": c["name"], "path": str(p), "detail": f"{type(why).__name__}: {why}"})
             continue
         done.append({"client": c["name"], "path": str(p),
