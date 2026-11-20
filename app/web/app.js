@@ -1149,6 +1149,102 @@ function guardCheckButton(box) {
   box.appendChild(note);
 }
 
+// ---------------------------------------------------------------------------------------------------------------
+// What the LIVE BioQL process is running. Same question as the guard, asked of the process instead of the disk.
+//
+// BioQL keeps two copies of most of its backend — the repo and /opt/bioql — and its own notes call an edit to the
+// wrong one the trap that silently does nothing. `/api/system/manifest` measures it on the running process. Two
+// things this page does NOT do:
+//
+//   * It does not repeat BioQL's sentence. BioQL stamps every diverged module with "editar la copia del repo no
+//     cambia nada en esta ruta" regardless of which copy is running; where `origin` is "promoted" the repo copy IS
+//     what runs and the sentence is backwards. The direction here comes off `origin` and `executed_from`, and
+//     BioQL's own words are shown underneath, marked as disagreeing. Studio reports BioQL; it does not edit it.
+//
+//   * It does not say "this is what ran". BioQL hashes the file on disk when asked, so a module edited after the
+//     backend started reports its NEW hash while executing the OLD code. Each row answers that separately, from
+//     the process's start time against the file's mtime, and says "cannot be told" when either is missing.
+//
+// It is behind a button: a reading is a call, and a call is one line on the signed record.
+function manifestNode(m) {
+  const wrap = el("div");
+  const proc = m.process || {};
+  const loadedWhen = proc.state === "RESOLVED" ? whenISO(new Date(Number(proc.started_at) * 1000).toISOString())
+    : null;
+  wrap.appendChild(el("p", "fine",
+    `${m.n_loaded} module(s) loaded in pid ${proc.pid} · ${m.n_from_promoted} from the repo · ` +
+    `${m.n_from_shadow} from /opt/bioql · python ${m.python}` +
+    (loadedWhen ? ` · the process started ${loadedWhen}` : ` · ${proc.detail || "its start time is unknown"}`)));
+
+  const rows = m.rows || [];
+  const clean = m.matches_promoted === true;
+  wrap.appendChild(el("p", clean ? "fine" : "alarm-strip", clean
+    ? "Every module this process loaded matches its twin copy. Nothing is diverged and nothing runs from outside the repo."
+    : `${m.n_diverged} module(s) run from a copy whose twin holds different bytes` +
+      (m.shadow_only && m.shadow_only.length
+        ? `, and ${m.shadow_only.length} run from /opt/bioql with no twin in the repo at all` : "") +
+      ". Which copy is live is below, per module."));
+
+  if (!clean) {
+    wrap.appendChild(el("p", "row-why", "The hash is of the file ON DISK at the moment this was asked, not of the " +
+      "bytes the process imported. So each row also says whether this process had already started when that file " +
+      "was last written — that, and not the hash, is what tells you if an edit is live."));
+  }
+
+  const dis = rows.filter((r) => r.warning_disagrees).length;
+  if (dis) {
+    wrap.appendChild(el("p", "row-why", `BioQL labels ${dis} of these rows "editar la copia del repo no cambia ` +
+      `nada en esta ruta". Its own executed_from field says the repo copy is the one running, so for these rows ` +
+      `that sentence is backwards and the stale copy is the /opt/bioql one. Studio shows both and corrects ` +
+      `neither — this is a defect to report in BioQL, not for this app to paper over.`));
+  }
+
+  if (rows.length) {
+    // The twin is the same file name in the other tree — BioQL builds it from the basename — so printing both full
+    // paths spent half the table restating one word. The tree is what differs, and both hashes have to fit: a hash
+    // column pushed off the right edge is the one thing on this page nobody can work around.
+    wrap.appendChild(tableNode(
+      ["module", "file", "live copy", "edit live in this process?", "hash on disk", "twin hash"],
+      rows.map((r) => [
+        r.module,
+        (String(r.executed_from || "").split("/").pop()) || "",
+        r.twin ? r.runs_from : `${r.runs_from} · no twin in the repo`,
+        r.loaded === null ? chip("cannot be told", "absent")
+          : r.loaded ? chip("loaded", "clean") : chip("on disk only", "concerns"),
+        r.sha256 || "",
+        r.twin_sha256 || "",
+      ])));
+    wrap.appendChild(el("p", "fine", "“live copy” is the tree the process imported from; the other tree holds the " +
+      "same file name with different bytes. “edit live in this process?” compares the file's mtime against the " +
+      "process's start time — it is the column that answers whether a fix you just made is running."));
+  }
+  return wrap;
+}
+
+function manifestBlock(box) {
+  const head = el("div", "row-head");
+  head.appendChild(el("span", "row-tool", "What this process is running"));
+  box.appendChild(head);
+  box.appendChild(el("p", "row-why", "BioQL runs from two trees, the repo and /opt/bioql. This asks the live " +
+    "process which copy of each module it imported, and whether the other copy differs."));
+  const b = el("button", "tool", "Ask what is running now");
+  b.type = "button";
+  const holder = el("div");
+  b.addEventListener("click", async () => {
+    b.disabled = true;
+    const was = b.textContent;
+    b.textContent = "asking BioQL…";
+    const { body } = await api("/api/manifest", {});
+    b.textContent = was;
+    b.disabled = false;
+    clear(holder);
+    if (!stateLine(holder, body || {}, "api_system_manifest")) return;
+    holder.appendChild(manifestNode(body.value || {}));
+  });
+  box.appendChild(b);
+  box.appendChild(holder);
+}
+
 async function drawGuard(box) {
   const { code, body } = await api("/api/guard");
   if (code !== 200) return empty(box, body.error || "the guard did not answer");
@@ -1172,6 +1268,9 @@ async function drawGuard(box) {
       return;
     }
     guardCheckButton(box);
+    // The manifest does not depend on the guard's baseline — it asks the live process, not the disk — so it is
+    // offered here too. A baseline that is still being taken is no reason to withhold a different question.
+    manifestBlock(box);
     return;
   }
   clearTimeout(drawGuard._again);
@@ -1239,6 +1338,7 @@ async function drawGuard(box) {
     g.appendChild(row);
   });
   box.appendChild(g);
+  manifestBlock(box);
 
   $("stGuard").querySelector("span").textContent = srcClean ? "BioQL unchanged" : "BioQL changed";
   $("stGuard").className = "st" + (srcClean ? "" : " warn");
@@ -1288,8 +1388,12 @@ async function drawServers(box) {
   // `area` is BioQL's own label on the entry, straight off its registry. It used to be read through a helper that
   // guessed an area from the path for every section of the old menu; the menu is gone and only this one reader is
   // left, so it reads the field itself and falls back to nothing rather than to a guess.
+  // `backends` is in here with the health routes on purpose: "which compute does this engine actually have" is the
+  // same kind of question as "is it up", it is asked of the same servers, and it is the one worth asking BEFORE
+  // approving something that spends. All of these are GET, status-kind, no approval and no required argument —
+  // the filter is what keeps that true, rather than a list someone has to remember to keep honest.
   const health = TOOLS.filter((t) => t.method === "GET" && !t.approval && !(t.required || []).length &&
-                                     (/health|live_status|coherence/.test(t.path) ||
+                                     (/health|live_status|coherence|backends/.test(t.path) ||
                                       ((t.from_registry || {}).area === "health")));
   if (!health.length) return empty(box, "no health route in the allowlist.");
   const seen = new Set();

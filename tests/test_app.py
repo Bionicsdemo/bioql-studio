@@ -1099,3 +1099,137 @@ def test_the_app_reports_where_bioql_is_plugged_in_and_never_registers_it_itself
     src = (studio.Path(__file__).resolve().parents[1] / "app" / "service.py").read_text()
     assert "connect.apply(" not in src and "_connect.apply" not in src
     assert svc.j("/api/connect", {"register": True})[0] == 404      # not a POST either
+
+
+# ---------------------------------------------- the manifest: what the LIVE process is running
+#
+# BioQL keeps two copies of most of its backend and its own notes call an edit to the wrong one the trap that
+# silently does nothing. `/api/system/manifest` measures it on the running process. These tests are about the two
+# places where repeating BioQL's answer verbatim would mislead: the DIRECTION of a divergence, which BioQL's prose
+# gets backwards, and WHEN the hash was taken, which BioQL's answer does not say at all.
+
+def test_the_manifest_is_a_post_because_a_reading_is_a_line_on_the_record(svc):
+    code, body, _ = svc.j("/api/manifest", method="GET")
+    assert code in (400, 404, 405), "a GET that reads this would write a ledger row on every menu click"
+
+
+def _msvc(studio_home, fake_bioql):
+    ents = entries(api_system_manifest={"method": "GET", "path": "/api/system/manifest", "kind": "status",
+                                        "approval": False, "timeout": 20,
+                                        "why": "what the live process is running"})
+    return Svc(studio_home, fake_bioql, ents)
+
+
+def test_the_direction_comes_off_origin_not_off_bioqls_sentence(studio_home, fake_bioql):
+    """BioQL stamps the same sentence on both rows. Only ONE of them is true, and it is not the one BioQL implies."""
+    s = _msvc(studio_home, fake_bioql)
+    try:
+        code, body, _ = s.j("/api/manifest", {})
+        assert code == 200 and body["state"] == "RESOLVED", body
+        rows = {r["module"]: r for r in body["value"]["rows"]}
+
+        # origin "promoted": the REPO copy is what runs, so /opt/bioql holds the stale bytes...
+        assert rows["repo_wins"]["runs_from"] == "repo"
+        assert rows["repo_wins"]["stale_twin"] == "/opt/bioql/a.py"
+        # ...and BioQL's sentence, which says editing the repo changes nothing, is marked as disagreeing.
+        assert rows["repo_wins"]["warning_disagrees"] is True
+
+        # origin "shadow": the sentence IS right there, so nothing is flagged.
+        assert rows["shadow_wins"]["runs_from"] == "/opt/bioql"
+        assert rows["shadow_wins"]["warning_disagrees"] is False
+    finally:
+        s.stop()
+
+
+def test_bioqls_own_words_are_passed_through_and_not_rewritten(studio_home, fake_bioql):
+    """Studio reports BioQL. A Studio that quietly fixed BioQL's text would be a Studio you could not use to find
+    out what BioQL says."""
+    s = _msvc(studio_home, fake_bioql)
+    try:
+        _, body, _ = s.j("/api/manifest", {})
+        for r in body["value"]["rows"]:
+            if r["module"] in ("repo_wins", "shadow_wins"):
+                assert "editar la copia del repo no cambia nada" in r["warning"]
+    finally:
+        s.stop()
+
+
+def test_a_file_written_after_the_backend_started_is_not_called_live(studio_home, fake_bioql, fake_log, tmp_path):
+    """The whole reason this is not just BioQL's answer forwarded: BioQL hashes the file NOW, so a hash that
+    changed does not mean the running process ever read it."""
+    f = tmp_path / "a.py"
+    f.write_text("x = 1\n")
+    later = time.time() + 600                       # edited after this very process started
+    os.utime(f, (later, later))
+    fake_log.manifest_file = str(f)
+    s = _msvc(studio_home, fake_bioql)
+    try:
+        _, body, _ = s.j("/api/manifest", {})
+        row = {r["module"]: r for r in body["value"]["rows"]}["repo_wins"]
+        assert row["loaded"] is False
+        assert "has not read it" in row["loaded_says"]
+    finally:
+        s.stop()
+        fake_log.manifest_file = ""
+
+
+def test_a_file_written_before_the_backend_started_is_called_loaded(studio_home, fake_bioql, fake_log, tmp_path):
+    f = tmp_path / "a.py"
+    f.write_text("x = 1\n")
+    os.utime(f, (time.time() - 3600, time.time() - 3600))
+    fake_log.manifest_file = str(f)
+    s = _msvc(studio_home, fake_bioql)
+    try:
+        _, body, _ = s.j("/api/manifest", {})
+        row = {r["module"]: r for r in body["value"]["rows"]}["repo_wins"]
+        assert row["loaded"] is True
+    finally:
+        s.stop()
+        fake_log.manifest_file = ""
+
+
+def test_a_path_that_is_not_there_leaves_no_verdict_rather_than_a_no(studio_home, fake_bioql):
+    """The degradation the three-state rule forbids: a file nobody could stat must not read as 'not loaded'."""
+    s = _msvc(studio_home, fake_bioql)
+    try:
+        _, body, _ = s.j("/api/manifest", {})
+        row = {r["module"]: r for r in body["value"]["rows"]}["repo_wins"]
+        assert row["loaded"] is None, "an unstattable path must not become a verdict about what the process loaded"
+        assert row["file"]["state"] == "ABSENT"
+        assert "cannot be told from here" in row["loaded_says"]
+    finally:
+        s.stop()
+
+
+def test_the_manifest_says_when_its_hashes_were_taken(studio_home, fake_bioql):
+    s = _msvc(studio_home, fake_bioql)
+    try:
+        _, body, _ = s.j("/api/manifest", {})
+        assert "on disk at the moment this was asked" in body["value"]["hash_is_of"]
+    finally:
+        s.stop()
+
+
+def test_the_manifest_reading_lands_on_the_signed_record(studio_home, fake_bioql):
+    """Which is why it is a button and not a page load."""
+    s = _msvc(studio_home, fake_bioql)
+    try:
+        s.j("/api/manifest", {})
+        code, led, _ = s.j("/api/ledger?limit=20")
+        assert code == 200
+        mine = [r for r in led["rows"] if r.get("tool") == "api_system_manifest"]
+        assert len(mine) == 1, f"expected exactly one row, got {len(mine)}"
+        assert mine[0].get("window_event") == "manifest"
+    finally:
+        s.stop()
+
+
+def test_the_window_shows_both_readings_where_they_disagree(studio_home):
+    """A source guard over the page itself: it must name BioQL's sentence AND the field that contradicts it. A page
+    that printed only one of the two would be either a lie or a cover-up, depending on which one it dropped."""
+    js = (Path(__file__).resolve().parent.parent / "app" / "web" / "app.js").read_text()
+    assert "warning_disagrees" in js, "the page never checks whether BioQL's sentence disagrees with its own data"
+    assert "executed_from" in js
+    # and it must not poll: the only reading is the one a person presses
+    assert "/api/manifest" in js
+    assert js.count("/api/manifest") == 1

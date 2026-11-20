@@ -728,6 +728,75 @@ class Studio:
             out.append(row)
         return {"home": str(self.home), "files": out}
 
+    def manifest_report(self) -> dict:
+        """What the LIVE BioQL process is running, from BioQL's own `runtime_manifest`, plus the one comparison it
+        cannot make about itself.
+
+        BioQL keeps two copies of most of its backend — the repo and `/opt/bioql` — and its own notes call an edit
+        to the wrong one the trap that silently does nothing. `/api/system/manifest` measures that on the running
+        process: every loaded module, where it was imported FROM, its hash, and whether its twin differs.
+
+        Studio adds nothing to the science and changes none of BioQL's fields. It adds two things BioQL's answer
+        cannot contain:
+
+        **The direction, read off the data instead of the prose.** BioQL stamps every diverged module with one
+        fixed sentence — "editar la copia del repo no cambia nada en esta ruta" — without regard for which copy is
+        running. When `origin` is "promoted" the repo copy IS the one running and that sentence is backwards. So
+        `runs_from` and `stale_twin` are derived here from `origin` and `executed_from`, and BioQL's sentence is
+        passed through untouched beside them, flagged when the two disagree. Studio does not edit BioQL and does
+        not repeat a claim BioQL's own fields contradict.
+
+        **Whether the process actually loaded what is on disk.** `runtime_manifest.sha256_of` stats the path when
+        asked, so a module edited after the backend started reports its NEW hash while still executing the OLD
+        code. One comparison settles it — the process's start time against the file's mtime — and that is a local
+        fact about a pid, which is why it lives in `studio.proc` with the three states kept apart. A pid that is
+        gone, or a `ps` that could not be asked, leaves `loaded` as None: neither becomes a yes or a no.
+        """
+        from studio import proc as _proc
+
+        res = self.adapter.call("api_system_manifest", {}, approved_by=None, by="window",
+                                note={"window_event": "manifest"})
+        out = self._shape(res)
+        if not res.resolved:
+            return out
+        m = dict(res.value or {})
+        pid = m.get("pid")
+        started = _proc.started_at(int(pid)) if isinstance(pid, int) else _proc.unresolvable(
+            "ps", "BioQL's manifest named no pid, so nothing can be asked about the process")
+        rows = []
+        for r in list(m.get("diverged") or []) + list(m.get("shadow_only") or []):
+            path, origin = str(r.get("executed_from") or ""), str(r.get("origin") or "")
+            row = dict(r)
+            # Which tree is live and which is the stale copy, from `origin` — not from BioQL's sentence.
+            row["runs_from"] = {"promoted": "repo", "shadow": "/opt/bioql"}.get(origin, "elsewhere")
+            row["stale_twin"] = r.get("twin") if r.get("diverged") else None
+            said = str(r.get("warning") or "")
+            # BioQL's sentence claims editing the repo copy changes nothing. That holds only where the SHADOW copy
+            # is the one running. Saying so is not correcting BioQL: it is refusing to repeat it where its own
+            # `executed_from` says otherwise.
+            row["warning_disagrees"] = bool(said and origin == "promoted"
+                                            and "editar la copia del repo no cambia nada" in said)
+            age = _proc.age_of(path) if path else _proc.absent("stat", "no path given")
+            row["file"] = {"state": age.state, "detail": age.detail}
+            row["loaded"] = None
+            if started.resolved and age.resolved:
+                row["file"]["at"] = age.value
+                row["loaded"] = bool(age.value <= started.value)
+                row["loaded_says"] = (
+                    "written before this process started, so this is what it loaded" if row["loaded"] else
+                    f"written {int(age.value - started.value)}s AFTER this process started: it is on disk and "
+                    "this process has not read it")
+            else:
+                row["loaded_says"] = "cannot be told from here: " + "; ".join(
+                    x.detail for x in (started, age) if not x.resolved)
+            rows.append(row)
+        out["value"] = {**m, "rows": rows,
+                        "process": {"pid": pid, "state": started.state, "detail": started.detail,
+                                    **({"started_at": started.value} if started.resolved else {})},
+                        "hash_is_of": "the file on disk at the moment this was asked, not the bytes the process "
+                                      "imported — which is why each row says whether the process loaded it"}
+        return out
+
     def board_write(self, b: dict) -> tuple[dict, int]:
         """One route, four acts: new, node, link, evidence. Everything the board refuses — an unknown kind, a link
         to a node that is not there, an evidence node with no ledger line behind it — comes back as the board's own
@@ -1042,6 +1111,12 @@ def make_handler(s: Studio):
                 if p == "/api/update/check":
                     # A POST: it reaches the internet and writes a staged bundle to disk. Opening a page must not.
                     return self._json(s.update_check(take=bool(b.get("take", True))))
+                if p == "/api/manifest":
+                    # A POST because it is a CALL to BioQL, and every call to BioQL is one line on the signed
+                    # record. A page that asked this on being opened would write a line each time somebody
+                    # clicked through the menu, and a record full of rows nobody asked for is a record nobody
+                    # reads. So: a button, like the guard's reading.
+                    return self._json(s.manifest_report())
                 if p == "/api/guard/snapshot":
                     # A snapshot WRITES (one file in Studio's own folder), so it is a POST and never a GET: opening
                     # the Guard page must not change what the Guard page is about to report. The name is the

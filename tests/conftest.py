@@ -1,4 +1,5 @@
 import json
+import os
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -17,6 +18,8 @@ class FakeBioQL(BaseHTTPRequestHandler):
     """A stand-in for BioQL's backend: only the shapes the adapter must handle."""
     polls: dict = {}
     submits: list = []
+    # A test sets this to a real path so the service can compare the process start against its mtime.
+    manifest_file: str = ""
 
     def log_message(self, *a):
         pass
@@ -63,6 +66,30 @@ class FakeBioQL(BaseHTTPRequestHandler):
             return self._send(200, {"job_id": "j6", "status": "completed", "result_available": False})
         if p == "/api/pipeline/job/j7":          # a receipt with no job id to follow is not a result
             return self._send(200, {"status": "accepted"})
+        if p == "/api/system/manifest":
+            # BioQL's real shape, including the defect the manifest page exists to not repeat: the SAME sentence
+            # ("editar la copia del repo no cambia nada en esta ruta") is stamped on a diverged module whether the
+            # live copy is the repo one or the shadow one. `repo_wins` below has origin "promoted", so for that row
+            # BioQL's own executed_from contradicts its own sentence.
+            back = "editar la copia del repo no cambia nada en esta ruta"
+            return self._send(200, {
+                "available": True, "pid": os.getpid(), "python": "3.12.7",
+                "promoted_dir": "/repo/src/backend", "shadow_dir": "/opt/bioql",
+                "n_loaded": 4, "n_from_promoted": 3, "n_from_shadow": 1, "n_diverged": 2,
+                "matches_promoted": False, "digest": "d832e1920a686227",
+                "diverged": [
+                    {"module": "repo_wins", "executed_from": FakeBioQL.manifest_file or "/repo/src/backend/a.py",
+                     "origin": "promoted", "sha256": "aaaa", "twin": "/opt/bioql/a.py", "twin_sha256": "bbbb",
+                     "diverged": True, "warning": f"se ejecuta /repo/src/backend/a.py mientras /opt/bioql/a.py "
+                                                  f"tiene OTRO contenido: {back}"},
+                    {"module": "shadow_wins", "executed_from": "/opt/bioql/b.py", "origin": "shadow",
+                     "sha256": "cccc", "twin": "/repo/src/backend/b.py", "twin_sha256": "dddd",
+                     "diverged": True, "warning": f"se ejecuta /opt/bioql/b.py mientras /repo/src/backend/b.py "
+                                                  f"tiene OTRO contenido: {back}"}],
+                "shadow_only": [
+                    {"module": "orphan", "executed_from": "/opt/bioql/_c.py", "origin": "shadow",
+                     "sha256": None, "twin": None, "twin_sha256": None, "diverged": False,
+                     "warning": "se ejecuta desde la copia sombra y NO existe gemelo"}]})
         return self._send(404, {"error": "not found"})
 
     def do_POST(self):
@@ -107,7 +134,7 @@ def fake_log():
 
 @pytest.fixture
 def fake_bioql():
-    FakeBioQL.polls, FakeBioQL.submits = {}, []
+    FakeBioQL.polls, FakeBioQL.submits, FakeBioQL.manifest_file = {}, [], ""
     srv = ThreadingHTTPServer(("127.0.0.1", 0), FakeBioQL)
     t = threading.Thread(target=srv.serve_forever, daemon=True)
     t.start()
