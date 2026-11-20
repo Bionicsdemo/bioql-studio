@@ -121,10 +121,20 @@ def test_mcp_exposes_only_the_allowlist_and_refuses_hardware(fake_bioql):
     a = Adapter(fake_bioql, ents)
     tools = handle(a, {"jsonrpc": "2.0", "id": 1, "method": "tools/list"})["result"]["tools"]
     names = {t["name"] for t in tools}
-    # The allowlist, and ONE tool that is not a route: `run_many` runs several of these at the same time and
-    # reaches BioQL only through Adapter.call, so it cannot name a route the list does not hold.
-    assert names == set(ents) | {"run_many"}
+    # The allowlist, plus tools that are NOT routes and cannot become one:
+    #   · `run_many` runs several of these at the same time, through Adapter.call;
+    #   · the `studio_*` tools read Studio's own record, or re-read a result through the SAME allowlisted entry.
+    # Neither can name a route the list does not hold — which is what this test is really about, so it is checked
+    # rather than assumed: not one of them takes an endpoint, a path or a url.
+    from studio import claude_tools
+    assert names == set(ents) | {"run_many"} | claude_tools.NAMES
     assert all(t["inputSchema"]["additionalProperties"] is False for t in tools)
+    for t in tools:
+        if t["name"] in claude_tools.NAMES:
+            props = set(t["inputSchema"].get("properties") or {})
+            assert not (props & {"endpoint", "path", "url", "route", "method", "args"}), (t["name"], props)
+    # and they are marked as what they are, so a reader of the tool list can tell them from BioQL's routes
+    assert all(t["description"].startswith("[") for t in tools)
     batch = handle(a, {"jsonrpc": "2.0", "id": 9, "method": "tools/call",
                        "params": {"name": "run_many", "arguments": {"calls": [
                            {"name": "q", "args": {}},                       # the hardware entry, inside a batch

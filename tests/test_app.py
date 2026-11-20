@@ -1015,3 +1015,44 @@ def test_the_baseline_is_marked_pending_before_the_thread_starts(svc):
     i_flag = src.index("s.guard_base_pending = True")
     i_thread = src.index("target=s.guard_baseline")
     assert i_flag < i_thread, "the flag must be set before the thread exists"
+
+
+# ------------------------------------------------------------------ the connection to the person's Claude account
+def test_the_app_reports_the_claude_connection_and_holds_no_credential(svc, monkeypatch):
+    """Studio has one brain, Claude Code, signed in with the PERSON's own account. It must never ask for an
+    Anthropic credential and must never hold one: that login belongs to Claude Code."""
+    monkeypatch.setattr("studio.brain.binary", lambda: "/somewhere/claude")
+    monkeypatch.setattr("studio.brain.subprocess.run",
+                        lambda *a, **k: type("R", (), {"stdout": "2.1.329 (Claude Code)\n", "stderr": ""})())
+    code, body, _ = svc.j("/api/brain")
+    assert code == 200 and body["state"] == "INSTALLED" and body["version"].startswith("2.1")
+    assert body["exe"] == "/somewhere/claude"
+    # opening the page costs nothing of the person's usage: the probe is a POST, asked for by hand
+    assert "said" not in body
+    blob = json.dumps(body).lower()
+    for bad in ("sk-ant", "api_key", "apikey", "password", "token"):
+        assert bad not in blob
+
+
+def test_a_missing_claude_is_absent_with_what_to_run_not_a_crash(svc, monkeypatch):
+    from studio.brain import NoClaude
+    monkeypatch.setattr("studio.brain.binary", lambda: (_ for _ in ()).throw(NoClaude("not on PATH")))
+    code, body, _ = svc.j("/api/brain")
+    assert code == 200 and body["state"] == "ABSENT"
+    assert "claude" in body["how"]
+    assert body["exe"] is None and body["version"] is None
+
+
+def test_the_probe_is_a_post_and_never_happens_on_a_page_load(svc, monkeypatch):
+    seen = {"probed": 0}
+
+    def fake(probe=False, run=None):
+        seen["probed"] += int(bool(probe))
+        return {"state": "RESOLVED" if probe else "INSTALLED", "exe": "/x/claude", "version": "1", "detail": ""}
+
+    monkeypatch.setattr("studio.brain.status", fake)
+    svc.j("/api/brain")
+    svc.j("/api/brain")
+    assert seen["probed"] == 0, "opening the page must not spend the person's usage"
+    code, body, _ = svc.j("/api/brain/probe", {"probe": True})
+    assert code == 200 and body["state"] == "RESOLVED" and seen["probed"] == 1

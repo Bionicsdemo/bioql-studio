@@ -975,6 +975,10 @@ def make_handler(s: Studio):
                         since = 0
                     out, code = s.turn_of(tid, since)
                     return self._json(out, code)
+                if p == "/api/brain":
+                    # Where Claude Code is and what version. It does NOT probe: asking whether the account answers
+                    # spends a turn of the person's own usage, so that is a button (POST), never a page load.
+                    return self._json(brain.status())
                 if p == "/api/update":
                     return self._json(s.update)
                 if p == "/api/secrets":
@@ -1024,6 +1028,10 @@ def make_handler(s: Studio):
                 if p == "/api/board":
                     out, code = s.board_write(b)
                     return self._json(out, code)
+                if p == "/api/brain/probe":
+                    # One small turn, asked for by a person. Studio holds no Anthropic credential and never will:
+                    # Claude Code owns that login, and this only reports whether it answers.
+                    return self._json(brain.status(probe=True))
                 if p == "/api/update/check":
                     # A POST: it reaches the internet and writes a staged bundle to disk. Opening a page must not.
                     return self._json(s.update_check(take=bool(b.get("take", True))))

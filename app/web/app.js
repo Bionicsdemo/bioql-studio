@@ -125,6 +125,10 @@ const SECTIONS = {
   chat:     { group: "Iris", label: "Chat", icon: "orb", kind: "chat" },
   chats:    { group: "Iris", label: "Chats", icon: "chats", kind: "chats",
               lead: "Every turn of this window, with the tools each one ran." },
+  brain:    { group: "Iris", label: "Claude", icon: "orb", kind: "brain",
+              lead: "This app has one brain and it is Claude Code, signed in with YOUR account. Studio holds no " +
+                    "Anthropic credential and never asks for one: Claude Code owns that login and keeps it where " +
+                    "it keeps it. This page only reports what it finds." },
 
   // --- the work
   jobs:     { group: "Work", label: "Jobs & Recovery", icon: "pulse", kind: "jobs",
@@ -889,6 +893,58 @@ function reportNode(host, body) {
   }
   if (body.card) return void host.appendChild(cardNode(body.card));
   host.appendChild(el("pre", "sdf", JSON.stringify(v, null, 1).slice(0, 20000)));
+}
+
+// ---- Claude: the connection to the person's own account --------------------
+// There is no login of Studio's own here, and there must never be one. Claude Code signs in with the person's
+// account; this reports whether it is there, what version, and — only when a person presses the button — whether
+// it actually answers. The probe costs one small turn of their own usage, which is why it is not done on open.
+async function drawBrain(box) {
+  clear(box);
+  const { code, body } = await api("/api/brain");
+  if (code !== 200) return void empty(box, (body && body.error) || "could not ask");
+  const g = el("div", "group");
+  const row = el("div", "row");
+  const head = el("div", "row-head");
+  head.appendChild(el("span", "row-tool", "Claude Code"));
+  const st = String(body.state || "");
+  head.appendChild(chip(st === "RESOLVED" ? "connected" : (st === "INSTALLED" ? "installed" : st.toLowerCase()),
+                        st === "RESOLVED" ? "clean" : (st === "ABSENT" ? "bad" : "plain")));
+  if (body.version) head.appendChild(el("span", "hash", body.version));
+  row.appendChild(head);
+  if (body.exe) row.appendChild(el("code", "smi", body.exe));
+  row.appendChild(el("p", "row-why", body.detail || ""));
+  if (body.said) row.appendChild(el("p", "fine", "it said: " + body.said));
+
+  const acts = el("div", "row-head");
+  const b = el("button", "tool", "Test the connection");
+  b.type = "button";
+  b.title = "Asks Claude Code one tiny question. It spends a small amount of your own usage.";
+  b.addEventListener("click", async () => {
+    b.disabled = true;
+    const was = b.textContent;
+    b.textContent = "asking Claude…";
+    await api("/api/brain/probe", { probe: true });
+    b.textContent = was;
+    b.disabled = false;
+    await draw();
+  });
+  acts.appendChild(b);
+  row.appendChild(acts);
+  g.appendChild(row);
+  box.appendChild(g);
+
+  if (body.how) {
+    box.appendChild(el("h3", "sect", "To connect your account"));
+    box.appendChild(el("p", "cmd", body.how));
+    box.appendChild(el("p", "fine", "Run it in a terminal once. It signs in with your own Claude account, in " +
+      "Claude Code, where it belongs — nothing about it passes through this app, and nothing is stored here."));
+  }
+  box.appendChild(el("p", "fine", "What this app does with that connection: every question you ask goes to Claude " +
+    "Code, which reaches BioQL only through Studio's closed list of 502 entries, with a person's approval required " +
+    "for anything that spends compute, and one line on the signed record for every call. Claude also sees the " +
+    "record itself — what has been run, what the verifier contradicted — which is how it can tell you a result " +
+    "disagrees with itself instead of reading it out."));
 }
 
 // ---- API Keys -------------------------------------------------------------
@@ -2050,6 +2106,7 @@ async function draw() {
     case "sar": await drawSar(box); break;
     case "cands": await drawCands(box); break;
     case "report": await drawReport(box); break;
+    case "brain": await drawBrain(box); break;
     case "keys": await drawKeys(box); break;
     case "findings": await drawFindings(box); break;
     case "board": await drawBoard(box); break;

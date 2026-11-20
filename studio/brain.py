@@ -363,3 +363,63 @@ def shut_all() -> None:
 
 
 atexit.register(shut_all)   # a config that outlives the process is the leak this exists to stop
+
+
+# ---------------------------------------------------------------------------------------------- is it connected?
+# Studio does not hold anybody's Anthropic credentials and must never ask for one. The brain is Claude Code, which
+# signs in on its own and keeps that login where it keeps it; this just reports what it finds, so the app can say
+# "you are connected" or "run this" instead of failing at the first question with a stack trace.
+PROBE_TIMEOUT = 90.0
+PROBE_PROMPT = "Reply with the single word: ready"
+
+
+def status(probe: bool = False, run=None) -> dict:
+    """Where Claude Code is, what version, and — only when asked — whether it actually answers.
+
+    The three states are kept apart, because they mean different things to the person reading:
+      ABSENT        Claude Code is not on this Mac. Install it.
+      UNRESOLVABLE  it is here and would not say what it is, or would not answer. Usually not signed in.
+      RESOLVED      it answered.
+
+    `probe` costs one tiny turn of the person's own Claude usage, so it never happens on its own: a page that
+    quietly spent somebody's quota every time it was opened would be a page nobody should open.
+    """
+    try:
+        exe = binary()
+    except NoClaude as why:
+        return {"state": "ABSENT", "exe": None, "version": None, "detail": str(why),
+                "how": "npm i -g @anthropic-ai/claude-code && claude"}
+    runner = run or (lambda a, t: subprocess.run(a, capture_output=True, text=True, timeout=t,
+                                                 env={**os.environ, "DISABLE_AUTOUPDATER": "1"}))
+    try:
+        v = runner([exe, "--version"], 30)
+        version = (getattr(v, "stdout", "") or "").strip().splitlines()[:1]
+        version = version[0] if version else None
+    except (OSError, subprocess.SubprocessError) as why:
+        return {"state": "UNRESOLVABLE", "exe": exe, "version": None,
+                "detail": f"{exe} is there and would not say its version: {type(why).__name__}: {str(why)[:160]}"}
+    if not probe:
+        return {"state": "INSTALLED", "exe": exe, "version": version,
+                "detail": "Claude Code is here. Whether it is signed in is not known until it is asked, and asking "
+                          "costs one small turn of your own usage — so it is a button, not something this page does."}
+    try:
+        r = runner(command(PROBE_PROMPT, mcp_config(), None, allowed=[]), PROBE_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return {"state": "UNRESOLVABLE", "exe": exe, "version": version,
+                "detail": f"it did not answer in {PROBE_TIMEOUT:.0f}s"}
+    except (OSError, subprocess.SubprocessError) as why:
+        return {"state": "UNRESOLVABLE", "exe": exe, "version": version,
+                "detail": f"{type(why).__name__}: {str(why)[:160]}"}
+    said = []
+    for line in (getattr(r, "stdout", "") or "").splitlines():
+        said += events(line)
+    text = " ".join(e.get("text", "") for e in said if e.get("type") in ("say", "result"))[:300]
+    if any(e.get("type") == "result" for e in said) or text.strip():
+        return {"state": "RESOLVED", "exe": exe, "version": version, "said": text.strip()[:200],
+                "detail": "Claude Code answered: this account is connected and the brain works."}
+    err = (getattr(r, "stderr", "") or "").strip()[:300]
+    low = (err + " " + text).lower()
+    signed_out = any(w in low for w in ("login", "log in", "sign in", "unauthorized", "authentication", "api key"))
+    return {"state": "UNRESOLVABLE", "exe": exe, "version": version,
+            "detail": (("it looks signed out: " if signed_out else "it answered nothing: ") + (err or "no output")),
+            "how": "run `claude` once in a terminal and sign in with your own account" if signed_out else None}

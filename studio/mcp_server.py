@@ -21,10 +21,12 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 
 from . import NAME, VERSION
+from . import claude_tools
 from .adapter import Adapter, Refused
 from .fanout import MAX_CALLS, run_many
 
 IN_FLIGHT = 8          # how many of Claude's calls may be in BioQL at once, over all its turns
+MAX_TEXT = 200_000     # how much of one answer fits in one message; beyond it the answer is DESCRIBED, never cut
 
 RUN_MANY = {
     "name": "run_many",
@@ -66,6 +68,11 @@ def tool_list(ad: Adapter) -> list[dict]:
         note = " Needs a person's approval; Claude cannot run it." if e["approval"] or e["kind"] == "hardware" else ""
         out.append({"name": e["name"], "description": f"[{e['kind']}] {e['why']}{note}".strip(), "inputSchema": _schema(e)})
     out.append(dict(RUN_MANY))
+    # And the instrument itself. Claude had 502 doors into BioQL and none into the record around it: it could run
+    # a pipeline and not ask what had already been run, be told a result contradicted itself and have no way to
+    # see whether the same thing contradicted last week, and had no way to read a 190 KB answer without pulling
+    # all of it into the conversation. See studio/claude_tools.py.
+    out += [dict(t) for t in claude_tools.TOOLS]
     return out
 
 
@@ -80,6 +87,9 @@ def _called(ad: Adapter, p: dict) -> tuple[str, bool]:
             # failure, and reporting it as one would hide the four.
             bad = not any(r.get("state") == "RESOLVED" for r in out["runs"])
             return json.dumps(out, ensure_ascii=False, default=str), bad
+        if name in claude_tools.NAMES:
+            out = claude_tools.handle(name, args, ad)
+            return json.dumps(out, ensure_ascii=False, default=str), bool(out.get("error"))
         res = ad.call(name, args, approved_by=None, by="claude")
         return json.dumps(res.as_dict(), ensure_ascii=False, default=str), not res.resolved and not res.absent
     except Refused as why:
@@ -98,7 +108,13 @@ def handle(ad: Adapter, msg: dict) -> dict | None:
             result = {"tools": tool_list(ad)}
         elif method == "tools/call":
             text, err = _called(ad, msg.get("params") or {})
-            result = {"content": [{"type": "text", "text": text[:200_000]}], "isError": err}
+            # An answer that does not fit is SAID, not cut. `text[:200_000]` handed the brain JSON chopped in the
+            # middle of an object, with nothing to say why — the same failure this project refuses everywhere
+            # else: at the limit, produce something plausible instead of stopping. Now it keeps the state, the
+            # verdict, the findings and the provenance, and names the tools that read the rest in pieces.
+            if len(text) > MAX_TEXT:
+                text, err = claude_tools.too_big(text, MAX_TEXT), True
+            result = {"content": [{"type": "text", "text": text}], "isError": err}
         elif method == "ping":
             result = {}
         else:
