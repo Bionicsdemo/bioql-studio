@@ -12,6 +12,7 @@
   python -m studio release check                 ask the channel what it publishes, and verify the signature
   python -m studio connect [--remove|--status]   plug BioQL into every Claude on this Mac, over MCP
   python -m studio refresh                       backfill what BioQL says about each entry, from its registry
+  python -m studio advanced [--on|--off]         put Settings in the app's menu, or take it out (hides; locks nothing)
 """
 from __future__ import annotations
 
@@ -42,6 +43,9 @@ def main(argv: list[str] | None = None) -> int:
     cn.add_argument("--remove", action="store_true", help="take BioQL out of those clients again")
     cn.add_argument("--status", action="store_true", help="only say where it is plugged in")
     sub.add_parser("refresh")
+    adv = sub.add_parser("advanced")
+    adv.add_argument("--on", action="store_true", help="put Settings back in the menu")
+    adv.add_argument("--off", action="store_true", help="take Settings out of the menu")
     ns = ap.parse_args(argv)
 
     if ns.cmd == "connect":
@@ -53,6 +57,20 @@ def main(argv: list[str] | None = None) -> int:
         res = cn.apply(remove=ns.remove)
         print(json.dumps(res.as_dict(), indent=1, default=str))
         return 0 if res.resolved or res.absent else 2
+
+    if ns.cmd == "advanced":
+        from . import advanced as adv2
+        if ns.on and ns.off:
+            print("--on and --off are opposites; pick one"); return 2
+        if not (ns.on or ns.off):
+            on = adv2.is_on()
+            print(f"Settings is {'in' if on else 'out of'} the menu · {adv2.file()}")
+            print("This hides a page. It locks nothing: Studio has no users and no roles, and every route "
+                  "answers the same either way.")
+            return 0
+        out = adv2.set_on(bool(ns.on))
+        print(f"{out['state']} · {out['detail']}")
+        return 0 if out["state"] == "RESOLVED" else 2
 
     if ns.cmd == "refresh":
         from . import allowlist as al2

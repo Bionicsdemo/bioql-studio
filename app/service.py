@@ -39,6 +39,7 @@ from urllib.parse import parse_qs, urlparse
 import studio
 from studio import board
 from studio import brain
+from studio import advanced
 from studio import ledger
 from studio import allowlist as al
 from studio import guard as sguard
@@ -280,6 +281,11 @@ class Studio:
                 "bioql": self.adapter.base,
                 "up_seconds": round(time.time() - self.started, 1),
                 "calls": self.calls, "refusals": self.refusals, "approvals": self.approvals,
+                # Whether Settings is in the menu. It HIDES a page and locks nothing: this very route answers the
+                # same with it off, which is why it is reported here rather than withheld. See studio/advanced.py.
+                "advanced": advanced.is_on(self.home),
+                "update": {"state": self.update.get("state"), "latest": self.update.get("latest"),
+                           "detail": self.update.get("detail")},
                 "pending": pend, "runs": [r.public() for r in list(self.runs.values())[-RUN_MAX:]]}
 
     def busy(self) -> dict:
@@ -1107,6 +1113,12 @@ def make_handler(s: Studio):
                 if p == "/api/update/check":
                     # A POST: it reaches the internet and writes a staged bundle to disk. Opening a page must not.
                     return self._json(s.update_check(take=bool(b.get("take", True))))
+                if p == "/api/advanced":
+                    # Puts Settings in the menu or takes it out. Deliberately NOT guarded: there is nothing to
+                    # guard it with. Studio has no users and no roles -- one token per install, readable by
+                    # anyone with a session on this Mac -- so a check here would protect nothing and would make
+                    # somebody believe it did. It hides a page; that claim is the whole claim.
+                    return self._json(advanced.set_on(bool(b.get("on")), s.home))
                 if p == "/api/manifest":
                     # A POST because it is a CALL to BioQL, and every call to BioQL is one line on the signed
                     # record. A page that asked this on being opened would write a line each time somebody

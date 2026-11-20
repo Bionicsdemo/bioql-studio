@@ -178,6 +178,52 @@ const GROUPS = ["Iris", "Work", "Record"];
 // a frame; nothing frames them now, and an address kept for nothing is an invitation to reach for it again.
 let lastState = null;
 
+// --- Settings is out of the way unless this install asks for it.
+//
+// It HIDES a page. It locks nothing, and this file is not going to imply otherwise. Studio has no users, no roles
+// and no login: one token per install, sitting in a file that anybody with a session on this Mac can read, after
+// which every route answers them exactly as it answers this window. A check in the window would protect nothing
+// and would make somebody believe it did, which on an app that decides whether real quantum hardware gets spent
+// is worse than no check at all.
+//
+// What it is for: a window somebody else is looking at should not open on the version numbers, the data paths,
+// the update channel and the MCP registration of whoever set this machine up.
+//
+// The state is a file in Studio's HOME, read from /api/state — not localStorage, which is per browser profile,
+// comes back empty in a private window, and would hand the page back the first time storage was cleared.
+let advancedOn = false;
+
+// The one choke point. Every door into a section goes through it: the menu, the palette, the tabs and open_().
+function shown(k) {
+  return k !== "settings" || advancedOn;
+}
+
+// Both status chips carry data-go="settings" in the HTML. With Settings out of the menu they would be a door
+// around it, so they stop being buttons and stay what they always were underneath: two readings. This lives in
+// its own function because the switch can be flipped from the palette, and a chip that only caught up on the
+// next six-second poll spent those six seconds disagreeing with the menu beside it.
+function syncChips() {
+  [$("stVer"), $("stTools")].forEach((b) => {
+    if (!b) return;
+    if (advancedOn) b.setAttribute("data-go", "settings");
+    else b.removeAttribute("data-go");
+  });
+}
+
+async function setAdvanced(on) {
+  const { body } = await api("/api/advanced", { on: !!on });
+  advancedOn = !!(body && body.on);
+  if (!advancedOn) {
+    // A tab left open is a door as good as the menu, so it closes with the rest.
+    const i = openTabs.indexOf("settings");
+    if (i >= 0) openTabs.splice(i, 1);
+  }
+  buildNav();
+  syncChips();
+  await open_(advancedOn ? "settings" : (view === "settings" ? "chat" : view));
+  return body;
+}
+
 // Las etapas de los pipelines en curso. Lee `/api/progress`, que el adaptador llena desde
 // `_follow`; esta pagina NUNCA pregunta a BioQL (`connect-src 'self'`) ni toca una corrida.
 // Dibuja lo mismo que `PipelineProgressTracker.tsx` en :3000: barra hecho/total, la lista de
@@ -261,7 +307,34 @@ async function drawState() {
   $("hubDot").className = "dot " + (waiting ? "warn" : "on");
   $("hubLine").textContent = waiting ? waiting + " waiting for a person" : "ready";
   $("ver").textContent = body.version + " · 127.0.0.1:" + body.port;
-  $("stVerText").textContent = body.version;
+
+  // Whether Settings is in the menu, decided by the install and not by this page. When it changes under us — the
+  // CLI switch, or another window — the menu is rebuilt rather than left lying about what it offers.
+  const was = advancedOn;
+  advancedOn = !!body.advanced;
+  if (was !== advancedOn) {
+    if (!advancedOn) {
+      const i = openTabs.indexOf("settings");
+      if (i >= 0) openTabs.splice(i, 1);
+      if (view === "settings") { open_("chat"); }
+    }
+    buildNav();
+    drawTabs();
+  }
+
+  // The update used to be visible only INSIDE Settings, so hiding Settings would have hidden it. The check runs
+  // by itself at startup and a staged release installs itself on quit, so nothing here needs a click — but a
+  // channel that could not be reached is worth seeing, and this is where it is seen now.
+  const up = body.update || {};
+  const upState = String(up.state || "");
+  const loud = upState === "AVAILABLE" || upState === "READY" || upState === "UNRESOLVABLE";
+  $("stVerText").textContent = body.version + (loud
+    ? " · " + (upState === "READY" ? (up.latest || "") + " ready, installs on quit"
+      : upState === "AVAILABLE" ? (up.latest || "") + " available"
+      : "update channel unreachable")
+    : "");
+  $("stVer").className = "st" + (upState === "UNRESOLVABLE" ? " warn" : "");
+  syncChips();
   $("chatSub").textContent = `${body.calls} call(s) · ${body.refusals} refused · ${body.approvals} approved`;
   $("stateLine").textContent = `${body.calls} call(s) on the record · ${body.refusals} refused · ` +
     `${body.approvals} approved` + (waiting ? ` · ${waiting} waiting for a person` : "");
@@ -1531,7 +1604,23 @@ async function drawSettings(box) {
   }
 
   box.appendChild(el("h3", "sect", "Updates"));
-  drawUpdate(box);
+  await drawUpdate(box);
+
+  box.appendChild(el("h3", "sect", "This page in the menu"));
+  const bar = el("div", "row-head");
+  const off = el("button", "tool", "Take Settings out of the menu");
+  off.type = "button";
+  off.addEventListener("click", () => setAdvanced(false));
+  bar.appendChild(off);
+  box.appendChild(bar);
+  box.appendChild(el("p", "row-why", "Out of the menu, this page is not offered anywhere: not in the menu, not " +
+    "in the palette's list, not as a tab, and the two status chips stop pointing here. To bring it back, open " +
+    "the palette with ⌘K and type “advanced”, or run `python3 -m studio advanced --on` in a terminal."));
+  box.appendChild(el("p", "fine", "Said plainly: this HIDES a page, it does not lock one. Studio has no users, " +
+    "no roles and no login — one token per install, in a file anybody with a session on this Mac can read, after " +
+    "which every route answers them exactly as it answers this window. A check here would protect nothing and " +
+    "would make somebody believe it did, which on an app that decides whether real hardware gets spent is worse " +
+    "than no check. A real boundary would have to come from the operating system, and is not faked here."));
 }
 
 function drawChats(box) {
@@ -2119,7 +2208,7 @@ function buildNav() {
   clear(nav);
   const shut = shutGroups();
   GROUPS.forEach((g) => {
-    const keys = Object.keys(SECTIONS).filter((k) => SECTIONS[k].group === g);
+    const keys = Object.keys(SECTIONS).filter((k) => SECTIONS[k].group === g && shown(k));
     if (!keys.length) return;
     const box = el("div", "side-g" + (shut.has(g) ? " shut" : ""));
     const head = el("button", "side-h");
@@ -2158,7 +2247,7 @@ function buildNav() {
 function drawTabs() {
   const bar = $("tabs");
   clear(bar);
-  openTabs.forEach((k) => {
+  openTabs.filter(shown).forEach((k) => {
     const s = SECTIONS[k];
     const t = el("div", "tab" + (k === view ? " on" : ""));
     t.setAttribute("role", "tab");
@@ -2219,7 +2308,7 @@ async function draw() {
 
 async function open_(k) {
   const s = SECTIONS[k];
-  if (!s) return;
+  if (!s || !shown(k)) return;
   seq += 1;
   view = k;
   document.body.setAttribute("data-view", k);
@@ -2247,12 +2336,20 @@ let palSel = 0, palRows = [];
 function palItems(q) {
   const out = [];
   const needle = q.trim().toLowerCase();
-  Object.keys(SECTIONS).forEach((k) => {
+  Object.keys(SECTIONS).filter(shown).forEach((k) => {
     const s = SECTIONS[k];
     if (!needle || s.label.toLowerCase().includes(needle) || k.includes(needle)) {
       out.push({ icon: s.icon, label: s.label, note: s.group, go: () => open_(k) });
     }
   });
+  // The way back. It is not in the menu by design — you have to know the word — but it is not a secret either,
+  // and it says what it does: this shows a page, it does not unlock one. `python3 -m studio advanced --on` is
+  // the same switch from a terminal, for the window that will not open far enough to type in.
+  if (needle && ("advanced".includes(needle) || "settings".includes(needle) || "ajustes".includes(needle))) {
+    out.push({ icon: "gear", label: advancedOn ? "Advanced: hide Settings" : "Advanced: show Settings",
+               note: advancedOn ? "takes it back out of the menu" : "hides a page, locks nothing",
+               go: () => setAdvanced(!advancedOn) });
+  }
   if (needle) {
     // A matching route is still worth naming — but it is named into the CHAT, which is the only thing that runs
     // one now. The palette used to open a list of 502 route names, and a list is not work.
