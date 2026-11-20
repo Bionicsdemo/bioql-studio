@@ -88,13 +88,25 @@ def test_studio_never_imports_bioql():
 
 def test_studio_never_writes_into_bioql():
     """No string constant in a write call points into BioQL's folders (docstrings are not code: AST only)."""
-    bioql_marks = ("Spectrix_BioQL", "/opt/bioql", ".bioql")
+    def points_into_bioql(v: str) -> bool:
+        """A PATH into BioQL, matched by component and not by substring.
+
+        `.bioql` as a substring also matches `com.molevera.bioqlstudio` — Studio's OWN bundle identifier, which
+        `studio/release.py` checks an update against. Reading that as "a write into BioQL" is the same defect the
+        project's own notes record twice: match by token, not by substring (an audit rate went from 60% to 94%
+        because `"kd" in path` matched `score_brea(kd)own`). A guard that fires on the wrong thing gets relaxed,
+        and then it no longer guards.
+        """
+        if "Spectrix_BioQL" in v or "/opt/bioql" in v:
+            return True
+        return ".bioql" in [part for part in v.replace("\\", "/").split("/")]
+
     hits = []
     for f in PKG.rglob("*.py"):
         if f.name == "guard.py":                             # the guard names them to READ them; checked below
             continue
         for node in ast.walk(_code(f)):
-            if isinstance(node, ast.Constant) and isinstance(node.value, str) and any(m in node.value for m in bioql_marks):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str) and points_into_bioql(node.value):
                 hits.append((f.name, node.value))
     assert not hits, hits
     g = _code(PKG / "guard.py")

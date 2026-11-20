@@ -7,12 +7,16 @@
   python -m studio guard snapshot NAME | guard check NAME
   python -m studio ledger verify
   python -m studio mcp                           serve the adapter to Claude Code over stdio
+  python -m studio release key                   make (or show) the Ed25519 key that signs releases
+  python -m studio release sign DMG --version V  write latest.json and its signature beside the image
+  python -m studio release check                 ask the channel what it publishes, and verify the signature
 """
 from __future__ import annotations
 
 import argparse
 import json
 import sys
+from pathlib import Path
 
 from . import allowlist as al
 from . import guard, ledger
@@ -30,7 +34,41 @@ def main(argv: list[str] | None = None) -> int:
     g = sub.add_parser("guard"); g.add_argument("action", choices=("snapshot", "check")); g.add_argument("name")
     lg = sub.add_parser("ledger"); lg.add_argument("action", choices=("verify",))
     sub.add_parser("mcp")
+    r = sub.add_parser("release"); r.add_argument("action", choices=("key", "sign", "check"))
+    r.add_argument("dmg", nargs="?"); r.add_argument("--version")
     ns = ap.parse_args(argv)
+
+    if ns.cmd == "release":
+        from . import release as rel
+        if ns.action == "key":
+            # Making it is one act; the public half is what goes in the source. The private half is never printed.
+            sk = rel.private_key(create=True)
+            print(f"private key: {rel.key_path()} (0600 — this file is the key to every Mac running this app)")
+            print(f"public key:  {rel.public_hex(sk)}")
+            print(f"pinned in studio/release.py: {rel.PUBLIC_KEY}")
+            if rel.public_hex(sk) != rel.PUBLIC_KEY:
+                print("THEY DO NOT MATCH. Builds made from this source will refuse releases signed with this key.")
+                return 2
+            return 0
+        if ns.action == "sign":
+            if not ns.dmg or not ns.version:
+                print("release sign needs a .dmg and --version"); return 2
+            dmg = Path(ns.dmg)
+            man = rel.manifest_for(dmg, ns.version)
+            sig = rel.sign(man)
+            (dmg.parent / rel.MANIFEST).write_text(json.dumps(man, sort_keys=True, separators=(",", ":")) + "\n")
+            (dmg.parent / rel.SIGNATURE).write_text(sig + "\n")
+            print(json.dumps(man, indent=1))
+            print(f"signature: {sig[:32]}…")
+            print(f"wrote {dmg.parent / rel.MANIFEST} and {dmg.parent / rel.SIGNATURE}")
+            print(f"verified against the pinned key: {rel.verify(man, sig)}")
+            return 0
+        # The running version has ONE source, `app/__init__.py`, which `build.sh` also reads. Imported here and
+        # not at the top: `studio` is the layer below `app` and must keep working without it.
+        from app import VERSION
+        res = rel.latest(VERSION)
+        print(json.dumps(res.as_dict(), indent=1, default=str))
+        return 0 if res.resolved or res.absent else 2
 
     if ns.cmd == "mcp":
         from .mcp_server import main as serve

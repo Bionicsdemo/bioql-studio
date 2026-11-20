@@ -245,6 +245,10 @@ class Studio:
         # 11:11:09 and the Guard tab, drawn while it ran, showed yesterday's comparison in red for the rest of the
         # session, because this page does not redraw itself. "It is being taken" is an answer; the old pair is not.
         self.guard_base_pending = False
+        # Updates. UNKNOWN until something has actually been asked: "not checked" and "nothing new" are different
+        # answers and the window shows them differently.
+        self.update = {"state": "UNKNOWN", "current": VERSION, "latest": None, "checked": None,
+                       "staged": None, "detail": "the channel has not been asked yet"}
         # Agtr holds a SECOND secret, native.key (service.py:98), and any request carrying it is treated as having
         # passed Touch ID (service.py:1234, and `uv: bool(native)` in the signed proofs at :315, :338, :949, :969).
         # That file is an ordinary 0600 file: every process running as this user can read it, so `uv: true` is a claim
@@ -592,6 +596,68 @@ class Studio:
             return {"id": tid, "since": since, "events": evs, "next": since + len(evs), "state": t["state"],
                     "asked": t["asked"]}, 200
 
+    # ------------------------------------------------------------------ updates
+    def update_check(self, take: bool = True) -> dict:
+        """Ask the channel, and — when `take` — fetch, verify and stage what it publishes.
+
+        This is the ONLY place in Studio that reaches past 127.0.0.1. Every refusal along the way is kept as the
+        answer: an update that cannot be verified is never installed, and never quietly treated as "nothing new".
+        """
+        from studio import release
+        if os.environ.get("BIOQL_STUDIO_NO_UPDATES"):
+            self.update = {**self.update, "state": "OFF", "checked": time.time(),
+                           "detail": "BIOQL_STUDIO_NO_UPDATES is set: the channel is not asked at all"}
+            return self.update
+        res = release.latest(VERSION)
+        now = time.time()
+        if res.absent:
+            self.update = {**self.update, "state": "CURRENT", "checked": now, "latest": None, "detail": res.detail}
+            return self.update
+        if not res.resolved:
+            self.update = {**self.update, "state": "UNRESOLVABLE", "checked": now, "detail": res.detail}
+            self.log(f"update check: {res.detail}")
+            return self.update
+        man = res.value
+        self.update = {**self.update, "state": "AVAILABLE", "checked": now, "latest": man.get("version"),
+                       "detail": res.detail, "notes": man.get("notes") or "", "sha256": man.get("sha256")}
+        if not take:
+            return self.update
+        got = release.download(man, self.home / "updates")
+        if not got.resolved:
+            self.update = {**self.update, "state": "UNRESOLVABLE", "detail": got.detail}
+            self.log(f"update download: {got.detail}")
+            return self.update
+        put = release.stage(Path(got.value), man["version"])
+        try:
+            Path(got.value).unlink(missing_ok=True)     # the image has been checked and copied out; keep neither
+        except OSError:
+            pass
+        if not put.resolved:
+            self.update = {**self.update, "state": "UNRESOLVABLE", "detail": put.detail}
+            self.log(f"update stage: {put.detail}")
+            return self.update
+        self.update = {**self.update, "state": "READY", "staged": put.value, "detail": put.detail}
+        self.log(f"update {man['version']} staged at {put.value}; it replaces the app when this one quits")
+        return self.update
+
+    def update_swap(self) -> None:
+        """Arm the replacement, at the very end. Nothing is swapped while the app runs: this service re-reads its
+        own web files from disk on every request, so replacing the bundle under it would serve the new page against
+        the old service.
+
+        The process it waits for is the PARENT — the .app — not this Python child, which dies first.
+        """
+        staged = (self.update or {}).get("staged")
+        if not staged or not Path(staged).is_dir():
+            return
+        from studio import release
+        try:
+            parent = int(os.environ.get("BIOQL_STUDIO_PARENT") or 0) or os.getppid()
+        except ValueError:
+            parent = os.getppid()
+        out = release.swap(Path(staged), pid=parent)
+        self.log(f"update swap: {out.state} · {out.detail}")
+
     GUARD_BASE = "app-start"
 
     def guard_snapshot(self, name: str | None = None) -> dict:
@@ -909,6 +975,8 @@ def make_handler(s: Studio):
                         since = 0
                     out, code = s.turn_of(tid, since)
                     return self._json(out, code)
+                if p == "/api/update":
+                    return self._json(s.update)
                 if p == "/api/secrets":
                     # Where Studio's own secrets live and how they are protected. No contents, ever — not even
                     # truncated: a prefix of a token is still part of a token.
@@ -956,6 +1024,9 @@ def make_handler(s: Studio):
                 if p == "/api/board":
                     out, code = s.board_write(b)
                     return self._json(out, code)
+                if p == "/api/update/check":
+                    # A POST: it reaches the internet and writes a staged bundle to disk. Opening a page must not.
+                    return self._json(s.update_check(take=bool(b.get("take", True))))
                 if p == "/api/guard/snapshot":
                     # A snapshot WRITES (one file in Studio's own folder), so it is a POST and never a GET: opening
                     # the Guard page must not change what the Guard page is about to report. The name is the
@@ -1076,6 +1147,10 @@ def run(home: Path | None = None, port: int = PORT, block: bool = True, adapter:
     s.guard_base_pending = True     # set HERE, before the thread exists, so there is no gap where the window
     threading.Thread(target=s.guard_baseline, name="studio-guard-baseline", daemon=True).start()
 
+    # The update check, also in a thread. It is the one thing here that leaves this Mac, so it is said plainly in
+    # the log and it can be turned off with BIOQL_STUDIO_NO_UPDATES without touching anything else.
+    threading.Thread(target=s.update_check, name="studio-update", daemon=True).start()
+
     _follow_parent(srv)
     try:
         srv.serve_forever()
@@ -1083,4 +1158,7 @@ def run(home: Path | None = None, port: int = PORT, block: bool = True, adapter:
         srv.shutdown()
     finally:
         brain.forget()                  # the config of THIS service, whichever way the loop ended
+        # LAST, after the loop has stopped: if a verified update is staged, arm the process that puts it in place
+        # once the app itself has gone. Nothing is replaced while anything is still running.
+        s.update_swap()
     return s, srv

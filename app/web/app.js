@@ -1302,6 +1302,61 @@ async function drawUsage(box) {
 }
 
 
+// ---- updates ---------------------------------------------------------------
+// The whole update story in one block: what is running, what the channel says, and what was checked before
+// anything would be installed. The one place in this window that reports something fetched from the internet, so
+// it names the repository it asked and says plainly what the signature proves.
+const UP_WORDS = {
+  UNKNOWN: "the channel has not been asked yet",
+  OFF: "turned off on this Mac",
+  CURRENT: "this is the newest published version",
+  AVAILABLE: "a newer version is published",
+  READY: "a newer version is checked and ready",
+  UNRESOLVABLE: "the channel could not be used",
+};
+
+async function drawUpdate(box) {
+  const { code, body } = await api("/api/update");
+  if (code !== 200) return;
+  const u = body || {};
+  const g = el("div", "group");
+  const row = el("div", "row");
+  const head = el("div", "row-head");
+  head.appendChild(el("span", "row-tool", "updates"));
+  const tone = u.state === "READY" ? "clean" : (u.state === "UNRESOLVABLE" ? "bad"
+    : (u.state === "AVAILABLE" ? "busy" : "plain"));
+  head.appendChild(chip(String(u.state || "unknown").toLowerCase(), tone));
+  if (u.latest) head.appendChild(el("span", "hash", u.current + " → " + u.latest));
+  row.appendChild(head);
+  row.appendChild(el("p", "row-why", (UP_WORDS[u.state] || "") + (u.detail ? " · " + u.detail : "")));
+  if (u.checked) row.appendChild(el("span", "row-when", "asked " + when(u.checked)));
+  if (u.state === "READY") {
+    row.appendChild(el("p", "fine", "It replaces this app when you quit it, and the app opens again. Nothing is " +
+      "swapped while anything is running: this service reads its own files from disk as it serves them."));
+  }
+  const acts = el("div", "row-head");
+  const b = el("button", "tool", "Check now");
+  b.type = "button";
+  b.addEventListener("click", async () => {
+    b.disabled = true;
+    const was = b.textContent;
+    b.textContent = "asking…";
+    await api("/api/update/check", { take: true });
+    b.textContent = was;
+    b.disabled = false;
+    await draw();
+  });
+  acts.appendChild(b);
+  row.appendChild(acts);
+  g.appendChild(row);
+  box.appendChild(g);
+  box.appendChild(el("p", "fine", "This is the only thing in Studio that leaves this Mac. It asks one address for " +
+    "a signed note saying which version is published and the sha256 of its image. A release is installed only if " +
+    "that note carries this build's own Ed25519 signature, the image's bytes match the hash inside it, the bundle " +
+    "says it is this app at that version, codesign accepts it, and its own source manifest matches its files. " +
+    "Anything else is reported and nothing is installed. Set BIOQL_STUDIO_NO_UPDATES to never ask at all."));
+}
+
 function drawSettings(box) {
   const st = lastState || {};
   clear(box);
@@ -1322,8 +1377,10 @@ function drawSettings(box) {
   box.appendChild(g);
   box.appendChild(el("p", "fine", "BioQL's own model routes — vMLX, DeepSeek, openrouter, localllm — are not in " +
     "the allowlist, so nothing here can reach one."));
-  box.appendChild(el("p", "fine", "Studio never writes inside BioQL's folders. The Guard section compares the two " +
-    "most recent snapshots of its source trees and names every file that moved."));
+  box.appendChild(el("p", "fine", "Studio never writes inside BioQL's folders. The Guard section compares the " +
+    "baseline this app took when it opened against a reading you take, and names every file that moved."));
+  box.appendChild(el("h3", "sect", "Updates"));
+  drawUpdate(box);
 }
 
 function drawChats(box) {
