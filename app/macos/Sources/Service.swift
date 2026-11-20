@@ -3,7 +3,8 @@ import Foundation
 /// The local BioQL Studio service: start it, watch it, talk to it.
 ///
 /// Forked from Agtr's `desktop/macos/Sources/Service.swift`. Four defects of the original are fixed here, each noted
-/// at the place it was. NOT COMPILED: correct by inspection only.
+/// at the place it was. Compiled and run 2026-11-19 (swiftc 6.4.2, -swift-version 5, arm64-apple-macos13.0):
+/// no errors and no warnings.
 final class Service {
     // Studio's own identity. Agtr: port 7790 and the ping name "agtr-desktop" (Service.swift:5-6, :36).
     static let port = 7810
@@ -150,11 +151,21 @@ final class Service {
         env["PYTHONPATH"] = root.path
         env["PYTHONUNBUFFERED"] = "1"
         env["BIOQL_STUDIO_HOME"] = Service.home.path        // one definition of the home folder, shared with the child
+        // Who this service belongs to. A force-quit (SIGKILL) skips `applicationWillTerminate`, so `stop()` never
+        // runs and the child is orphaned onto pid 1 still holding 7810; the next launch then refuses to attach to a
+        // service it did not start — correctly — and the person has to free the port by hand. With this, the child
+        // sees its parent change and stops itself. A service started from a terminal sets no such variable.
+        env["BIOQL_STUDIO_PARENT"] = String(ProcessInfo.processInfo.processIdentifier)
         // Python's compiled files go outside the bundle: written inside, they break the app's signature seal.
         let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSTemporaryDirectory())
         env["PYTHONPYCACHEPREFIX"] = caches.appendingPathComponent("BioQL Studio/pycache").path
-        env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:" + (env["PATH"] ?? "/usr/bin:/bin")
+        // `~/.local/bin` is where Claude Code's installer puts `claude`, and an app opened from the Finder is started
+        // by LaunchServices, which gives `/usr/bin:/bin:/usr/sbin:/sbin` and never reads the shell's profile. Without
+        // it the window comes up, the engine reads healthy, and the chat is dead. (`studio/brain.py::WHERE_CLAUDE`
+        // also looks there, so the service is right however it was started; this keeps the child's own PATH honest.)
+        let local = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin").path
+        env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:" + local + ":" + (env["PATH"] ?? "/usr/bin:/bin")
         p.environment = env
         if let log = log { p.standardOutput = log; p.standardError = log }
         // FIX 3, part one — "it never restarts a dead service". Agtr never learns that its child died: it sets no

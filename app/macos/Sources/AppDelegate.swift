@@ -6,7 +6,7 @@ import WebKit
 /// panel and its global hot key (:322-330) are not ported: the approval that replaces them is an explicit single-use
 /// code handled entirely by the service, because this shell cannot honestly prove human presence (app/README.md).
 ///
-/// NOT COMPILED. Correct by inspection only; there is no Xcode run in this work.
+/// Compiled and launched 2026-11-19; the window loads from the service this shell starts.
 final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavigationDelegate, WKUIDelegate {
     private let service = Service()
     private var window: NSWindow!

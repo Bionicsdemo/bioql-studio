@@ -10,6 +10,7 @@ It never binds 3000 or 5035 (BioQL) or 7790/7799/7797/7788/7791 (Agtr Desktop), 
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 
 import studio
@@ -42,7 +43,18 @@ def main(argv: list[str] | None = None) -> int:
         print(f"port {ns.port} belongs to {TAKEN[ns.port]}. BioQL Studio will not bind it.", file=sys.stderr)
         return 2
     out = run(port=ns.port)
-    return 0 if out is not None else 1
+    if out is None:
+        return 1
+    # The serving loop has ended and `run()` has already cleaned up. Returning here would NOT end the process:
+    # `ThreadPoolExecutor` threads are not daemons, and Python joins every one of them at interpreter shutdown, so
+    # a single call in flight in `fanout` or `campaign` keeps this process alive — measured 2026-11-19: a pool with
+    # one 30-second task kept it up for the whole 30 seconds after SIGTERM, while `run()` had long returned. The
+    # native shell quits by `terminate()` and then `waitUntilExit()` on its main thread, so that wait is the app
+    # beachballing for as long as the call lasts, and BioQL's calls are allowed twelve hours. The person asked to
+    # quit; the pipeline is BioQL's and keeps running there. So this process stops now, after its own cleanup.
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(0)
 
 
 if __name__ == "__main__":

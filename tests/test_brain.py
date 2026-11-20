@@ -106,7 +106,31 @@ def test_no_secret_rides_on_the_command_line(studio_home, monkeypatch):
 def test_a_missing_claude_is_said_plainly(monkeypatch):
     monkeypatch.delenv("CLAUDE_BIN", raising=False)
     monkeypatch.setattr(brain.shutil, "which", lambda _: None)
+    monkeypatch.setattr(brain, "WHERE_CLAUDE", ())          # nor in any of the install folders
     with pytest.raises(brain.NoClaude, match="one brain"):
+        brain.binary()
+
+
+def test_claude_is_found_where_it_installs_itself_when_path_lacks_it(monkeypatch, tmp_path):
+    """Opened from the Finder, the app's PATH is LaunchServices' own plus Homebrew: `~/.local/bin`, where the
+    installer puts `claude`, is on neither. Found there, the chat works; not found, the window is up and the brain
+    is dead."""
+    monkeypatch.delenv("CLAUDE_BIN", raising=False)
+    monkeypatch.setattr(brain.shutil, "which", lambda _: None)
+    fake = tmp_path / "claude"
+    fake.write_text("#!/bin/sh\nexit 0\n")
+    fake.chmod(0o755)
+    monkeypatch.setattr(brain, "WHERE_CLAUDE", (str(tmp_path / "ausente"), str(fake)))
+    assert brain.binary() == str(fake)
+
+
+def test_a_folder_named_claude_is_not_the_binary(monkeypatch, tmp_path):
+    """`os.access(X_OK)` is true for a directory too; without the `is_file()` the brain would try to exec one."""
+    monkeypatch.delenv("CLAUDE_BIN", raising=False)
+    monkeypatch.setattr(brain.shutil, "which", lambda _: None)
+    (tmp_path / "claude").mkdir()
+    monkeypatch.setattr(brain, "WHERE_CLAUDE", (str(tmp_path / "claude"),))
+    with pytest.raises(brain.NoClaude):
         brain.binary()
 
 
@@ -300,3 +324,32 @@ def test_a_brain_that_dies_says_what_it_said(tmp_path, monkeypatch):
     assert "stopped without answering" in out[-1]["text"]
     assert "mcp config not found" in out[-1]["text"] or "said nothing" in out[-1]["text"]
     brain.forget(s.cfg)
+
+
+# ------------------------------------------------------------- las configuraciones que sobreviven al SIGTERM
+def test_the_config_of_a_process_that_is_gone_is_swept(studio_home, monkeypatch, tmp_path):
+    """`forget()` runs from atexit, and atexit does NOT run on the SIGTERM the native shell sends. Measured after
+    the app's first quit on 2026-11-19: six files in home()/mcp, one per service that had ever run."""
+    d = tmp_path / "mcp"
+    d.mkdir()
+    dead = d / "claude-999999-aabbccddeeff.json"     # no such pid
+    dead.write_text("{}")
+    mine = d / f"claude-{os.getpid()}-aabbccddeeff.json"
+    mine.write_text("{}")
+    other = d / "no-es-una-config.json"
+    other.write_text("{}")
+    assert brain.sweep(d) == 1
+    assert not dead.exists()
+    assert mine.exists()                              # this very process is alive
+    assert other.exists()                             # not ours to delete
+
+
+def test_a_live_second_copy_keeps_its_config(studio_home, tmp_path):
+    """A warm `claude` holds its config open for the life of the process: deleting a running copy's config would
+    break the other Studio, not clean up after it."""
+    d = tmp_path / "mcp"
+    d.mkdir()
+    live = d / "claude-1-aabbccddeeff.json"           # pid 1 (launchd) is always alive and not ours to signal
+    live.write_text("{}")
+    assert brain.sweep(d) == 0
+    assert live.exists()

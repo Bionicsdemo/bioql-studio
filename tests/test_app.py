@@ -8,11 +8,14 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+import sys
 import threading
 import time
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 import pytest
 
@@ -22,6 +25,7 @@ from studio import ledger
 from studio.adapter import Adapter
 
 from app import PING_NAME, PORT
+from app import service
 from app.service import (CSP, MAX_POST, STATIC, Empty, Studio, make_handler, read_secret, who_answers)
 
 
@@ -656,3 +660,74 @@ def test_a_finished_run_never_appears_without_its_verdict(svc):
     assert done["state"] == "RESOLVED" and done["verdict"] is not None and done["result_sha256"]
     for b in seen:
         assert b["state"] == "RUNNING" or b["verdict"] is not None
+
+
+# ------------------------------------------------------- el servicio huerfano que se queda con el puerto
+class _Srv:
+    def __init__(self):
+        self.down = threading.Event()
+
+    def shutdown(self):
+        self.down.set()
+
+
+def test_a_service_started_from_a_terminal_is_never_followed(monkeypatch):
+    """Sin BIOQL_STUDIO_PARENT no hay ventana a la que pertenecer: un servicio escrito a mano debe sobrevivir a la
+    shell que lo escribio."""
+    monkeypatch.delenv("BIOQL_STUDIO_PARENT", raising=False)
+    assert service._follow_parent(_Srv()) is None
+
+
+def test_the_service_stops_when_the_app_that_started_it_is_gone(monkeypatch):
+    """Un cierre forzado (SIGKILL) salta applicationWillTerminate: el hijo queda colgando de pid 1 con el 7810
+    cogido, y el siguiente arranque se niega a adoptarlo. Medido 2026-11-19."""
+    monkeypatch.setenv("BIOQL_STUDIO_PARENT", "424242")       # no es nuestro padre: ya estamos huerfanos
+    srv = _Srv()
+    t = service._follow_parent(srv, every=0.01)
+    assert srv.down.wait(3), "el servicio no se paro al desaparecer su app"
+    t.join(timeout=2)
+
+
+def test_a_live_app_keeps_its_service_running(monkeypatch):
+    monkeypatch.setenv("BIOQL_STUDIO_PARENT", str(os.getppid()))
+    srv = _Srv()
+    service._follow_parent(srv, every=0.01)
+    assert not srv.down.wait(0.5), "paro un servicio cuya app sigue viva"
+
+
+# ------------------------------------------------- cerrar con una llamada en vuelo (el beachball al salir)
+def test_quitting_with_a_call_in_flight_does_not_hang_the_app(tmp_path):
+    """Los hilos de `ThreadPoolExecutor` no son demonios y Python los espera a todos al cerrar el interprete: una
+    sola llamada en vuelo en `fanout` o `campaign` mantenia vivo el proceso despues de que `run()` ya habia vuelto
+    (medido 2026-11-19: 30 s con una tarea de 30 s). La app cierra con `terminate()` y `waitUntilExit()` en su hilo
+    principal, asi que esa espera es la app colgada, y BioQL admite llamadas de doce horas.
+    """
+    port = 7813
+    script = (
+        "import sys, time\n"
+        "from concurrent.futures import ThreadPoolExecutor\n"
+        f"sys.path.insert(0, {str(Path(__file__).resolve().parents[1])!r})\n"
+        "pool = ThreadPoolExecutor(max_workers=1)\n"
+        "pool.submit(time.sleep, 60)\n"          # una llamada a BioQL, en vuelo
+        "from app.__main__ import main\n"
+        f"main(['serve', '--port', '{port}'])\n"
+    )
+    env = dict(os.environ, BIOQL_STUDIO_HOME=str(tmp_path), PYTHONUNBUFFERED="1")
+    env.pop("BIOQL_STUDIO_PARENT", None)
+    p = subprocess.Popen([sys.executable, "-c", script], env=env,
+                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    try:
+        for _ in range(100):                      # esperar a que escuche
+            if who_answers(port) is not None:
+                break
+            time.sleep(0.1)
+        else:
+            p.kill()
+            pytest.skip(f"el servicio de prueba no levanto en {port}")
+        p.terminate()
+        p.wait(timeout=8)                         # sin el arreglo: sigue vivo los 60 s de la llamada
+        assert who_answers(port) is None, "el puerto siguio cogido despues de cerrar"
+    finally:
+        if p.poll() is None:
+            p.kill()
+            p.wait(timeout=5)

@@ -24,7 +24,8 @@
   <key>NSSupportsSuddenTermination</key><false/>
   <!-- Agtr's working original carries this (its Info.plist), and the window talks to 127.0.0.1 over plain HTTP.
        macOS exempts loopback from App Transport Security, so this should not be needed — kept because the original
-       that is known to work has it. UNTESTED HERE: nothing was compiled or launched. -->
+       that is known to work has it. Kept, and the app does load its window over plain HTTP from 127.0.0.1:7810,
+       so whether it is what allows that or merely redundant with the loopback exemption is not separated here. -->
   <key>NSAppTransportSecurity</key>
   <dict><key>NSAllowsLocalNetworking</key><true/></dict>
 </dict>

@@ -22,6 +22,7 @@ import collections
 import json
 import os
 import queue
+import re
 import secrets
 import shutil
 import subprocess
@@ -67,8 +68,23 @@ class NoClaude(RuntimeError):
     so rather than falling back to a model nobody approved."""
 
 
+# Where Claude Code installs itself, searched when PATH does not have it. This is not a convenience: an app opened
+# from the Finder is started by LaunchServices, whose PATH is `/usr/bin:/bin:/usr/sbin:/sbin` — it does not read the
+# shell's profile — and the native shell adds only Homebrew's two folders (Service.swift). The official installer
+# puts `claude` in `~/.local/bin` (measured on this Mac, 2026-11-19: a symlink into
+# `~/.local/share/claude/versions/`), which is on PATH in a terminal and on no PATH the app has. Without this list
+# the chat is dead inside the app while `/api/ping` and the engine's health both read fine, which is the worst shape
+# a failure can take.
+WHERE_CLAUDE = ("~/.local/bin/claude", "/opt/homebrew/bin/claude", "/usr/local/bin/claude", "~/.claude/bin/claude")
+
+
 def binary() -> str:
     exe = os.environ.get("CLAUDE_BIN") or shutil.which("claude")
+    if not exe:
+        for raw in WHERE_CLAUDE:
+            p = Path(raw).expanduser()
+            if os.access(p, os.X_OK) and p.is_file():
+                return str(p)
     if not exe:
         raise NoClaude("the `claude` command is not on PATH. BioQL Studio has one brain and this is it: install "
                        "Claude Code and sign in, or run `npm i -g @anthropic-ai/claude-code && claude login`.")
@@ -110,6 +126,42 @@ def forget(p: Path | None = None) -> None:
             q.unlink()
         except OSError:
             pass
+
+
+NAMED = re.compile(r"^claude-(\d+)-[0-9a-f]+\.json$")
+
+
+def sweep(folder: Path | None = None) -> int:
+    """Delete the configs of processes that are gone, and say how many. Returns to the folder what `forget()` cannot.
+
+    `forget()` runs from `atexit`, and Python does not run `atexit` on a SIGTERM — which is exactly how the native
+    shell stops this service (`Service.swift::stop`). Measured on 2026-11-19, after the app's first quit: six files
+    in `home()/mcp`, one per service that had ever run, none removed. They carry no secret while `bioql` is the only
+    server, but `mcp_config(extra=…)` writes the owner's external sources into the same file, so a config that
+    outlives its process is the leak the function above exists to prevent.
+
+    A file is removed only when its pid is gone: a second copy of Studio must never delete the live config of the
+    first, because a warm `claude` holds its config open for the life of the process.
+    """
+    gone = 0
+    for p in (folder or (home() / "mcp")).glob("claude-*.json"):
+        m = NAMED.match(p.name)
+        if not m or int(m.group(1)) == os.getpid():
+            continue
+        try:
+            os.kill(int(m.group(1)), 0)
+        except ProcessLookupError:
+            pass                     # nobody there: the config is an orphan
+        except OSError:
+            continue                 # alive and not ours to signal
+        else:
+            continue                 # alive
+        try:
+            p.unlink()
+            gone += 1
+        except OSError:
+            pass
+    return gone
 
 
 def command(prompt: str | None, cfg: Path, model: str | None = None, allowed: list[str] | None = None) -> list[str]:

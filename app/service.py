@@ -26,6 +26,7 @@ import json
 import os
 import re
 import secrets
+import signal
 import threading
 import time
 import urllib.error
@@ -746,6 +747,15 @@ def make_handler(s: Studio):
                     return self._json(s.ledger_rows(limit))
                 if p == "/api/guard":
                     return self._json(s.guard_report())
+                if p == "/api/progress":
+                    # Las etapas de los pipelines en curso, para dibujarlas como la UI de BioQL en
+                    # :3000. Las escribe el adaptador desde `_follow` (otro PROCESO, de ahi el
+                    # fichero con flock), y aqui solo se leen: esta ruta no sondea a BioQL ni toca
+                    # una corrida. Un trabajo sin etapas localizables trae `stages_unavailable`
+                    # con la causa en vez de una lista vacia que se leeria como "sin etapas".
+                    from studio import stages as _stages
+                    jid = (qs.get("job") or [""])[0]
+                    return self._json(_stages.read(jid or None))
                 if p == "/api/chat":
                     tid = (qs.get("id") or [""])[0]
                     try:
@@ -830,6 +840,34 @@ def who_answers(port: int, timeout: float = 1.5) -> dict | None:
         return None
 
 
+def _follow_parent(srv, every: float = 2.0) -> threading.Thread | None:
+    """Stop when the shell that started this service is gone. Does nothing unless it was started by one.
+
+    Force-quitting the app (SIGKILL) skips `applicationWillTerminate`, so `Service.stop()` never runs and this
+    service is orphaned onto pid 1, still holding 7810 (measured 2026-11-19). The next launch then refuses to attach
+    to it — correctly, since it is a service this app did not start and would be handed this install's token — and
+    the person is left with an alert and a port they have to free by hand.
+
+    The shell passes its own pid as BIOQL_STUDIO_PARENT. When our parent is no longer that pid we are an orphan and
+    stop. A service started from a terminal, by `nohup`, or by a test sets no such variable and is never touched: it
+    does not belong to a window and must outlive the shell that typed it.
+    """
+    raw = os.environ.get("BIOQL_STUDIO_PARENT")
+    if not (raw or "").isdigit():
+        return None
+    parent = int(raw)
+
+    def watch() -> None:
+        while os.getppid() == parent:
+            time.sleep(every)
+        print(f"the app that started this service (pid {parent}) is gone; stopping and freeing the port", flush=True)
+        srv.shutdown()
+
+    t = threading.Thread(target=watch, name="studio-parent", daemon=True)
+    t.start()
+    return t
+
+
 def run(home: Path | None = None, port: int = PORT, block: bool = True, adapter: Adapter | None = None):
     """Start the service, or explain why it is not starting. Returns (studio, server) or None."""
     seen = who_answers(port)
@@ -852,8 +890,29 @@ def run(home: Path | None = None, port: int = PORT, block: bool = True, adapter:
     if not block:
         threading.Thread(target=srv.serve_forever, name="studio-ui", daemon=True).start()
         return s, srv
+
+    # Configs left by services that are gone. The app quits this one with SIGTERM, so `brain.forget()` — which runs
+    # from atexit — never gets to delete the one it wrote; they accumulate one per launch (measured 2026-11-19: six).
+    brain.sweep()
+
+    def _bye(signum, _frame):
+        """SIGTERM is how the native shell stops this service (`Service.swift::stop`). Python does not run atexit
+        handlers on it, so without this the service dies mid-flight and leaves its MCP config behind. `shutdown()`
+        must not be called from the handler's own thread — it waits for the serving loop that this very thread is
+        running — so it goes to a thread of its own and `serve_forever` returns normally."""
+        threading.Thread(target=srv.shutdown, name="studio-bye", daemon=True).start()
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            signal.signal(sig, _bye)
+        except ValueError:
+            pass                        # not the main thread: the caller owns the signals
+
+    _follow_parent(srv)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
         srv.shutdown()
+    finally:
+        brain.forget()                  # the config of THIS service, whichever way the loop ended
     return s, srv

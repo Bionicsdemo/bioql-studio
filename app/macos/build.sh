@@ -3,8 +3,8 @@
 #
 #   app/macos/build.sh [output-dir]
 #
-# NOT RUN in this work: no .app and no .dmg were built. See app/dmg.md for the packaging plan, what works unsigned on
-# this Mac, and what blocks distribution.
+# RUN on 2026-11-19: it builds `BioQL Studio.app`, ad-hoc signed and verified. No .dmg is packed here — see
+# app/dmg.md for the disk-image plan and for what blocks distribution to any other Mac (notarization).
 #
 # Forked from Agtr's desktop/macos/build.sh, with four of its habits not carried over — each marked NOT COPIED below.
 set -euo pipefail
@@ -28,12 +28,19 @@ swiftc -O -swift-version 5 -target "$(uname -m)-apple-macos13.0" "$HERE"/Sources
 sed "s/__VERSION__/${VERSION}/g" "$HERE/Info.plist" > "$APP/Contents/Info.plist"
 
 # The service and its window travel inside the app. `studio/` is the sealed adapter; `app/` is this shell's service.
+# `*.md` is excluded: `app/README.md` and `app/dmg.md` are this work's own notes — they tabulate Agtr Desktop's
+# defects by file and line, and name the paths of a machine that is not the reader's. Nothing in `studio/` or `app/`
+# reads a .md at runtime (checked), so they are documentation of the repo, not part of the program.
 for d in studio app; do
-  rsync -a --exclude '__pycache__' --exclude '*.pyc' --exclude 'macos' "$ROOT/$d" "$APP/Contents/Resources/bioql-studio/"
+  rsync -a --exclude '__pycache__' --exclude '*.pyc' --exclude 'macos' --exclude '*.md' \
+    "$ROOT/$d" "$APP/Contents/Resources/bioql-studio/"
 done
-# proof that what shipped is what the tests ran against
-( cd "$ROOT" && find studio app -name '*.py' -not -path '*/__pycache__/*' -print0 | sort -z | xargs -0 shasum -a 256 ) \
-  > "$APP/Contents/Resources/bioql-studio/SOURCE-SHA256.txt"
+# Proof that what shipped is what the tests ran against: repo-relative paths, so the manifest can be matched against
+# the working tree. `app/macos` is pruned — rsync above excludes it, and without the prune `find` walks into
+# `app/macos/build/BioQL Studio.app` and hashes the PREVIOUS build's own copies, so the manifest of a first build and
+# of a rebuild differ for no change in the source. (Measured 2026-11-19: 25 of 50 lines were the last build's files.)
+( cd "$ROOT" && find studio app -name '*.py' -not -path '*/__pycache__/*' -not -path 'app/macos/*' -print0 \
+    | sort -z | xargs -0 shasum -a 256 ) > "$APP/Contents/Resources/bioql-studio/SOURCE-SHA256.txt"
 
 if [ -f "$HERE/icon-1024.png" ]; then
   SET="$OUT/AppIcon.iconset"; rm -rf "$SET"; mkdir -p "$SET"
@@ -59,4 +66,5 @@ echo "built: $APP (version $VERSION, ad-hoc signature only — not notarizable; 
 # NOT COPIED: the --standalone path, which fetches the LATEST python-build-standalone and cloudflared from GitHub at
 # build time (Agtr build.sh:62-76). An unpinned "latest" means two builds of the same commit can carry different
 # interpreters, and cloudflared would put a public tunnel inside an app whose whole point is 127.0.0.1.
-# NOT COPIED: packing the .dmg here. See app/dmg.md; nothing is packed in this work.
+# NOT COPIED: packing the .dmg here. That is `app/macos/dmg.sh`, which calls this script and is gated on its exit
+# status — Agtr's driver copies its image whatever the build returned (dmg70.sh:6-9, with no `set -e`).

@@ -5,7 +5,8 @@
 // `native.key`, its voice, its quick panel and its global hot key are all gone — see app/README.md for why the
 // Touch ID path could not be ported honestly.
 //
-// NOT COMPILED. There is no Xcode run in this work: this file and its neighbours are correct by inspection only.
+// Compiled with the Command Line Tools on 2026-11-19 (no Xcode project): `app/macos/build.sh` builds, ad-hoc
+// signs and verifies the bundle.
 import AppKit
 
 let app = NSApplication.shared
