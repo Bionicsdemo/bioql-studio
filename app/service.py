@@ -66,14 +66,13 @@ STATIC = {"/": ("index.html", "text/html; charset=utf-8"),
 
 # Agtr's CSP (agtrcore/app.py:607-612) allows 'unsafe-inline' styles and frames from ANY localhost port, because its
 # window embeds VS Code and sandboxed canvases. Studio keeps the strict half — nothing inline, nothing loaded from
-# outside — and opens exactly one door: BioQL's own window on port 3000, which the Studio window wraps as its main
-# panel. That is the whole shape of the product: BioQL's interface is not replaced, it is framed, and the Agtr
-# machinery (the orb, the findings, the board, the notebook) is added around it.
-BIOQL_UI = os.environ.get("BIOQL_UI_URL", "http://127.0.0.1:3000").rstrip("/")
-# TargetRadar is its own application with its own interface, served by BioQL's own startup script on 4000. The
-# section for it used to list the thirteen routes the allowlist holds, which is not what the owner opens on 3000:
-# a list of endpoints is not an interface. The window frames the real one, as it frames BioQL's.
-RADAR_UI = os.environ.get("BIOQL_RADAR_URL", "http://127.0.0.1:4000").rstrip("/")
+# outside — and, since 2026-11-20, opens NO door at all: there is no `frame-src`, because there is nothing to frame.
+#
+# It used to name BioQL's own window on 3000 and TargetRadar on 4000, and the Studio window wrapped BioQL's pages
+# as its main panel. The owner asked for an app that does not reach :3000, and removing the directive is what makes
+# that true rather than a promise: a page here cannot put :3000 in a frame even if a future line of JavaScript asks
+# for one. The window is its own interface now, built on BioQL's own history routes over HTTP, which is the only
+# way it ever touches BioQL.
 # `'unsafe-eval'`: Mol* lo necesita. Medido en WebKit con esta misma configuracion ANTES de pedirlo — la
 # violacion era `script-src <- eval @ /vendor/molstar.js` y el visor no llegaba a crear un canvas. Lo que abre es
 # real: dentro de esta ventana, que lleva el token de la instalacion, una cadena puede volverse codigo. Por eso no
@@ -84,7 +83,8 @@ CSP = ("default-src 'none'; script-src 'self' 'unsafe-eval'; style-src 'self'; i
        # `data:` en connect-src: Mol* lee asi sus propios recursos empotrados. Un `data:` se lleva su contenido
        # dentro, asi que no alcanza ningun host — esto no abre la red, sigue cerrada a este origen.
        "connect-src 'self' data:; worker-src 'self' blob:; "
-       f"frame-src {BIOQL_UI} http://localhost:3000 {RADAR_UI} http://localhost:4000; "
+       # No `frame-src`: `default-src 'none'` is what applies, so every frame is refused. This is the line that
+       # says the app has no access to :3000, and it is enforced by the browser engine, not by a convention.
        "base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'")
 
 TOKEN_MIN = 32              # secrets.token_urlsafe(32) is 43 characters; anything shorter is a broken file
@@ -260,7 +260,7 @@ class Studio:
         with self._lock:
             pend = [p.public() for p in self.pending.values() if not p.used and not p.expired()]
         return {"name": PING_NAME, "version": VERSION, "port": self.port, "home": str(self.home),
-                "bioql": self.adapter.base, "bioql_ui": BIOQL_UI, "radar_ui": RADAR_UI,
+                "bioql": self.adapter.base,
                 "up_seconds": round(time.time() - self.started, 1),
                 "calls": self.calls, "refusals": self.refusals, "approvals": self.approvals,
                 "pending": pend, "runs": [r.public() for r in list(self.runs.values())[-RUN_MAX:]]}
@@ -318,7 +318,13 @@ class Studio:
             return {"state": "REFUSED", "detail": str(why)}, 403
         self.calls += 1
         self._note(name, res, by="window", event="call")
-        return self._shape(res), 200
+        out = self._shape(res)
+        if res.resolved:
+            # The card is built HERE, beside the answer, so a result opened on a work page is the same card the
+            # chat draws for the same result — one card machinery (`studio/cards.py`), not two. The window used to
+            # get the payload and nothing else, which is why its pages could only ever show JSON.
+            out["card"] = self._card_of({"value": res.value, "meta": {**res.meta, "tool": name}})
+        return out, 200
 
     def _offer(self, name: str, args: dict) -> dict | None:
         """A pending, when and only when the sole reason for the refusal was that nobody approved.
@@ -582,20 +588,34 @@ class Studio:
             return {"id": tid, "since": since, "events": evs, "next": since + len(evs), "state": t["state"],
                     "asked": t["asked"]}, 200
 
-    def ui_state(self, which: str = "bioql") -> dict:
-        """Whether a framed window answers, and nothing more: BioQL's on 3000, or TargetRadar's on 4000. Three
-        outcomes, kept apart: it answered (`up`), it refused the connection (`up: false`, with the reason), or we
-        could not tell. A window Studio cannot reach is never reported as a window that is not there."""
-        base = RADAR_UI if which == "radar" else BIOQL_UI
-        req = urllib.request.Request(base + "/", method="GET")
-        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-        try:
-            with opener.open(req, timeout=3) as r:
-                return {"url": base, "which": which, "up": 200 <= r.status < 400, "http": r.status}
-        except urllib.error.HTTPError as e:
-            return {"url": base, "which": which, "up": e.code < 400, "http": e.code}
-        except (urllib.error.URLError, TimeoutError, OSError) as why:
-            return {"url": base, "which": which, "up": False, "why": f"{getattr(why, 'reason', why)}"[:120]}
+    def secrets_report(self) -> dict:
+        """Where Studio's own secrets are and how they are protected — never a byte of what is in them.
+
+        This is the whole of the API Keys page, and the page says why: BioQL's own key routes are refused by name
+        in the allowlist's DENY pattern (auth, admin, login, secrets, keys, token), so Studio holds no key of
+        BioQL's and cannot read one. What it does hold is its own two: the window token and the notebook's signing
+        key. A file that cannot be stat'ed is UNRESOLVABLE with its cause, never reported as a file that is not
+        there — the difference decides whether somebody should go looking for it.
+        """
+        want = [("ui.token", "the per-install token this window carries. Anything holding it can call Studio."),
+                ("notebook.key", "the Ed25519 private key that signs the record. A record signed by two keys is "
+                                 "not a record."),
+                ("notebook.pub", "its public half, which is what verifies the chain. Not a secret.")]
+        out = []
+        for name, what in want:
+            f = self.home / name
+            row = {"name": name, "what": what}
+            try:
+                st = f.stat()
+            except FileNotFoundError:
+                row.update({"state": "ABSENT", "detail": "not written yet", "mode": None})
+            except OSError as why:                 # a denied stat is not an absent file
+                row.update({"state": "UNRESOLVABLE", "detail": f"{type(why).__name__}: {why}"[:120], "mode": None})
+            else:
+                row.update({"state": "RESOLVED", "bytes": st.st_size, "mtime": st.st_mtime,
+                            "mode": f"{st.st_mode & 0o777:04o}"})
+            out.append(row)
+        return {"home": str(self.home), "files": out}
 
     def board_write(self, b: dict) -> tuple[dict, int]:
         """One route, four acts: new, node, link, evidence. Everything the board refuses — an unknown kind, a link
@@ -815,11 +835,10 @@ def make_handler(s: Studio):
                         since = 0
                     out, code = s.turn_of(tid, since)
                     return self._json(out, code)
-                if p == "/api/ui":
-                    # Is BioQL's own window up? The page cannot ask: `connect-src 'self'` forbids it reaching
-                    # another origin, and a page that cannot ask must not guess. Studio asks, and only reports —
-                    # it never starts, stops or restarts BioQL's frontend.
-                    return self._json(s.ui_state((qs.get("which") or ["bioql"])[0]))
+                if p == "/api/secrets":
+                    # Where Studio's own secrets live and how they are protected. No contents, ever — not even
+                    # truncated: a prefix of a token is still part of a token.
+                    return self._json(s.secrets_report())
                 if p == "/api/boards":
                     return self._json({"boards": board.boards()})
                 if p == "/api/board":

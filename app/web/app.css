@@ -178,6 +178,11 @@ main{grid-area:main;min-width:0;min-height:0;display:flex;flex-direction:column;
 .chip.clean,.chip.resolved{background:color-mix(in srgb,var(--green) 18%,transparent);color:var(--green)}
 .chip.concerns,.chip.absent{background:color-mix(in srgb,var(--orange) 20%,transparent);color:var(--orange)}
 .chip.contradicted,.chip.unresolvable{background:color-mix(in srgb,var(--red) 18%,transparent);color:var(--red)}
+/* The work pages speak in run states: a finished run is green, a running one is the accent, a broken one red.
+   `plain` is the default grey and says only "this is the word BioQL used" — never that it is good. */
+.chip.bad{background:color-mix(in srgb,var(--red) 18%,transparent);color:var(--red)}
+.chip.busy{background:color-mix(in srgb,var(--accent) 16%,transparent);color:var(--accent)}
+.chip.neutral,.chip.plain{background:var(--fill-2);color:var(--label-2)}
 .state-word{font-size:11px;font-weight:600}
 .state-word.supported{color:var(--green)}.state-word.unsupported{color:var(--red)}
 
@@ -280,14 +285,40 @@ body[data-ring=alarm] .ring{border-color:var(--red);animation:breathe 1.3s ease-
 .prov{display:flex;align-items:center;gap:7px;flex-wrap:wrap;padding:9px 14px;background:var(--fill-3);
   box-shadow:0 -.5px 0 var(--sep)}
 
-/* ------------------------------------------------------------------ BioQL's own window */
-.frame-view{background:var(--bg-grouped)}
-.frame-wrap{flex:1;min-height:0;position:relative;margin:0 10px 10px;border-radius:12px;overflow:hidden;
-  box-shadow:0 0 0 .5px var(--sep);background:#0b0c0e}
-.bioql{width:100%;height:100%;border:0;display:block;color-scheme:dark}
-.waiting-room{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
-  gap:10px;padding:28px;text-align:center;background:var(--bg-grouped)}
-.waiting-why{font-size:14px;font-weight:600}
+/* ------------------------------------------------------------------ the work pages
+   Jobs & Recovery, Results, SAR, Candidates, Report. What used to be here was the frame that held BioQL's own
+   window on :3000; nothing is framed any more, so these are the styles of the pages that replaced it. */
+.wtab{width:100%;border-collapse:collapse;font-size:12.5px;margin:2px 0 10px;background:var(--cell);
+  border-radius:12px;box-shadow:0 0 0 .5px var(--sep);overflow:hidden}
+.wtab th{text-align:left;font-weight:600;font-size:11px;letter-spacing:.02em;text-transform:uppercase;
+  color:var(--label-3);padding:8px 12px;background:var(--fill-3);white-space:nowrap}
+.wtab td{padding:8px 12px;vertical-align:top;box-shadow:0 -.5px 0 var(--sep);-webkit-user-select:text;user-select:text}
+.wtab td code{font:11.5px var(--mono)}
+.wtab tbody tr:hover{background:var(--fill-3)}
+/* A SMILES is read character by character, so it wraps instead of being cut, and it is selectable. */
+.smi{display:block;margin-top:5px;font:11.5px/1.5 var(--mono);color:var(--label-2);word-break:break-all;
+  -webkit-user-select:text;user-select:text;max-width:68ch}
+.wout{margin-top:8px}
+.wout:empty{margin:0}
+.wrun{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:5px 0;font-size:12px;color:var(--label-2)}
+.wrun+.wrun{box-shadow:0 -.5px 0 var(--sep)}
+.wpick{display:flex;flex-direction:column;gap:2px;background:var(--cell);border-radius:12px;
+  box-shadow:0 0 0 .5px var(--sep);padding:6px 4px;margin:4px 0 10px;max-height:40vh;overflow:auto}
+.wcheck{display:flex;align-items:center;gap:9px;padding:5px 10px;border-radius:8px;cursor:pointer;min-width:0}
+.wcheck:hover{background:var(--fill-3)}
+.wcheck input{flex:none;accent-color:var(--accent)}
+.wcheck .smi{margin:0}
+.wpics{display:flex;align-items:flex-start;gap:10px;flex-wrap:wrap;margin-top:6px}
+.wpics:empty{margin:0}
+.twod{margin:0;padding:8px;background:#fff;border-radius:12px;box-shadow:0 0 0 .5px var(--sep);
+  flex:0 0 340px;max-width:340px}
+/* The 3D viewer sizes itself to its box, and inside this flex row it had no box: it came out 215px wide and 320
+   tall, which cut the molecule off at the right edge (measured in WebKit — the oxygens were outside the canvas).
+   Given a basis it matches the 2D depiction beside it, which is the point: the same molecule, drawn twice. */
+.wpics .mol3d{flex:0 0 340px;max-width:340px;margin:0}
+.wpics .mol3d-stage{height:300px}
+.twod-img{display:block;width:100%;height:auto;border-radius:8px}
+.twod figcaption{margin-top:6px;color:#444;font-size:11px;word-break:break-all}
 .cmd{font:12px var(--mono);background:var(--fill-3);padding:7px 11px;border-radius:8px}
 
 /* ------------------------------------------------------------------ status bar */

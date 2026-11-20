@@ -805,3 +805,93 @@ def test_the_render_route_never_takes_a_pymol_command(svc):
 
 def test_the_render_route_needs_the_token(svc):
     assert svc.req("/api/render3d", {"data": "x", "format": "pdb"}, token=None)[0] == 403
+
+
+# ------------------------------------------------------------------ the window stopped reaching :3000 (2026-11-20)
+def test_the_policy_has_no_frame_door_at_all():
+    """The owner asked for an app with no access to :3000. This is the line that enforces it.
+
+    A `frame-src` naming BioQL's window used to be the one door in the policy, because the window framed BioQL's
+    own pages. Nothing frames anything now, so the directive is gone and `default-src 'none'` is what applies to
+    frames: the engine refuses one even if a future line of JavaScript asks for it. Asserting on the POLICY, not on
+    the absence of an `<iframe>` in today's HTML, is the point — markup can be added back in an afternoon.
+    """
+    assert "frame-src" not in CSP
+    assert "default-src 'none'" in CSP
+    for port in (":3000", ":4000", "localhost:3000", "localhost:4000"):
+        assert port not in CSP, port
+    assert "frame-ancestors 'none'" in CSP           # and nothing may frame Studio either
+
+
+def test_the_window_no_longer_asks_whether_bioqls_ui_is_up(svc):
+    """`/api/ui` is gone with the frame it served. It was the only route that reached a port other than BioQL's."""
+    code, body, _ = svc.j("/api/ui?which=bioql")
+    assert code == 404 and body == {"error": "not found"}
+    assert not hasattr(svc.s, "ui_state")
+    assert "bioql_ui" not in svc.j("/api/state")[1] and "radar_ui" not in svc.j("/api/state")[1]
+
+
+def test_the_page_itself_names_no_other_origin(svc):
+    """The three served files carry no :3000, no :4000 and no iframe. The policy is the gate; this is the artefact."""
+    for path in ("/", "/app.js", "/app.css"):
+        _, raw, _ = svc.req(path, token=None)
+        text = raw.decode("utf-8", "replace")
+        for bad in ("127.0.0.1:3000", "127.0.0.1:4000", "localhost:3000", "localhost:4000", "<iframe"):
+            assert bad not in text, f"{path} still names {bad}"
+
+
+def test_a_window_call_comes_back_with_its_card(svc):
+    """A work page draws BioQL's answer with the SAME card machinery as the chat, so it is built beside the answer.
+
+    Before this, `/api/call` handed the window the payload and nothing else, which is why every page it had could
+    only ever show JSON. A refusal still carries no card: there is nothing to draw.
+    """
+    code, body, _ = svc.j("/api/call", {"name": "backend_health", "args": {}})
+    assert code == 200 and body["state"] == "RESOLVED"
+    card = body.get("card")
+    assert isinstance(card, dict) and isinstance(card.get("kind"), str) and card["kind"]
+    assert isinstance(card.get("blocks"), list) or isinstance(card.get("cards"), list)
+    code, refused, _ = svc.j("/api/call", {"name": "pipe", "args": {}})
+    assert code == 403 and "card" not in refused
+
+
+# ------------------------------------------------------------------ API Keys: where the secrets are, never what
+def test_the_keys_page_reports_the_mode_and_never_the_contents(svc):
+    code, body, _ = svc.j("/api/secrets")
+    assert code == 200
+    names = {f["name"]: f for f in body["files"]}
+    assert set(names) == {"ui.token", "notebook.key", "notebook.pub"}
+    assert names["ui.token"]["state"] == "RESOLVED" and names["ui.token"]["mode"] == "0600"
+    # not one byte of any secret, and not a prefix either: a prefix of a token is part of a token
+    blob = json.dumps(body)
+    assert svc.s.token not in blob and svc.s.token[:8] not in blob
+    for f in body["files"]:
+        assert "value" not in f and "contents" not in f and "token" not in str(f.get("bytes", ""))
+
+
+def test_a_secret_that_cannot_be_stated_is_not_reported_as_absent(svc, monkeypatch):
+    """The three states, on a file. A denied stat is UNRESOLVABLE; only FileNotFoundError is ABSENT."""
+    real = Path.stat
+
+    def blocked(self, *a, **k):
+        if self.name == "notebook.key":
+            raise PermissionError(13, "nope")
+        return real(self, *a, **k)
+
+    monkeypatch.setattr(Path, "stat", blocked)
+    body = svc.s.secrets_report()
+    by = {f["name"]: f for f in body["files"]}
+    assert by["notebook.key"]["state"] == "UNRESOLVABLE" and "PermissionError" in by["notebook.key"]["detail"]
+    assert by["ui.token"]["state"] == "RESOLVED"
+
+
+def test_the_window_keeps_no_call_to_anything_that_was_removed(svc):
+    """The exact bug this caught once: `AREA_OF` was deleted with the old menu and one call to it survived, so
+    Server Health threw `Can't find variable` in WebKit and drew "reading…" forever. A deleted helper with a live
+    caller is a page that breaks on the section nobody clicked while editing.
+    """
+    _, raw, _ = svc.req("/app.js", token=None)
+    text = raw.decode("utf-8", "replace")
+    for dead in ("AREA_OF", "showFrame", "drawToolsSection", "drawPipes", "BIOQL_PANELS",
+                 "halves(", "const half", "drawResults", "uiUrl", "radarUrl", "/api/ui"):
+        assert dead not in text, f"app.js still mentions {dead}"

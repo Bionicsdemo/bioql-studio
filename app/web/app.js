@@ -108,103 +108,41 @@ function ring(state) {
 }
 
 // ------------------------------------------------------------------ the menu
-// BioQL's own menu, group by group: its activity bar, its sidebar's pipeline groups, its pages, its health panel.
-// `kind` says who answers: `tools` = the engine through Studio's allowlist, `frame` = BioQL's own page, the rest is
-// Studio's record.
-const BIOQL_PANELS = ["Chat", "Explorer", "Search", "MCP Tools", "Quantum", "Molecular", "Pipelines",
-                      "Undruggable", "TargetRadar", "Results", "Targets", "3D Viewer"];
-
-// BioQL's own sidebar groups, verbatim from src/frontend/src/components/layout/Sidebar.tsx (PIPELINE_GROUPS): the
-// same names, the same descriptions and the same prompt each one starts.
-const PIPES = [
-  { name: "Drug Discovery", icon: "flask", items: [
-    { name: "Full Development", desc: "78 quantum algos + ADMET + Tox + Clinical", prompt: "discover drug for" },
-    { name: "Custom Molecule", desc: "SMILES/IUPAC → full pipeline", prompt: "analyze molecule" },
-    { name: "Peptide Discovery", desc: "Therapeutic peptide + QAOA", prompt: "design peptide for" }]},
-  { name: "Analysis", icon: "tube", items: [
-    { name: "ADMET (92 params)", desc: "Pharmacokinetic profile", prompt: "ADMET for" },
-    { name: "Toxicology", desc: "QSVM/QNN tox assessment", prompt: "toxicology study for" },
-    { name: "Pharmacology", desc: "PK/PD modeling", prompt: "pharmacology for" },
-    { name: "Clinical Trial", desc: "Phase I-III simulation", prompt: "clinical trial for" }]},
-  { name: "Structure", icon: "atom", items: [
-    { name: "Protenix Predict", desc: "AlphaFold3-equiv (GPU)", prompt: "predict structure of" },
-    { name: "AlphaGenomics", desc: "Gene expression + variants", prompt: "analyze gene" }]},
-  { name: "Screening & SAR", icon: "find", items: [
-    { name: "Virtual Screening", desc: "Vina + Quantum scoring", prompt: "screen compounds for" },
-    { name: "Classical Docking", desc: "AutoDock Vina + IBM Q", prompt: "dock molecule to" },
-    { name: "Selectivity Profile", desc: "Off-target IC50 panel", prompt: "selectivity for" },
-    { name: "SAR Analysis", desc: "MMP, R-group, activity cliffs", prompt: "SAR analysis for" }]},
-  { name: "Simulation", icon: "cube", items: [
-    { name: "Molecular Dynamics", desc: "Quantum-enhanced MD", prompt: "MD simulation for" },
-    { name: "FEP/ΔΔG", desc: "Free energy perturbation", prompt: "FEP calculation for" }]},
-];
-
-const AREA_OF = (t) => ((t.from_registry || {}).area) || (
-  /^\/api\/(health|system)/.test(t.path) ? "health" :
-  /^\/api\/(pipeline\/job|pipeline\/submit|recovery|scripts\/)/.test(t.path) ? "jobs" :
-  /^\/api\/(smiles|render|rdkit|motifs|chem|structure|viz)/.test(t.path) ? "chem" :
-  /^\/api\/(targets|targetradar)/.test(t.path) ? "targets" :
-  /^\/api\/(screening|docking|vina|sar)/.test(t.path) ? "screening" :
-  /^\/api\/(eln|report|candidates)/.test(t.path) ? "notebook" :
-  /^\/api\/(quantum|v1\/quantum|v11|complexa|protenix)/.test(t.path) ? "quantum" :
-  /^\/api\/(pipeline|casestudy|aging|bionics|genomics)/.test(t.path) ? "pipeline" : "other");
-
+// Studio's OWN menu. It is not BioQL's activity bar any more, and that is the change: this window used to mirror
+// :3000's panels (Pipelines, Quantum, Molecular, Screening, Targets, TargetRadar, Undruggable, MCP Tools) and open
+// :3000's own pages inside a frame. Both are gone.
+//
+// Why they are gone, written here so nobody puts them back by accident:
+//   1. The panels were LISTS OF ROUTES, not work. A person looking at 502 route names cannot see a molecule, a job
+//      or a result; the chat already picks the route, from the same closed list, with the record behind it.
+//   2. The framed pages were :3000's, which means another origin inside this window. The owner asked for an app
+//      that does not reach :3000 at all, and that is now true: no iframe, no `frame-src`, nothing to reload.
+//
+// What is left is the work itself, each section built from BioQL's OWN history routes (GET, `status` kind, nothing
+// that spends compute): what has run, what molecules were studied, what came back, and the record underneath.
 const SECTIONS = {
   // --- the instrument
   chat:     { group: "Iris", label: "Chat", icon: "orb", kind: "chat" },
   chats:    { group: "Iris", label: "Chats", icon: "chats", kind: "chats",
               lead: "Every turn of this window, with the tools each one ran." },
 
-  // --- BioQL's activity bar, over the same engine routes
-  pipelines: { group: "Discovery", label: "Pipelines", icon: "flow", kind: "pipes",
-               lead: "BioQL's own pipeline groups. Each one starts the question it starts in BioQL; Claude Code " +
-                     "picks the route from the closed list and nothing compute-bearing runs without a person." },
-  quantum:  { group: "Discovery", label: "Quantum", icon: "cpu", kind: "tools", panel: "Quantum panel", pick: (t) => AREA_OF(t) === "quantum",
-              lead: "Every quantum route BioQL declares. Nothing here is offered a shortcut past approval, and a run " +
-                    "is only called real hardware when the answer carries an IBM job id." },
-  molecular:{ group: "Discovery", label: "Molecular", icon: "atom", kind: "tools", panel: "Molecular panel", pick: (t) => AREA_OF(t) === "chem",
-              lead: "Depiction, 3D, motifs, descriptors — BioQL's own chemistry routes." },
-  screening:{ group: "Discovery", label: "Screening & SAR", icon: "find", kind: "tools", panel: "Screening panel",
-              pick: (t) => AREA_OF(t) === "screening", lead: "Docking, virtual screening, SAR." },
-  targets:  { group: "Discovery", label: "Targets", icon: "cross", kind: "tools", panel: "Targets panel",
-              // It used to be `area === targets` minus TargetRadar, and BioQL files every target route it HAS
-              // under targetradar — so the section drew "no route answers to this section". An empty section is
-              // not an honest absence here: the routes exist, they are filed elsewhere.
-              pick: (t) => !/targetradar/.test(t.path) &&
-                (AREA_OF(t) === "targets" ||
-                 /^\/api\/(pathways|protein|databases\/(cosmic|kegg|reactome)|quantum\/offtarget|quantum_cell\/gene)/
-                   .test(t.path)),
-              lead: "The target itself: pathways, off-targets, protein features, and BioQL's database reads " +
-                    "(COSMIC, KEGG, Reactome). TargetRadar has its own section." },
-  radar:    { group: "Discovery", label: "TargetRadar", icon: "eye", kind: "frame", which: "radar", route: "",
-              routes: (t) => /targetradar/.test(t.path),
-              lead: "TargetRadar's own application, whole. Its routes are under Routes." },
-  undrug:   { group: "Discovery", label: "Undruggable", icon: "boxes", kind: "tools", panel: "Undruggable panel",
-              pick: (t) => /(enterprise|undrug|complexa|ppi|allosteric)/i.test(t.path + " " + (t.why || "")),
-              lead: "The enterprise pipeline BioQL labels Undruggable." },
-  jobs:     { group: "Discovery", label: "Jobs & Recovery", icon: "pulse", kind: "tools", panel: "Pipelines panel",
-              pick: (t) => AREA_OF(t) === "jobs",
-              lead: "Submitting, polling and recovering a run. A receipt is not a result: a body with a job id is " +
-                    "followed until it is final, and a receipt with no job id is UNRESOLVABLE, never empty." },
-  pipeline: { group: "Discovery", label: "Pipeline routes", icon: "flow", kind: "tools", panel: "Pipelines panel",
-              pick: (t) => AREA_OF(t) === "pipeline" },
-  tools:    { group: "Discovery", label: "MCP Tools", icon: "tools", kind: "tools", panel: "MCP Tools panel", pick: () => true,
-              lead: "The whole closed list Studio may call. An entry marked needs a person is refused from this " +
-                    "window and offers an approval instead; anything that could reach real quantum hardware asks first." },
-  results:  { group: "Discovery", label: "Results", icon: "table", kind: "results", panel: "Results panel",
-              lead: "Every call that resolved, newest first, with the digest of what came back and the verdict the " +
-                    "verifier recorded." },
-
-  // --- BioQL's own window and its own pages
-  bioql:    { group: "BioQL", label: "Workbench", icon: "win", kind: "frame", route: "", panels: true,
-              lead: "BioQL's own window, whole and untouched. Studio never starts, stops or restarts it." },
-  eln:      { group: "BioQL", label: "Lab Notebook", icon: "book", kind: "frame", route: "#/eln" },
-  scr:      { group: "BioQL", label: "Screening", icon: "find", kind: "frame", route: "#/screening" },
-  sar:      { group: "BioQL", label: "SAR Analysis", icon: "tube", kind: "frame", route: "#/sar" },
-  report:   { group: "BioQL", label: "Report Builder", icon: "doc", kind: "frame", route: "#/report-builder" },
-  cands:    { group: "BioQL", label: "Drug Candidates", icon: "flask", kind: "frame", route: "#/candidates" },
-  viz:      { group: "BioQL", label: "BioQL Viz", icon: "cube", kind: "frame", route: "#/bioql-viz" },
-  keys:     { group: "BioQL", label: "API Keys", icon: "key", kind: "frame", route: "#/api-keys" },
+  // --- the work
+  jobs:     { group: "Work", label: "Jobs & Recovery", icon: "pulse", kind: "jobs",
+              lead: "Every run BioQL has a record of — its own job list and its own recovery sessions, newest " +
+                    "first. A run whose result is still there can be recovered here, and what comes back is drawn " +
+                    "as cards, not as a receipt." },
+  results:  { group: "Work", label: "Results", icon: "table", kind: "mols",
+              lead: "The molecules and targets that have been studied, one row each, with the pipeline that " +
+                    "studied them and whether the result is still recoverable." },
+  sar:      { group: "Work", label: "SAR", icon: "tube", kind: "sar",
+              lead: "Matched pairs, R-groups and activity cliffs over the molecules in those results. BioQL never " +
+                    "declared these routes' parameters, so what it refuses is shown in its own words." },
+  cands:    { group: "Work", label: "Drug Candidates", icon: "flask", kind: "cands",
+              lead: "Every candidate BioQL named in a recovered result, with the numbers it stated beside it. " +
+                    "Nothing here is scored by Studio." },
+  report:   { group: "Work", label: "Report Builder", icon: "doc", kind: "report",
+              lead: "A report over the runs you pick, built by BioQL's own report routes. The sections are " +
+                    "BioQL's; Studio chooses nothing about the science." },
 
   // --- the record
   findings: { group: "Record", label: "Findings", icon: "check", kind: "findings",
@@ -221,14 +159,17 @@ const SECTIONS = {
               lead: "BioQL's own health routes, asked now." },
   usage:    { group: "Record", label: "Usage", icon: "pulse", kind: "usage",
               lead: "Counted off the signed record, not off a tally kept beside it." },
+  keys:     { group: "Record", label: "API Keys", icon: "key", kind: "keys",
+              lead: "Who holds which secret, and where. Studio cannot read BioQL's keys and does not try: every " +
+                    "route whose name contains auth, keys, secrets or token is on the deny list." },
   settings: { group: "Record", label: "Settings", icon: "gear", kind: "settings" },
 };
 
-const GROUPS = ["Iris", "Discovery", "BioQL", "Record"];
+const GROUPS = ["Iris", "Work", "Record"];
 
 // ------------------------------------------------------------------ the state line and the status bar
-let uiUrl = "http://127.0.0.1:3000";
-let radarUrl = "http://127.0.0.1:4000";
+// Studio keeps no address for BioQL's own window or for TargetRadar. It used to hold both, to put their pages in
+// a frame; nothing frames them now, and an address kept for nothing is an invitation to reach for it again.
 let lastState = null;
 
 // Las etapas de los pipelines en curso. Lee `/api/progress`, que el adaptador llena desde
@@ -318,8 +259,6 @@ async function drawState() {
   $("chatSub").textContent = `${body.calls} call(s) · ${body.refusals} refused · ${body.approvals} approved`;
   $("stateLine").textContent = `${body.calls} call(s) on the record · ${body.refusals} refused · ` +
     `${body.approvals} approved` + (waiting ? ` · ${waiting} waiting for a person` : "");
-  if (body.bioql_ui) uiUrl = body.bioql_ui;
-  if (body.radar_ui) radarUrl = body.radar_ui;
   drawPending(body.pending || []);
   if (waiting) ring("waiting");
   return body;
@@ -404,100 +343,6 @@ async function loadTools() {
   return TOOLS;
 }
 
-function toolRow(t) {
-  const row = el("div", "row");
-  const head = el("div", "row-head");
-  head.appendChild(el("span", "tool-name", t.name));
-  head.appendChild(chip(t.kind, "plain"));
-  head.appendChild(el("span", "hash", t.method + " " + t.path));
-  if (t.approval) head.appendChild(chip("needs a person", "concerns"));
-  if (t.schema_known === false) head.appendChild(chip("schema not declared", "absent"));
-  row.appendChild(head);
-
-  const form = el("div", "row-head");
-  const inputs = {};
-  (t.required || []).concat(t.optional || []).slice(0, 6).forEach((k) => {
-    const i = el("input", "field-in");
-    i.placeholder = k + ((t.required || []).includes(k) ? "" : " (optional)");
-    i.setAttribute("aria-label", k);
-    inputs[k] = i;
-    form.appendChild(i);
-  });
-  const go = el("button", "go", t.approval ? "Ask" : "Run");
-  go.addEventListener("click", async () => {
-    go.disabled = true;
-    ring("busy");
-    const args = {};
-    Object.keys(inputs).forEach((k) => { if (inputs[k].value.trim()) args[k] = inputs[k].value.trim(); });
-    const out = await api("/api/call", { name: t.name, args });
-    go.disabled = false;
-    ring("idle");
-    const said = el("p", "row-why");
-    said.appendChild(chip(out.body.state || out.code, String(out.body.state || "plain").toLowerCase()));
-    said.appendChild(txt(" " + (out.body.detail || out.body.error || "")));
-    row.appendChild(said);
-    await drawState();
-  });
-  form.appendChild(go);
-  const ask = el("button", "go", "Ask Claude");
-  ask.style.background = "var(--fill-2)";
-  ask.style.color = "var(--label)";
-  ask.addEventListener("click", () => {
-    open_("chat");
-    $("ask-in").value = `Use ${t.name} and tell me what it actually ran.`;
-    $("ask-go").disabled = false;
-    $("ask-in").focus();
-  });
-  form.appendChild(ask);
-  row.appendChild(form);
-  if (t.why) row.appendChild(el("p", "tool-why", t.why));
-  return row;
-}
-
-function drawToolsSection(box, pick) {
-  const mine = TOOLS.filter(pick);
-  if (!mine.length) return empty(box, "no route in the allowlist answers to this section.");
-  clear(box);
-  box.appendChild(el("p", "fine", `${mine.length} route(s) · ` +
-    `${mine.filter((t) => t.approval).length} ask a person first`));
-  // Grouped as BioQL groups its own: by what the route is for.
-  const by = {};
-  mine.forEach((t) => { (by[AREA_OF(t)] = by[AREA_OF(t)] || []).push(t); });
-  Object.keys(by).sort().forEach((area) => {
-    box.appendChild(el("h3", "sect", area));
-    const g = el("div", "group");
-    by[area].sort((a, b) => a.name.localeCompare(b.name)).forEach((t) => g.appendChild(toolRow(t)));
-    box.appendChild(g);
-  });
-}
-
-function drawPipes(box) {
-  clear(box);
-  PIPES.forEach((grp) => {
-    box.appendChild(el("h3", "sect", grp.name));
-    const g = el("div", "group");
-    grp.items.forEach((it) => {
-      const row = el("div", "row");
-      const b = el("button", "pick");
-      b.appendChild(icon(grp.icon));
-      const main = el("div", "pick-main");
-      main.appendChild(el("b", null, it.name));
-      main.appendChild(el("small", null, it.desc));
-      main.appendChild(el("span", "pick-seed", "“" + it.prompt + " …”"));
-      b.appendChild(main);
-      b.addEventListener("click", () => {
-        open_("chat");
-        $("ask-in").value = it.prompt + " ";
-        $("ask-go").disabled = false;
-        $("ask-in").focus();
-      });
-      row.appendChild(b);
-      g.appendChild(row);
-    });
-    box.appendChild(g);
-  });
-}
-
 async function drawFindings(box) {
   const { code, body } = await api("/api/ledger?limit=100");
   if (code !== 200) return empty(box, body.error || "the record did not answer");
@@ -535,32 +380,546 @@ async function drawFindings(box) {
   box.appendChild(g);
 }
 
-async function drawResults(box) {
-  const { code, body } = await api("/api/ledger?limit=100");
-  if (code !== 200) return empty(box, body.error || "the record did not answer");
-  const rows = (body.rows || []).filter((r) => r.state === "RESOLVED").reverse();
-  if (!rows.length) return empty(box, "nothing has resolved yet.");
+// ---- the work pages -------------------------------------------------------
+// Every one of these reads BioQL's OWN history: `/api/pipeline/jobs`, `/api/recovery/sessions` and
+// `/api/recovery/session/<id>/result` — GET, `status` kind in the allowlist, nothing that spends compute and
+// nothing that touches a run. They are the same routes BioQL's own window uses, so a run started anywhere (this
+// window, its window, the command line) appears in all of them.
+//
+// The three states are kept apart on every one of these pages: RESOLVED is drawn, ABSENT says BioQL answered and
+// has nothing, and UNRESOLVABLE says the question could not be asked and why. A page that drew an empty table for
+// all three would turn "I could not ask" into "there is nothing", which is the one substitution this whole
+// program exists to refuse.
+
+async function callTool(name, args) {
+  const { code, body } = await api("/api/call", { name, args: args || {} });
+  return { code, body: body || {} };
+}
+
+// What a call's answer was, as a chip, in BioQL's own words underneath.
+function stateLine(box, body, what) {
+  const st = String(body.state || "");
+  if (st === "RESOLVED") return true;
+  const row = el("div", "row");
+  const head = el("div", "row-head");
+  head.appendChild(el("span", "row-tool", what));
+  head.appendChild(chip(st || "no answer", st === "ABSENT" ? "absent" : "bad"));
+  row.appendChild(head);
+  row.appendChild(el("p", "row-why", body.detail || body.error ||
+    (st === "ABSENT" ? "BioQL answered and has nothing here." : "the call did not go through")));
+  if (body.pending) {
+    row.appendChild(el("p", "fine", "This one needs a person: the code is in Studio's log and in " +
+      "HOME/pending/" + body.pending.id + "."));
+  }
+  box.appendChild(row);
+  return false;
+}
+
+function tableNode(cols, rows) {
+  const t = el("table", "wtab");
+  const thead = el("thead");
+  const hr = el("tr");
+  cols.forEach((c) => hr.appendChild(el("th", null, c)));
+  thead.appendChild(hr);
+  t.appendChild(thead);
+  const tb = el("tbody");
+  rows.forEach((cells) => {
+    const tr = el("tr");
+    cells.forEach((c) => {
+      const td = el("td");
+      if (c instanceof Node) td.appendChild(c);
+      else td.appendChild(txt(c === null || c === undefined ? "" : c));
+      tr.appendChild(td);
+    });
+    tb.appendChild(tr);
+  });
+  t.appendChild(tb);
+  return t;
+}
+
+function whenISO(s) {
+  if (!s) return "";
+  // BioQL writes a NAIVE timestamp — "2026-11-20T08:56:45.649433", no zone — and it means local time on this Mac.
+  // This used to append a Z, which read every one of them as UTC: the peptide run started at 08:56 was drawn at
+  // 03:56, five hours earlier than it happened. A time that is wrong by the machine's offset is worse than no
+  // time, because it looks right. A string that DOES carry a zone is left alone and honoured.
+  const raw = String(s);
+  const zoned = /[zZ]$|[+-]\d{2}:?\d{2}$/.test(raw);
+  const d = new Date(zoned ? raw : raw.replace(" ", "T"));
+  return Number.isNaN(d.getTime()) ? raw.slice(0, 19).replace("T", " ") : when(d.getTime() / 1000);
+}
+
+// A recovered result, drawn as cards. The cards are built in Python by `studio/cards.py` — the same machinery the
+// chat uses, so a result opened here and the same result in the chat are the same cards, section for section.
+function openResult(host, sid) {
+  clear(host);
+  host.appendChild(el("p", "fine", "recovering " + sid + "…"));
+  return callTool("recovery_session_id_result", { id: sid }).then(({ body }) => {
+    clear(host);
+    if (!stateLine(host, body, sid)) return;
+    if (body.card) {
+      host.appendChild(cardNode(body.card));
+    } else {
+      // The payload came back and the card did not. Showing the keys is not the result, and it does not pretend
+      // to be: it says plainly that the card could not be built.
+      host.appendChild(el("p", "row-why", "the result arrived but no card could be built from it"));
+      const v = body.value;
+      host.appendChild(el("pre", "sdf", JSON.stringify(v, null, 1).slice(0, 4000)));
+    }
+  });
+}
+
+// ---- Jobs & Recovery ------------------------------------------------------
+async function drawJobs(box) {
   clear(box);
+  const [jobs, sess, ibm] = await Promise.all([
+    callTool("pipeline_jobs", {}),
+    callTool("recovery_sessions", {}),
+    callTool("recovery_ibm_status", {}),
+  ]);
+
+  // IBM first, because it is the one line that can cost money and the one most often wrong. Its own error is
+  // shown; "no counts" is never drawn as "no jobs".
+  const ibmBody = ibm.body || {};
+  const ibmRow = el("p", "fine");
+  if (String(ibmBody.state) === "RESOLVED") {
+    const v = ibmBody.value || {};
+    const counts = v.counts && Object.keys(v.counts).length
+      ? Object.entries(v.counts).map(([k, n]) => k + " " + n).join(" · ") : null;
+    ibmRow.textContent = "IBM Quantum: " + (counts || (v.error ? "could not be read — " + v.error
+      : "BioQL reported no job counts"));
+  } else {
+    ibmRow.textContent = "IBM Quantum: " + (ibmBody.detail || "could not be asked");
+  }
+  box.appendChild(ibmRow);
+
+  box.appendChild(el("h3", "sect", "BioQL's job list"));
+  if (stateLine(box, jobs.body, "pipeline_jobs")) {
+    const list = ((jobs.body.value || {}).jobs) || [];
+    if (!list.length) box.appendChild(el("p", "empty", "BioQL's job list is empty."));
+    else {
+      box.appendChild(tableNode(["job", "target", "status", "started"],
+        list.map((j) => [el("code", null, String(j.job_id || "")), String(j.target || "—"),
+                         chip(String(j.status || "?"), jobStatus(j.status)), whenISO(j.created_at)])));
+    }
+  }
+
+  box.appendChild(el("h3", "sect", "Recovery sessions"));
+  if (!stateLine(box, sess.body, "recovery_sessions")) return;
+  const rows = ((sess.body.value || {}).sessions) || [];
+  if (!rows.length) return void box.appendChild(el("p", "empty", "BioQL kept no recovery session."));
   const g = el("div", "group");
-  rows.forEach((r) => {
+  rows.forEach((s) => {
     const row = el("div", "row");
     const head = el("div", "row-head");
-    head.appendChild(el("span", "row-tool", r.tool));
-    if (r.verdict) head.appendChild(chip(r.verdict, r.verdict));
-    if (r.by) head.appendChild(el("span", "hash", "by " + r.by));
-    if (r.job_id) head.appendChild(el("span", "hash", "job " + r.job_id));
+    head.appendChild(el("span", "row-tool", String(s.pipeline || "pipeline")));
+    head.appendChild(chip(String(s.status || "?"), jobStatus(s.status)));
+    if (s.target) head.appendChild(el("span", "hash", String(s.target)));
+    if (s.indication) head.appendChild(el("span", "hash", String(s.indication)));
+    head.appendChild(el("span", "hash", String(s.session_id || "")));
     row.appendChild(head);
-    row.appendChild(el("span", "row-when", when(r.t)));
-    const why = el("p", "row-why");
-    why.appendChild(txt(r.detail || ""));
-    if (r.result_sha256) {
-      why.appendChild(el("br"));
-      why.appendChild(el("code", null, "sha256 " + String(r.result_sha256).slice(0, 24)));
+    row.appendChild(el("span", "row-when", whenISO(s.started_at || s.completed_at)
+      + (s.wall_seconds !== undefined ? " · " + s.wall_seconds + "s" : "")));
+    if (s.smiles) row.appendChild(el("code", "smi", String(s.smiles)));
+    if (s.error) row.appendChild(el("p", "row-why", String(s.error)));
+    const out = el("div", "wout");
+    const acts = el("div", "row-head");
+    if (s.has_result) {
+      const b = el("button", "tool", "Recover the result");
+      b.type = "button";
+      b.addEventListener("click", () => { b.disabled = true; openResult(out, String(s.session_id)).then(() => { b.disabled = false; }); });
+      acts.appendChild(b);
+    } else {
+      // Why it cannot be recovered, in BioQL's own words. An absent result is information; a greyed button with
+      // no reason is not.
+      acts.appendChild(el("span", "fine", s.status === "running"
+        ? "still running — nothing to recover yet"
+        : "BioQL says this session kept no result"));
     }
-    row.appendChild(why);
+    row.appendChild(acts);
+    row.appendChild(out);
     g.appendChild(row);
   });
   box.appendChild(g);
+}
+
+function jobStatus(s) {
+  const w = String(s || "").toLowerCase();
+  if (w === "completed" || w === "success") return "clean";
+  if (w === "running" || w === "queued" || w === "pending") return "busy";
+  if (w === "interrupted" || w === "failed" || w === "error") return "bad";
+  return "plain";
+}
+
+// ---- Results: the molecules and targets that were studied -----------------
+async function drawMols(box) {
+  clear(box);
+  const { body } = await callTool("recovery_sessions", {});
+  if (!stateLine(box, body, "recovery_sessions")) return;
+  const rows = ((body.value || {}).sessions) || [];
+  if (!rows.length) return void box.appendChild(el("p", "empty", "nothing has been studied yet."));
+
+  // One row per thing studied, newest run first. A session with a SMILES is a molecule; one without is the target
+  // it was run against — they are not merged, because "PD-L1" and a SMILES are not the same kind of subject.
+  const bySubject = new Map();
+  rows.forEach((s) => {
+    const key = (s.smiles && String(s.smiles)) || ("target:" + String(s.target || "?"));
+    const seen = bySubject.get(key) || { smiles: s.smiles || "", target: s.target || "", runs: [] };
+    if (!seen.target && s.target) seen.target = s.target;
+    seen.runs.push(s);
+    bySubject.set(key, seen);
+  });
+
+  box.appendChild(el("p", "fine", bySubject.size + " subject(s) · " + rows.length + " run(s) · "
+    + rows.filter((s) => s.has_result).length + " with a result still kept"));
+
+  const g = el("div", "group");
+  [...bySubject.values()].forEach((m) => {
+    const row = el("div", "row");
+    const head = el("div", "row-head");
+    head.appendChild(el("span", "row-tool", m.smiles ? "molecule" : "target"));
+    if (m.target) head.appendChild(el("b", null, String(m.target)));
+    head.appendChild(el("span", "hash", m.runs.length + " run(s)"));
+    row.appendChild(head);
+    if (m.smiles) row.appendChild(el("code", "smi", m.smiles));
+
+    const pics = el("div", "wpics");
+    row.appendChild(pics);
+    if (m.smiles) {
+      const d2 = el("button", "tool", "2D");
+      d2.type = "button";
+      d2.title = "BioQL's own depiction (RDKit), through /api/render/2d";
+      d2.addEventListener("click", () => { d2.disabled = true; draw2D(pics, m.smiles).then(() => { d2.disabled = false; }); });
+      head.appendChild(d2);
+      const d3 = el("button", "tool", "3D");
+      d3.type = "button";
+      d3.title = "BioQL embeds the molecule in 3D (/api/smiles-to-3d) and it is turned here";
+      d3.addEventListener("click", () => { d3.disabled = true; draw3D(pics, m.smiles).then(() => { d3.disabled = false; }); });
+      head.appendChild(d3);
+    }
+
+    const out = el("div", "wout");
+    m.runs.forEach((s) => {
+      const r = el("div", "wrun");
+      r.appendChild(chip(String(s.status || "?"), jobStatus(s.status)));
+      r.appendChild(el("span", null, String(s.pipeline || "pipeline")));
+      if (s.indication) r.appendChild(el("span", "hash", String(s.indication)));
+      r.appendChild(el("span", "row-when", whenISO(s.started_at || s.completed_at)));
+      if (s.has_result) {
+        const b = el("button", "tool", "Open");
+        b.type = "button";
+        b.addEventListener("click", () => { b.disabled = true; openResult(out, String(s.session_id)).then(() => { b.disabled = false; }); });
+        r.appendChild(b);
+      } else {
+        r.appendChild(el("span", "fine", s.error ? String(s.error) : "no result kept"));
+      }
+      out.appendChild(r);
+    });
+    row.appendChild(out);
+    g.appendChild(row);
+  });
+  box.appendChild(g);
+}
+
+async function draw2D(host, smiles) {
+  const old = host.querySelector(".twod");
+  if (old) old.remove();
+  const { body } = await callTool("render_2d", { smiles: smiles });
+  const wrap = el("figure", "twod");
+  if (String(body.state) !== "RESOLVED") {
+    wrap.appendChild(el("figcaption", "fine", "2D: " + (body.detail || "no answer")));
+    host.appendChild(wrap);
+    return;
+  }
+  const v = body.value || {};
+  const svg = v.svg || v.image || v.data;
+  if (typeof svg !== "string" || !svg.includes("<svg")) {
+    wrap.appendChild(el("figcaption", "fine", "BioQL answered without an SVG for this molecule"));
+    host.appendChild(wrap);
+    return;
+  }
+  // A data: URL on an <img>, never innerHTML: the SVG stays a picture and can run nothing. `img-src 'self' data:`
+  // is what allows exactly this and nothing else.
+  const img = el("img", "twod-img");
+  img.alt = "2D depiction of " + smiles;
+  img.src = "data:image/svg+xml;base64," + btoa(unescape(encodeURIComponent(svg)));
+  wrap.appendChild(img);
+  wrap.appendChild(el("figcaption", "fine", "RDKit, through BioQL · " + (v.smiles || smiles)));
+  host.appendChild(wrap);
+}
+
+async function draw3D(host, smiles) {
+  const old = host.querySelector(".mol3d");
+  if (old) old.remove();
+  const { body } = await callTool("smiles_to_3d", { smiles: smiles });
+  if (String(body.state) !== "RESOLVED") {
+    host.appendChild(el("p", "fine", "3D: " + (body.detail || "no answer")));
+    return;
+  }
+  const v = body.value || {};
+  const mol = v.mol || v.sdf || v.molblock;
+  if (typeof mol !== "string" || !mol.trim()) {
+    host.appendChild(el("p", "fine", "BioQL answered without 3D coordinates for this molecule"));
+    return;
+  }
+  host.appendChild(structureNode({
+    parts: [{ role: "molecule", format: v.sdf ? "sdf" : "mol", data: mol, path: "smiles-to-3d", bytes: mol.length }],
+  }));
+}
+
+// ---- SAR ------------------------------------------------------------------
+// BioQL never declared these three routes' parameters (`required: []`, `optional: []` in the allowlist, which is
+// its registry's own silence, not a guess of Studio's). So the call carries the set of molecules under the names
+// BioQL's own window uses, and when BioQL refuses, its words are what the page shows — never a made-up shape.
+const SAR_RUNS = [
+  { name: "sar_mmp", label: "Matched pairs" },
+  { name: "sar_rgroup", label: "R-groups" },
+  { name: "sar_cliffs", label: "Activity cliffs" },
+];
+
+async function drawSar(box) {
+  clear(box);
+  const { body } = await callTool("recovery_sessions", {});
+  if (!stateLine(box, body, "recovery_sessions")) return;
+  const rows = ((body.value || {}).sessions) || [];
+  const smiles = [...new Set(rows.map((s) => String(s.smiles || "").trim()).filter(Boolean))];
+  if (!smiles.length) {
+    return void box.appendChild(el("p", "empty",
+      "no run in BioQL's history carries a SMILES, so there is no series to compare. SAR needs molecules; " +
+      "a target name is not one."));
+  }
+  box.appendChild(el("p", "fine", smiles.length + " molecule(s) in BioQL's own history. Pick the series:"));
+  const picked = new Set(smiles);
+  const list = el("div", "wpick");
+  smiles.forEach((s) => {
+    const lab = el("label", "wcheck");
+    const cb = el("input");
+    cb.type = "checkbox";
+    cb.checked = true;
+    cb.addEventListener("change", () => { if (cb.checked) picked.add(s); else picked.delete(s); });
+    lab.appendChild(cb);
+    lab.appendChild(el("code", "smi", s));
+    list.appendChild(lab);
+  });
+  box.appendChild(list);
+
+  const out = el("div", "wout");
+  const acts = el("div", "row-head");
+  SAR_RUNS.forEach((r) => {
+    const b = el("button", "tool", r.label);
+    b.type = "button";
+    b.addEventListener("click", async () => {
+      b.disabled = true;
+      clear(out);
+      out.appendChild(el("p", "fine", r.label + "…"));
+      const got = await callTool(r.name, { smiles: [...picked] });
+      clear(out);
+      if (stateLine(out, got.body, r.name)) {
+        if (got.body.card) out.appendChild(cardNode(got.body.card));
+        else out.appendChild(el("pre", "sdf", JSON.stringify(got.body.value, null, 1).slice(0, 4000)));
+      }
+      b.disabled = false;
+    });
+    acts.appendChild(b);
+  });
+  box.appendChild(acts);
+  box.appendChild(out);
+}
+
+// ---- Drug Candidates ------------------------------------------------------
+// A candidate is whatever BioQL itself called one: an object carrying a SMILES inside a recovered result. They are
+// found by walking the payload, and the PATH each one was found at is shown, so a number on this page can always
+// be traced back to the key BioQL wrote it under. Studio scores nothing and ranks nothing.
+function candidatesIn(o, path, out, depth) {
+  if (depth > 6 || out.length > 400) return out;
+  if (Array.isArray(o)) {
+    o.forEach((v, i) => candidatesIn(v, path + "[" + i + "]", out, depth + 1));
+    return out;
+  }
+  if (o && typeof o === "object") {
+    const smi = o.smiles || o.SMILES || o.smile;
+    if (typeof smi === "string" && smi.trim() && smi.length < 400) {
+      const nums = {};
+      Object.keys(o).forEach((k) => {
+        const v = o[k];
+        if (typeof v === "number" && Number.isFinite(v)) nums[k] = v;
+        else if (typeof v === "string" && v.length < 40 && /score|rank|name|id|class|verdict|flag/i.test(k)) nums[k] = v;
+      });
+      out.push({ smiles: smi.trim(), path: path, fields: nums });
+    }
+    Object.keys(o).forEach((k) => candidatesIn(o[k], path + "." + k, out, depth + 1));
+  }
+  return out;
+}
+
+async function drawCands(box) {
+  clear(box);
+  const { body } = await callTool("recovery_sessions", {});
+  if (!stateLine(box, body, "recovery_sessions")) return;
+  const rows = (((body.value || {}).sessions) || []).filter((s) => s.has_result);
+  if (!rows.length) {
+    return void box.appendChild(el("p", "empty",
+      "no run has a result still kept, so there is nothing to read candidates out of."));
+  }
+  box.appendChild(el("p", "fine", rows.length + " run(s) with a result kept. Reading one recovers it from BioQL " +
+    "and takes nothing from its engine."));
+  const g = el("div", "group");
+  rows.forEach((s) => {
+    const row = el("div", "row");
+    const head = el("div", "row-head");
+    head.appendChild(el("span", "row-tool", String(s.pipeline || "pipeline")));
+    if (s.target) head.appendChild(el("b", null, String(s.target)));
+    head.appendChild(el("span", "hash", String(s.session_id)));
+    const out = el("div", "wout");
+    const b = el("button", "tool", "Read its candidates");
+    b.type = "button";
+    b.addEventListener("click", async () => {
+      b.disabled = true;
+      clear(out);
+      out.appendChild(el("p", "fine", "recovering…"));
+      const got = await callTool("recovery_session_id_result", { id: String(s.session_id) });
+      clear(out);
+      b.disabled = false;
+      if (!stateLine(out, got.body, String(s.session_id))) return;
+      const found = candidatesIn((got.body.value || {}).result || got.body.value, "$", [], 0);
+      if (!found.length) {
+        out.appendChild(el("p", "row-why", "this result names no object with a SMILES in it. That is BioQL's " +
+          "answer about this run, not an empty table."));
+        return;
+      }
+      const cols = ["molecule", "where BioQL put it", "what BioQL stated"];
+      out.appendChild(tableNode(cols, found.slice(0, 120).map((c) => [
+        el("code", "smi", c.smiles),
+        el("span", "hash", c.path),
+        Object.entries(c.fields).slice(0, 8).map(([k, v]) => k + " " + v).join(" · "),
+      ])));
+      if (found.length > 120) out.appendChild(el("p", "fine", "120 of " + found.length + " shown"));
+    });
+    head.appendChild(b);
+    row.appendChild(head);
+    row.appendChild(el("span", "row-when", whenISO(s.completed_at || s.started_at)));
+    row.appendChild(out);
+    g.appendChild(row);
+  });
+  box.appendChild(g);
+}
+
+// ---- Report Builder -------------------------------------------------------
+// The report is BioQL's. These routes' parameters were never declared either, so the session ids go in under the
+// names its own window uses and a refusal is shown verbatim. Nothing here writes a report of Studio's own: a
+// document assembled by this window would carry no provenance at all.
+const REPORT_RUNS = [
+  { name: "reports_generate", label: "Report" },
+  { name: "reports_generate_dossier", label: "Dossier" },
+  { name: "api_reports_html", label: "HTML" },
+  { name: "report_export", label: "Export" },
+];
+
+async function drawReport(box) {
+  clear(box);
+  const { body } = await callTool("recovery_sessions", {});
+  if (!stateLine(box, body, "recovery_sessions")) return;
+  const rows = (((body.value || {}).sessions) || []).filter((s) => s.has_result);
+  if (!rows.length) {
+    return void box.appendChild(el("p", "empty", "a report is built over runs that still have a result; " +
+      "BioQL has none kept."));
+  }
+  const picked = new Set();
+  const list = el("div", "wpick");
+  rows.forEach((s) => {
+    const lab = el("label", "wcheck");
+    const cb = el("input");
+    cb.type = "checkbox";
+    cb.addEventListener("change", () => { if (cb.checked) picked.add(String(s.session_id)); else picked.delete(String(s.session_id)); });
+    lab.appendChild(cb);
+    lab.appendChild(el("b", null, String(s.pipeline || "pipeline")));
+    lab.appendChild(el("span", "hash", String(s.target || "")));
+    lab.appendChild(el("span", "hash", String(s.session_id)));
+    list.appendChild(lab);
+  });
+  box.appendChild(list);
+
+  const out = el("div", "wout");
+  const acts = el("div", "row-head");
+  REPORT_RUNS.forEach((r) => {
+    const b = el("button", "tool", r.label);
+    b.type = "button";
+    b.addEventListener("click", async () => {
+      if (!picked.size) return void toast("pick at least one run");
+      b.disabled = true;
+      clear(out);
+      out.appendChild(el("p", "fine", r.label + "…"));
+      const ids = [...picked];
+      const got = await callTool(r.name, { session_ids: ids, session_id: ids[0] });
+      clear(out);
+      b.disabled = false;
+      if (!stateLine(out, got.body, r.name)) return;
+      reportNode(out, got.body);
+    });
+    acts.appendChild(b);
+  });
+  box.appendChild(acts);
+  box.appendChild(out);
+}
+
+function reportNode(host, body) {
+  const v = body.value;
+  // HTML that came back stays TEXT. Putting it in the page would run BioQL's markup inside Studio's window, which
+  // is exactly the thing the policy here forbids; the text is the report and it can be read and copied.
+  const html = v && typeof v === "object" ? (v.html || v.report_html) : null;
+  if (typeof html === "string" && html.trim()) {
+    host.appendChild(el("p", "fine", "BioQL returned " + html.length + " bytes of HTML. It is shown as text: " +
+      "this window runs no markup it did not write."));
+    host.appendChild(el("pre", "sdf", html.slice(0, 20000)));
+    return;
+  }
+  if (body.card) return void host.appendChild(cardNode(body.card));
+  host.appendChild(el("pre", "sdf", JSON.stringify(v, null, 1).slice(0, 20000)));
+}
+
+// ---- API Keys -------------------------------------------------------------
+// There is no key route to show, and that is the page's first sentence rather than its omission: the allowlist's
+// DENY pattern refuses every path whose name contains auth, admin, login, secrets, keys or token, so Studio cannot
+// read BioQL's keys through it and no entry here can be added to let it.
+async function drawKeys(box) {
+  clear(box);
+  const g = el("div", "group");
+  const say = el("div", "row");
+  say.appendChild(el("p", "row-why",
+    "Studio holds no key of BioQL's and can read none: the closed list refuses, by name, every route containing " +
+    "auth, admin, login, secrets, keys or token. What it does hold is its own two secrets, below — and it shows " +
+    "where they are and how they are protected, never what is in them."));
+  g.appendChild(say);
+  box.appendChild(g);
+
+  const { code, body } = await api("/api/secrets");
+  if (code !== 200) return void box.appendChild(el("p", "row-why", (body && body.error) || "could not be read"));
+
+  box.appendChild(el("h3", "sect", "What Studio holds"));
+  box.appendChild(tableNode(["file", "what it is", "mode", "bytes", "last written"],
+    (body.files || []).map((f) => [
+      el("code", null, f.name),
+      f.what,
+      chip(f.mode || "?", f.mode === "0600" ? "clean" : "bad"),
+      f.state === "RESOLVED" ? String(f.bytes) : "",
+      f.state === "RESOLVED" ? when(f.mtime) : (f.detail || f.state),
+    ])));
+  box.appendChild(el("p", "fine", "In " + (body.home || "") +
+    ". A mode other than 0600 is drawn in red: that is a file another account on this Mac could read."));
+
+  // Whose keys BioQL itself says are working. This is BioQL's own health answer, not a key read.
+  box.appendChild(el("h3", "sect", "What BioQL says about its own providers"));
+  const h = await callTool("backend_health", {});
+  if (!stateLine(box, h.body, "backend_health")) return;
+  const v = h.body.value || {};
+  const svc = v.services || v.providers || v;
+  const rows = Object.entries(svc).filter(([, x]) => typeof x !== "object" || x === null)
+    .map(([k, x]) => [k, String(x)]);
+  if (!rows.length) {
+    box.appendChild(el("p", "row-why", "BioQL's health answer names no provider. That is its answer, not a blank."));
+    return;
+  }
+  box.appendChild(tableNode(["what BioQL named", "what it said"], rows));
 }
 
 const LANES = ["target", "mechanism", "candidate", "risk", "plan", "evidence"];
@@ -746,8 +1105,12 @@ function healthRow(t) {
 }
 
 async function drawServers(box) {
+  // `area` is BioQL's own label on the entry, straight off its registry. It used to be read through a helper that
+  // guessed an area from the path for every section of the old menu; the menu is gone and only this one reader is
+  // left, so it reads the field itself and falls back to nothing rather than to a guess.
   const health = TOOLS.filter((t) => t.method === "GET" && !t.approval && !(t.required || []).length &&
-                                     (/health|live_status|coherence/.test(t.path) || AREA_OF(t) === "health"));
+                                     (/health|live_status|coherence/.test(t.path) ||
+                                      ((t.from_registry || {}).area === "health")));
   if (!health.length) return empty(box, "no health route in the allowlist.");
   const seen = new Set();
   const uniq = health.filter((t) => (seen.has(t.path) ? false : (seen.add(t.path), true)));
@@ -845,7 +1208,7 @@ function drawSettings(box) {
   // Label left, value right, one line each — the same grouped list the rest of the window uses, instead of two
   // grey captions side by side with nothing telling them apart.
   [["version", st.version], ["service", "127.0.0.1:" + st.port], ["data", st.home],
-   ["BioQL's engine", st.bioql], ["BioQL's window", uiUrl], ["TargetRadar", radarUrl],
+   ["BioQL's engine", st.bioql], ["BioQL's window", "not reached from here"],
    ["tools in the allowlist", TOOLS.length ? String(TOOLS.length) : "—"],
    ["tools that ask a person", String(TOOLS.filter((t) => t.approval).length)],
    ["the brain", "Claude Code, and nothing else"]]
@@ -882,35 +1245,6 @@ function drawChats(box) {
 }
 
 // ------------------------------------------------------------------ BioQL's own window
-async function showFrame(s, mine) {
-  const frame = $("bioql"), room = $("waiting-room");
-  const which = s.which || "bioql";
-  // Which window is up is asked of Studio's service: `connect-src 'self'` forbids this page reaching another
-  // origin, and a page that cannot ask must not guess.
-  const { body } = await api("/api/ui?which=" + encodeURIComponent(which));
-  if (mine !== undefined && mine !== seq) return false;   // another section was opened while this one asked
-  const base = (body && body.url) || (which === "radar" ? radarUrl : uiUrl);
-  const up = body && body.up === true;
-  const want = base + "/" + (s.route || "");
-  $("frameUrl").textContent = want;
-  if (up) {
-    if (frame.dataset.want !== want) { frame.dataset.want = want; frame.src = want; }
-    frame.classList.remove("hidden");
-    room.classList.add("hidden");
-  } else {
-    frame.classList.add("hidden");
-    room.classList.remove("hidden");
-    $("waiting-why").textContent = (which === "radar" ? "TargetRadar" : "BioQL") +
-      " is not answering at " + base;
-    $("waiting-cmd").textContent = which === "radar" ? "./start_targetradar_local.sh" : "./start_frontend_local.sh";
-    ring("down");
-  }
-  if (s.panels) {
-    $("frameTitle").title = "BioQL's own activity bar: " + BIOQL_PANELS.join(" · ");
-  }
-  return up;
-}
-
 // ------------------------------------------------------------------ the structure, and the charts
 //
 // BioQL's own window draws a result's structure with 3Dmol.js (`3dmol` 2.5.5 in its package.json) and its charts
@@ -959,8 +1293,11 @@ const STRUCT_STYLE = {
   protein: { cartoon: { color: "spectrum" } },
   complex: { cartoon: { color: "spectrum" } },
   pocket: { cartoon: { color: "spectrum" } },
-  ligand: { stick: { radius: 0.18 }, sphere: { scale: 0.22 } },
-  molecule: { stick: { radius: 0.18 }, sphere: { scale: 0.22 } },
+  // `colorscheme: Jmol` — by ELEMENT, the colours every chemist reads without a legend (O red, N blue, S yellow).
+  // Without it 3Dmol draws a molecule loaded from a molfile in one grey, and a grey oxygen beside a 2D depiction
+  // that draws it red is the same molecule telling two different stories.
+  ligand: { stick: { radius: 0.18, colorscheme: "Jmol" }, sphere: { scale: 0.22, colorscheme: "Jmol" } },
+  molecule: { stick: { radius: 0.18, colorscheme: "Jmol" }, sphere: { scale: 0.22, colorscheme: "Jmol" } },
   structure: { cartoon: { color: "spectrum" } },
 };
 
@@ -1466,7 +1803,7 @@ function rememberShut(set) {
   try { localStorage.setItem(SHUT_KEY, JSON.stringify([...set])); } catch (e) { /* nada que recordar, nada roto */ }
 }
 
-const GROUP_NAME = { Iris: "Instrument", BioQL: "BioQL window", Record: "The record" };
+const GROUP_NAME = { Iris: "Instrument", Work: "The work", Record: "The record" };
 
 function buildNav() {
   const nav = $("nav");
@@ -1538,11 +1875,6 @@ function drawTabs() {
   });
 }
 
-// Which half of a section is showing. A section that mirrors something BioQL already draws has two: the interface
-// BioQL itself draws, and the routes behind it. The interface is the default, because "it should behave like
-// localhost:3000" is the whole point; the routes are what Studio adds.
-const half = {};
-
 // Every section is drawn under a number. Two clicks in a row used to leave the SLOWER draw writing into the page
 // of the section that had already replaced it — a blank frame, or one section's rows under another's title. A draw
 // that is no longer the open one is dropped.
@@ -1552,15 +1884,16 @@ async function draw() {
   const s = SECTIONS[view];
   if (s.kind === "chat") return;
   const mine = seq;
-  if (s.kind === "frame" && half[view] !== "routes") return void (await showFrame(s, mine));
   // Built DETACHED and swapped in whole, so a half-drawn page is never on screen and a stale one never lands.
   const box = el("div");
   switch (s.kind) {
-    case "frame": drawToolsSection(box, s.routes); break;
-    case "tools": drawToolsSection(box, s.pick); break;
-    case "pipes": drawPipes(box); break;
+    case "jobs": await drawJobs(box); break;
+    case "mols": await drawMols(box); break;
+    case "sar": await drawSar(box); break;
+    case "cands": await drawCands(box); break;
+    case "report": await drawReport(box); break;
+    case "keys": await drawKeys(box); break;
     case "findings": await drawFindings(box); break;
-    case "results": await drawResults(box); break;
     case "board": await drawBoard(box); break;
     case "ledger": await drawLedger(box); break;
     case "guard": await drawGuard(box); break;
@@ -1584,52 +1917,20 @@ async function open_(k) {
   if (!openTabs.includes(k)) openTabs.push(k);
   drawTabs();
   document.querySelectorAll("nav button").forEach((b) => b.classList.toggle("on", b.dataset.v === k));
-  const framed = s.kind === "frame" && half[k] !== "routes";
   $("v-chat").hidden = s.kind !== "chat";
-  $("v-page").hidden = s.kind === "chat" || framed;
-  $("v-frame").hidden = !framed;
-  if (framed) $("frameTitle").textContent = s.label;
-  if (!framed && s.kind !== "chat") {
+  $("v-page").hidden = s.kind === "chat";
+  if (s.kind !== "chat") {
     $("pageTitle").textContent = s.label;
     $("pageLead").textContent = s.lead || "";
     empty($("pageBody"), "reading…");
   }
-  halves(k, s, framed);
+  // There is no second half any more. A section used to offer "Panel | Routes" — BioQL's page in a frame, or the
+  // list of routes behind it. Neither exists here now, so neither does the switch.
+  const old = document.getElementById("halfSeg");
+  if (old) old.remove();
   await draw();
 }
 
-function halves(k, s, framed) {
-  // A section that mirrors an interface BioQL already has shows a switch: the interface, or the routes behind it.
-  const host = framed ? $("v-frame").querySelector(".bar-acts") : $("pageActs");
-  const old = document.getElementById("halfSeg");
-  if (old) old.remove();
-  if (!s.routes && !s.panel) return;
-  const seg = el("span", "seg");
-  seg.id = "halfSeg";
-  const mk = (word, mode, title) => {
-    const b = el("button", null, word);
-    b.type = "button";
-    b.title = title || "";
-    b.setAttribute("role", "tab");
-    b.setAttribute("aria-selected", String((half[k] || "panel") === mode));
-    b.addEventListener("click", () => { half[k] = mode; open_(k); });
-    return b;
-  };
-  if (s.routes) {
-    seg.appendChild(mk(s.label === "TargetRadar" ? "TargetRadar" : "Panel", "panel", "the application's own interface"));
-    seg.appendChild(mk("Routes", "routes", "the routes behind it, in Studio's closed list"));
-    host.insertBefore(seg, host.firstChild);
-    return;
-  }
-  // A BioQL panel is component state inside its window, not an address, so Studio cannot open one from outside.
-  // What it can do is say which one, and put its window one click away instead of pretending the list is it.
-  const go = el("button", "tool", "Open BioQL's " + s.panel);
-  go.id = "halfSeg";
-  go.type = "button";
-  go.title = "BioQL's panels are picked inside its own window: they are not addressable from here";
-  go.addEventListener("click", () => open_("bioql"));
-  host.insertBefore(go, host.firstChild);
-}
 
 // ------------------------------------------------------------------ the command centre
 let palSel = 0, palRows = [];
@@ -1644,10 +1945,17 @@ function palItems(q) {
     }
   });
   if (needle) {
+    // A matching route is still worth naming — but it is named into the CHAT, which is the only thing that runs
+    // one now. The palette used to open a list of 502 route names, and a list is not work.
     TOOLS.filter((t) => t.name.includes(needle.replace(/\s+/g, "_")) || t.path.includes(needle))
-      .slice(0, 12).forEach((t) => out.push({
+      .slice(0, 8).forEach((t) => out.push({
         icon: "tools", label: t.name, note: t.method + " " + t.path,
-        go: () => { open_("tools").then(() => toast("in MCP Tools: " + t.name)); },
+        go: () => {
+          open_("chat");
+          $("ask-in").value = "Use " + t.name + " and tell me what it actually ran.";
+          $("ask-go").disabled = false;
+          $("ask-in").focus();
+        },
       }));
     out.push({ icon: "orb", label: "Ask: " + q.trim(), note: "⌘↩", go: () => send(q.trim()) });
   }
@@ -1711,12 +2019,6 @@ async function boot() {
     document.body.classList.toggle("has-lines", !orb || TURNS.length > 0);
   }));
 
-  $("frameReload").addEventListener("click", () => {
-    $("bioql").dataset.want = "";
-    showFrame(SECTIONS[view]);
-  });
-  $("waiting-retry").addEventListener("click", () => showFrame(SECTIONS[view]));
-
   document.querySelectorAll(".st[data-go]").forEach((b) => b.addEventListener("click", () => open_(b.dataset.go)));
   $("cmdCenter").addEventListener("click", openPal);
   $("palText").addEventListener("input", () => { palSel = 0; drawPal(); });
@@ -1757,8 +2059,9 @@ async function boot() {
     // status bar would still read "healthy" while every call in BioQL's own window answered 502 — a status line
     // that stops being asked is a claim, not a reading.
     await drawEngine();
-    if (SECTIONS[view].kind === "frame") await showFrame(SECTIONS[view]);
-    else if (["findings", "ledger", "results", "usage", "board"].includes(SECTIONS[view].kind)) await draw();
+    // The work pages are NOT redrawn on the tick: each one holds results a person recovered by hand, and a
+    // six-second redraw would throw them away while they were being read.
+    if (["findings", "ledger", "usage", "board"].includes(SECTIONS[view].kind)) await draw();
   }, 6000);
 }
 

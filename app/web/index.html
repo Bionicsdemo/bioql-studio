@@ -11,41 +11,38 @@
      section, a status bar at the foot, and one bold thing — the orb, which is the main screen.
      (agtr-os/web/desktop/index.html, styles.css § the workbench.)
 
-     What fills it is BioQL's own menu, whole: every panel of its activity bar, every group of its sidebar, every
-     one of its pages (Lab Notebook, Screening, SAR, Report Builder, Drug Candidates, Viz, API keys), its server
-     health, its budget. Its routable pages open as BioQL's real page, in the frame, untouched. Its panels open as
-     the same engine routes through Studio's allowlist, with Claude Code working them.
+     What fills it is THE WORK, not a mirror of BioQL's menu: the chat, then what has run (Jobs & Recovery), what
+     was studied (Results), the series (SAR), the candidates, the report — each built from BioQL's own history
+     routes — and under them the record: findings, whiteboard, notebook, guard, health, usage, keys, settings.
+
+     There is no iframe in this file any more, and that is deliberate. Studio used to open :3000's own pages inside
+     this window; it does not reach :3000 at all now, and nothing here can.
 
      No secret is written into this file. app.js reads the token from the URL fragment, which a browser never sends
      to a server, and clears it from the address bar at once. No framework, no CDN, no web font: the CSP is
-     default-src 'none' with 'self' and exactly one door, BioQL's window on 3000. -->
+     default-src 'none' with 'self' and no door to any other origin. -->
 <body data-ring="idle" data-view="chat">
 
+<!-- Eight symbols went out with the sections they drew (atom, cpu, cross, boxes, win, eye, tree, cube): they were
+     Quantum, Molecular, Targets, Undruggable, Workbench, TargetRadar and the viz pages. An icon kept for a section
+     that no longer exists is an invitation to put the section back. -->
 <svg class="sprite" aria-hidden="true">
   <symbol id="i-orb" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.6"/><circle cx="12" cy="12" r="3.4" fill="currentColor" stroke="none"/></symbol>
   <symbol id="i-chats" viewBox="0 0 24 24"><path d="M4.5 5.5h11a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H10l-4 3v-3H4.5a2 2 0 0 1-2-2v-6a2 2 0 0 1 2-2z"/><path d="M17.5 9h2a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-1v2.5L15 18h-3"/></symbol>
   <symbol id="i-flask" viewBox="0 0 24 24"><path d="M9 3h6M10 3v5.2L4.9 17.6A2 2 0 0 0 6.7 20.6h10.6a2 2 0 0 0 1.8-3L14 8.2V3"/><path d="M7.2 14.4h9.6"/></symbol>
-  <symbol id="i-atom" viewBox="0 0 24 24"><circle cx="12" cy="12" r="2.2"/><ellipse cx="12" cy="12" rx="9.4" ry="4.2"/><ellipse cx="12" cy="12" rx="9.4" ry="4.2" transform="rotate(60 12 12)"/><ellipse cx="12" cy="12" rx="9.4" ry="4.2" transform="rotate(120 12 12)"/></symbol>
-  <symbol id="i-cpu" viewBox="0 0 24 24"><rect x="6.4" y="6.4" width="11.2" height="11.2" rx="2.6"/><path d="M9.6 3.2v3.2M14.4 3.2v3.2M9.6 17.6v3.2M14.4 17.6v3.2M3.2 9.6h3.2M3.2 14.4h3.2M17.6 9.6h3.2M17.6 14.4h3.2"/></symbol>
   <symbol id="i-flow" viewBox="0 0 24 24"><rect x="3" y="3.6" width="6" height="5" rx="1.6"/><rect x="15" y="3.6" width="6" height="5" rx="1.6"/><rect x="9" y="15.4" width="6" height="5" rx="1.6"/><path d="M6 8.6v3.4h12V8.6M12 12v3.4"/></symbol>
-  <symbol id="i-cross" viewBox="0 0 24 24"><circle cx="12" cy="12" r="7.4"/><circle cx="12" cy="12" r="2.4"/><path d="M12 1.8v3.4M12 18.8v3.4M1.8 12h3.4M18.8 12h3.4"/></symbol>
   <symbol id="i-table" viewBox="0 0 24 24"><rect x="3.2" y="4.6" width="17.6" height="14.8" rx="2"/><path d="M3.2 9.6h17.6M9.4 9.6v9.8M15 9.6v9.8"/></symbol>
   <symbol id="i-tools" viewBox="0 0 24 24"><path d="M9.6 3.4l2.2 2.2-2.6 2.6L7 6M4.4 8.6l4.8 4.8M14.4 20.6l-4.8-4.8 6-6 4.8 4.8z"/></symbol>
   <symbol id="i-book" viewBox="0 0 24 24"><path d="M4 5.2A1.8 1.8 0 0 1 5.8 3.4H19v17.2H5.8A1.8 1.8 0 0 1 4 18.8z"/><path d="M4 17h15"/></symbol>
   <symbol id="i-find" viewBox="0 0 24 24"><circle cx="10.8" cy="10.8" r="6"/><path d="M15.4 15.4l4.6 4.6"/></symbol>
   <symbol id="i-tube" viewBox="0 0 24 24"><path d="M8.4 3.2v13.2a3.4 3.4 0 0 0 6.8 0V3.2M7 3.2h9.6M8.4 10.4h6.8"/></symbol>
   <symbol id="i-doc" viewBox="0 0 24 24"><path d="M7 3.4h7l4 4V19a1.8 1.8 0 0 1-1.8 1.8H7A1.8 1.8 0 0 1 5.2 19V5.2A1.8 1.8 0 0 1 7 3.4z"/><path d="M13.8 3.6v4.2H18"/></symbol>
-  <symbol id="i-boxes" viewBox="0 0 24 24"><rect x="3" y="12.6" width="7.6" height="7.6" rx="1.6"/><rect x="13.4" y="12.6" width="7.6" height="7.6" rx="1.6"/><rect x="8.2" y="3.6" width="7.6" height="7.6" rx="1.6"/></symbol>
   <symbol id="i-board" viewBox="0 0 24 24"><rect x="3" y="4.4" width="18" height="13" rx="2.4"/><path d="M7.4 13.4l2.8-3 2.2 2 4.2-4.4M8.6 20.4l1.4-3M15.4 20.4l-1.4-3"/></symbol>
   <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.6l4.6 4.6L19 7.6"/></symbol>
   <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 2.8l7.4 2.8v6c0 4.6-3.1 8.4-7.4 9.6-4.3-1.2-7.4-5-7.4-9.6v-6z"/><path d="M8.8 12.2l2.2 2.2 4.2-4.4"/></symbol>
   <symbol id="i-pulse" viewBox="0 0 24 24"><path d="M2.6 12.4h4.2l2.2-5.6 3.6 10.6 2.6-6.8 1.4 1.8h4.8"/></symbol>
   <symbol id="i-server" viewBox="0 0 24 24"><rect x="3" y="3.8" width="18" height="6.4" rx="1.8"/><rect x="3" y="13.8" width="18" height="6.4" rx="1.8"/><path d="M6.6 7h.01M6.6 17h.01"/></symbol>
   <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><path d="M12 2.8v2.4M12 18.8v2.4M2.8 12h2.4M18.8 12h2.4M5.5 5.5l1.7 1.7M16.8 16.8l1.7 1.7M5.5 18.5l1.7-1.7M16.8 7.2l1.7-1.7"/></symbol>
-  <symbol id="i-win" viewBox="0 0 24 24"><rect x="2.8" y="4" width="18.4" height="16" rx="2.2"/><path d="M2.8 8.6h18.4M7 6.3h.01M9.6 6.3h.01"/></symbol>
-  <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2.6 12s3.4-6.2 9.4-6.2 9.4 6.2 9.4 6.2-3.4 6.2-9.4 6.2S2.6 12 2.6 12z"/><circle cx="12" cy="12" r="2.8"/></symbol>
-  <symbol id="i-tree" viewBox="0 0 24 24"><path d="M4 4.6h6.4M4 4.6v15h4.4M8.4 12h4.4"/><rect x="13" y="2.8" width="7.4" height="4" rx="1.3"/><rect x="13" y="10" width="7.4" height="4" rx="1.3"/><rect x="13" y="17.2" width="7.4" height="4" rx="1.3"/></symbol>
-  <symbol id="i-cube" viewBox="0 0 24 24"><path d="M12 2.8l8.4 4.6v9.2L12 21.2 3.6 16.6V7.4z"/><path d="M3.6 7.4L12 12l8.4-4.6M12 12v9.2"/></symbol>
   <symbol id="i-up" viewBox="0 0 24 24"><path d="M12 19V5.6M6.4 11.2L12 5.6l5.6 5.6"/></symbol>
   <symbol id="i-tabx" viewBox="0 0 24 24"><path d="M7 7l10 10M17 7L7 17"/></symbol>
   <symbol id="i-chev" viewBox="0 0 24 24"><path d="M8.5 10l3.5 3.6 3.5-3.6"/></symbol>
@@ -128,29 +125,11 @@
     <div class="page"><p class="lead" id="pageLead"></p><div id="pageBody"></div></div>
   </section>
 
-  <!-- BioQL's own window and its own pages, whole and untouched -->
-  <section class="view frame-view" id="v-frame" hidden>
-    <header class="bar"><h1 id="frameTitle"></h1>
-      <div class="bar-acts">
-        <span class="sub" id="frameUrl"></span>
-        <button class="tool" id="frameReload" type="button">Reload</button>
-      </div>
-    </header>
-    <div class="frame-wrap">
-      <iframe id="bioql" class="bioql" title="BioQL" src="about:blank"></iframe>
-      <section class="waiting-room hidden" id="waiting-room">
-        <p class="waiting-why" id="waiting-why">looking for BioQL's window…</p>
-        <p class="fine">Studio never starts, stops or restarts BioQL. Bring its window up yourself and this fills:</p>
-        <p class="cmd"><code id="waiting-cmd">./start_frontend_local.sh</code></p>
-        <button class="btn" id="waiting-retry" type="button">Look again</button>
-      </section>
-    </div>
-  </section>
 </main>
 
 <footer class="wb-status" id="statusBar">
   <button class="st" type="button" data-go="servers" id="stEngine"><svg class="ic" aria-hidden="true"><use href="#i-server"/></svg><span>asking BioQL…</span></button>
-  <button class="st" type="button" data-go="tools" id="stTools"><svg class="ic" aria-hidden="true"><use href="#i-tools"/></svg><span></span></button>
+  <button class="st" type="button" data-go="settings" id="stTools"><svg class="ic" aria-hidden="true"><use href="#i-tools"/></svg><span></span></button>
   <button class="st" type="button" data-go="findings" id="stFind"><svg class="ic" aria-hidden="true"><use href="#i-check"/></svg><span></span></button>
   <span class="st-gap"></span>
   <button class="st" type="button" data-go="ledger" id="stLedger"><svg class="ic" aria-hidden="true"><use href="#i-book"/></svg><span></span></button>
