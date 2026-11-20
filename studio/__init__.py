@@ -9,7 +9,24 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-VERSION = "0.1.0"
+# The version has ONE source, `app/__init__.py`, which `build.sh` and `dmg.sh` also read with sed and which the
+# update channel compares against what GitHub publishes. `studio` used to keep a second copy, and the two had
+# already drifted — `studio` said 0.1.0 while the app was 0.1.2. That is harmless until something compares
+# versions, and now something does: a build that reported the wrong number to `release.latest` would see an
+# update forever and install it forever.
+#
+# Read lazily and by TEXT, not by importing `app`: `studio` is the layer below it and must keep working without it.
+def _version() -> str:
+    import re
+    try:
+        src = (Path(__file__).resolve().parent.parent / "app" / "__init__.py").read_text()
+    except OSError:
+        return "0.0.0-unknown"
+    m = re.search(r'^VERSION = "([^"]+)"', src, re.M)
+    return m.group(1) if m else "0.0.0-unknown"
+
+
+VERSION = _version()
 NAME = "bioql-studio"           # its own identity: never "agtr-desktop" (that name is Agtr Desktop's, on 7790)
 
 

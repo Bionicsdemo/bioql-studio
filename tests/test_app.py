@@ -1056,3 +1056,27 @@ def test_the_probe_is_a_post_and_never_happens_on_a_page_load(svc, monkeypatch):
     assert seen["probed"] == 0, "opening the page must not spend the person's usage"
     code, body, _ = svc.j("/api/brain/probe", {"probe": True})
     assert code == 200 and body["state"] == "RESOLVED" and seen["probed"] == 1
+
+
+def test_the_version_has_one_source_and_the_update_channel_reads_that_one():
+    """Two version numbers is a bug that waits for something to compare them, and now something does.
+
+    `studio/__init__.py` used to hold a literal of its own and had already drifted — it said 0.1.0 while the app
+    was 0.1.2. A build that reported the wrong number to `release.latest` would see an update forever and install
+    it forever.
+    """
+    import re
+    import studio as st
+    import app as ap
+    assert st.VERSION == ap.VERSION
+    root = studio.Path(__file__).resolve().parents[1]
+    # exactly one literal assignment in the whole package
+    literals = []
+    for f in list((root / "studio").glob("*.py")) + list((root / "app").glob("*.py")):
+        for m in re.finditer(r'^VERSION = "([^"]+)"', f.read_text(), re.M):
+            literals.append((f.name, m.group(1)))
+    assert literals == [("__init__.py", ap.VERSION)], literals
+    # and the two build scripts read that same file
+    for script in ("build.sh", "dmg.sh"):
+        src = (root / "app" / "macos" / script).read_text()
+        assert 'app/__init__.py' in src, script
