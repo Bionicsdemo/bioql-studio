@@ -62,8 +62,19 @@ def snapshot(roots: list[dict] | None = None) -> dict:
         base = r["path"]
         files: dict[str, list] = {}
         skipped_dataless = 0
+        # What could not be listed at all. `os.walk` swallows every error it meets unless it is given `onerror`, so
+        # without this a root macOS refuses — `~/Documents` is behind a TCC permission, and an app that has not been
+        # granted it is simply denied — walks as if it held no files. Two such snapshots then compare with nothing
+        # added, removed or changed, and the guard would report BioQL clean because it could not look. That is the
+        # third state degrading into the second, which the invariant forbids: a root that cannot be read is
+        # UNRESOLVABLE, never "nothing changed".
+        unreadable: list[str] = []
+
+        def blocked(err: OSError, _into: list[str] = unreadable) -> None:
+            _into.append(f"{getattr(err, 'filename', None) or base}: {err.strerror or type(err).__name__}")
+
         if os.path.isdir(base):
-            for d, ds, fs in os.walk(base):
+            for d, ds, fs in os.walk(base, onerror=blocked):
                 ds[:] = sorted(x for x in ds if x not in SKIP_DIRS)
                 for f in fs:
                     if os.path.splitext(f)[1].lower() not in EXT and f not in ("Makefile", "Dockerfile"):
@@ -85,7 +96,9 @@ def snapshot(roots: list[dict] | None = None) -> dict:
                         h = "unreadable"
                     files[os.path.relpath(p, base)] = [s.st_size, s.st_mtime_ns, s.st_ino, h]
         out["roots"][r["name"]] = {"path": base, "exists": os.path.isdir(base), "files": files,
-                                    "dataless": skipped_dataless, **({"git": _git(base)} if r.get("git") and os.path.isdir(base) else {})}
+                                    "dataless": skipped_dataless,
+                                    "unreadable": unreadable[:20], "unreadable_total": len(unreadable),
+                                    **({"git": _git(base)} if r.get("git") and os.path.isdir(base) else {})}
     return out
 
 
@@ -112,9 +125,15 @@ def compare(before: dict, after: dict) -> dict:
             if b["git"]["tracked_changes"] != a.get("git", {}).get("tracked_changes"):
                 git["tracked_changes"] = [b["git"]["tracked_changes"], a.get("git", {}).get("tracked_changes")]
         dirty = bool(added or removed or changed or git or b["exists"] != a["exists"])
-        report["roots"][name] = {"added": added, "removed": removed, "changed": changed, "git": git, "clean": not dirty,
-                                 "files": len(af)}
-        report["clean"] = report["clean"] and not dirty
+        # A root either side could not list is not a verdict about BioQL. It is kept apart from `added/removed/
+        # changed` — saying "changed" would be as false as saying "clean" — and it stops the report being clean.
+        blind = sorted(set(b.get("unreadable") or []) | set(a.get("unreadable") or []))
+        report["roots"][name] = {"added": added, "removed": removed, "changed": changed, "git": git,
+                                 "clean": not dirty and not blind, "files": len(af),
+                                 "unreadable": blind, "readable": not blind}
+        report["clean"] = report["clean"] and not dirty and not blind
+    report["unreadable"] = sorted({u for r in report["roots"].values() for u in r["unreadable"]})
+    report["readable"] = not report["unreadable"]
     return report
 
 
@@ -131,12 +150,23 @@ def load(name: str) -> dict:
 class Changed(RuntimeError):
     def __init__(self, report: dict) -> None:
         self.report = report
-        lines = []
+        lines, blind = [], []
         for n, r in report["roots"].items():
-            if not r["clean"]:
+            if r["added"] or r["removed"] or r["changed"] or r["git"]:
                 lines.append(f"{n}: +{len(r['added'])} -{len(r['removed'])} ~{len(r['changed'])}"
                              + (f" git {sorted(r['git'])}" if r["git"] else ""))
-        super().__init__("BioQL changed during the session: " + "; ".join(lines))
+            if r.get("unreadable"):
+                blind.append(f"{n}: {r['unreadable'][0]}" + (f" (+{len(r['unreadable']) - 1} more)"
+                                                             if len(r["unreadable"]) > 1 else ""))
+        # "Could not look" is not "changed". Said as one, a permission macOS refused would read as BioQL being
+        # edited under the session, and the person would go hunting for an edit that never happened.
+        say = []
+        if lines:
+            say.append("BioQL changed during the session: " + "; ".join(lines))
+        if blind:
+            say.append("part of BioQL could not be read, so the session cannot say it left BioQL as it found it: "
+                       + "; ".join(blind))
+        super().__init__(" — ".join(say) or "the guard reported not clean without saying why")
 
 
 @contextlib.contextmanager

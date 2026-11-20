@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from studio import guard
+from studio import guard as sguard
 from studio.mcp_server import handle
 from studio.adapter import Adapter
 from studio import allowlist as al
@@ -124,3 +125,64 @@ def test_mcp_exposes_only_the_allowlist_and_refuses_hardware(fake_bioql):
                     "params": {"name": "smiles_to_3d", "arguments": {"smiles": "CCO"}}})["result"]
     assert not ok["isError"] and json.loads(ok["content"][0]["text"])["state"] == "RESOLVED"
     assert handle(a, {"jsonrpc": "2.0", "method": "notifications/initialized"}) is None
+
+
+# ------------------------------------------------ una raiz que no se puede leer no es "no cambio nada"
+def _root(p):
+    return [{"name": "prueba", "path": str(p)}]
+
+
+def test_a_root_that_cannot_be_listed_is_recorded_as_such(tmp_path):
+    """`os.walk` se traga todo error salvo que se le de `onerror`: una raiz que macOS niega (`~/Documents` esta
+    detras de un permiso TCC) se recorreria como si no tuviera ficheros."""
+    base = tmp_path / "cerrada"
+    base.mkdir()
+    (base / "algo.py").write_text("x = 1\n")
+    base.chmod(0o000)
+    try:
+        snap = sguard.snapshot(_root(base))
+        r = snap["roots"]["prueba"]
+        assert r["unreadable_total"] >= 1, "la raiz negada se leyo como vacia"
+        assert r["files"] == {}
+    finally:
+        base.chmod(0o700)
+
+
+def test_two_unreadable_snapshots_do_not_compare_clean(tmp_path):
+    """El fallo entero: dos fotos de una raiz que no se puede mirar no tienen nada anadido, quitado ni cambiado, y
+    el guardia diria que BioQL esta limpio porque no pudo mirar. El tercer estado degradando al segundo."""
+    base = tmp_path / "cerrada"
+    base.mkdir()
+    (base / "algo.py").write_text("x = 1\n")
+    base.chmod(0o000)
+    try:
+        a = sguard.snapshot(_root(base))
+        b = sguard.snapshot(_root(base))
+    finally:
+        base.chmod(0o700)
+    rep = sguard.compare(a, b)
+    assert rep["clean"] is False
+    assert rep["readable"] is False and rep["unreadable"]
+    # y no se inventa un cambio que no hubo
+    assert rep["roots"]["prueba"]["added"] == [] and rep["roots"]["prueba"]["changed"] == []
+
+
+def test_the_message_does_not_call_a_refused_permission_a_change(tmp_path):
+    base = tmp_path / "cerrada"
+    base.mkdir()
+    base.chmod(0o000)
+    try:
+        rep = sguard.compare(sguard.snapshot(_root(base)), sguard.snapshot(_root(base)))
+    finally:
+        base.chmod(0o700)
+    msg = str(sguard.Changed(rep))
+    assert "could not be read" in msg
+    assert "BioQL changed during the session" not in msg
+
+
+def test_a_readable_root_still_compares_clean(tmp_path):
+    base = tmp_path / "abierta"
+    base.mkdir()
+    (base / "algo.py").write_text("x = 1\n")
+    rep = sguard.compare(sguard.snapshot(_root(base)), sguard.snapshot(_root(base)))
+    assert rep["clean"] is True and rep["readable"] is True
