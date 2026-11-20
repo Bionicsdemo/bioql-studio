@@ -39,7 +39,11 @@ done
 # the working tree. `app/macos` is pruned — rsync above excludes it, and without the prune `find` walks into
 # `app/macos/build/BioQL Studio.app` and hashes the PREVIOUS build's own copies, so the manifest of a first build and
 # of a rebuild differ for no change in the source. (Measured 2026-11-19: 25 of 50 lines were the last build's files.)
-( cd "$ROOT" && find studio app -name '*.py' -not -path '*/__pycache__/*' -not -path 'app/macos/*' -print0 \
+# `*.py` AND the window, because the window is program too: `app/web/app.js` draws every card and
+# `app/web/vendor/3Dmol-min.js` is the viewer that draws the structures. A manifest that covered only Python would
+# have said "what shipped is what the tests ran on" while half a megabyte of JavaScript travelled unlisted.
+( cd "$ROOT" && find studio app \( -name '*.py' -o -path 'app/web/*' \) -type f \
+    -not -path '*/__pycache__/*' -not -path 'app/macos/*' -not -name '*.pyc' -print0 \
     | sort -z | xargs -0 shasum -a 256 ) > "$APP/Contents/Resources/bioql-studio/SOURCE-SHA256.txt"
 
 if [ -f "$HERE/icon-1024.png" ]; then

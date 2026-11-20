@@ -15,6 +15,14 @@ What the shapes are, and where each block type comes from:
   molecule2d  `{image_base64, format: "png"}`, the `/api/render/2d` answer, where `format` is the image key's own
               sibling and nothing else counts as a statement of the format
   molecule3d  SDF text: `{mol: "<sdf>"}`, the `/api/smiles-to-3d` answer, and `mol_block`
+  radar       `admet.radar_summary`, BioQL's OWN eight scores on 0..1 — the axes and the clamp are copied from
+              `ADMETRadarChart.tsx`'s FIRST path, the one its own comment calls "quantum-computed, not heuristic".
+              Its SECOND path is not copied: when `radar_summary` is missing, that component computes the shape
+              itself — a category with no numbers becomes 0.5, a value above 1 is "assumed" to be a percentage, and
+              the words "high"/"moderate"/"low" become 0.8/0.5/0.2. Measured on two real results (jobs
+              10620ccd-07b and 5a362e56-077, fetched 2026-11-19): NEITHER carries `radar_summary`, so every radar
+              :3000 draws for them is that fallback. A radar is read as a measurement; this one draws an axis only
+              where BioQL stated the number, and leaves the rest as spokes with their reason.
   series      `iterations[]` with a numeric index and numeric metrics — ChatMessage's
               `renderOptimizationConvergence`, which reads `iterations[].iteration` and `.convergence`. That is the
               ONLY shape here that yields a series: `QuantumCalibrationCard`'s `points[]` has a STRING axis
@@ -55,7 +63,7 @@ import re
 from typing import Any
 
 KINDS = ("molecule", "admet", "docking", "structure", "screening", "pipeline", "job", "catalogue", "table", "text")
-BLOCK_TYPES = ("facts", "table", "molecule2d", "molecule3d", "series", "text", "links", "absent")
+BLOCK_TYPES = ("facts", "table", "molecule2d", "molecule3d", "radar", "series", "text", "links", "absent")
 
 MAX_TABLE_ROWS = 200
 MAX_SERIES_POINTS = 2000
@@ -105,6 +113,34 @@ PROVENANCE_BACKEND_KEYS = ("quantum_backend", "backend_name", "ibm_backend", "ba
 IMAGE_KEYS = ("image_base64", "png_base64", "image")
 SDF_KEYS = ("mol", "sdf", "mol_block", "mol_3d", "sdf_text")
 PDB_KEYS = ("pdb", "pdb_data", "complex_pdb", "pdb_text")
+
+# A 3D structure, and the FORMAT read off the key rather than sniffed out of the text. Measured on a real
+# `quantum_antibody_discovery` result (job 10620ccd-07b, 2026-07-30): the structure BioQL returns is not one file
+# but a pair — `mol_3d.ligand_sdf` (1.6 KB) and `mol_3d.protein_pdb` (129 KB) — which is what BioQL's own window
+# gives its viewer, a ligand inside its protein. Carrying only SDF, as this module did, dropped the protein and
+# named the ligand "SDF only"; the card had no structure at all for that payload.
+# Longest and most specific key first, because `pdb` is a suffix of nothing but `protein_pdb` IS a key of its own.
+STRUCT_KEYS: tuple[tuple[str, str, str], ...] = (
+    ("ligand_sdf", "sdf", "ligand"), ("ligand_mol", "sdf", "ligand"),
+    ("protein_pdb", "pdb", "protein"), ("receptor_pdb", "pdb", "protein"),
+    ("complex_pdb", "pdb", "complex"), ("pocket_pdb", "pdb", "pocket"),
+    ("mol_block", "sdf", "molecule"), ("sdf_text", "sdf", "molecule"),
+    ("pdb_text", "pdb", "protein"), ("pdb_data", "pdb", "protein"),
+    ("mmcif", "cif", "structure"), ("cif", "cif", "structure"),
+    ("mol_3d", "sdf", "molecule"),        # a STRING under this key is the structure itself; a dict under it is
+                                          # a container, and `_walk` finds its `ligand_sdf` / `protein_pdb`
+    ("sdf", "sdf", "molecule"), ("mol", "sdf", "molecule"), ("pdb", "pdb", "protein"),
+)
+# What each format must look like if the key is telling the truth. A key that says `ligand_sdf` over PDB text is a
+# contradiction, and the card refuses it with the reason rather than handing a viewer a file it will misread.
+STRUCT_MARK = {
+    "sdf": re.compile(r"^.*\n.*\n.*\n\s*\d+\s+\d+.*V[23]000|\$\$\$\$|M  END", re.S),
+    "pdb": PDB_MARK,
+    "cif": re.compile(r"^data_|_atom_site\.", re.M),
+}
+# One structure per card. A protein is ~129 KB and a result carries one per candidate; ten of them would be a card
+# nobody can load. The rest are named and counted, never silently dropped.
+MAX_STRUCT_BYTES = 4 * 1024 * 1024
 
 
 # --------------------------------------------------------------------------- small readers
@@ -610,25 +646,119 @@ def _molecule_blocks(payload: Any, consumed: set[str]) -> list[dict]:
     if not any(b.get("type") == "molecule2d" for b in out) and isinstance(smiles, str) and smiles.strip():
         out.append({"type": "molecule2d", "smiles": smiles.strip()})
 
-    sdf_path, sdf = _first(payload, *SDF_KEYS)
-    if isinstance(sdf, str) and sdf.strip():
-        if PDB_MARK.search(sdf):
-            out.append({"type": "absent", "what": "molecule3d",
-                        "why": f"{sdf_path} holds PDB text, and this block type carries SDF only"})
-            out.append(_text_block(sdf, sdf_path or "structure"))
-        else:
-            out.append({"type": "molecule3d", "sdf": sdf})
-        consumed.add(sdf_path)
-    pdb_path, pdb = _first(payload, *PDB_KEYS)
-    if isinstance(pdb, str) and pdb.strip():
-        # PDB is protein text and `molecule3d` carries SDF. Calling it SDF would hand the window a file it cannot
-        # open and label it a structure; so the missing block type is NAMED and the text is carried, capped.
-        out.append({"type": "absent", "what": "molecule3d",
-                    "why": f"{pdb_path} holds PDB text, and this block type carries SDF only"})
-        out.append(_text_block(pdb, pdb_path))
-        consumed.add(pdb_path)
+    out += _structure_blocks(payload, consumed)
     if smiles_path and any(b.get("type") in ("molecule2d", "molecule3d") for b in out):
         consumed.add(smiles_path)
+    return out
+
+
+def _struct_parts(payload: Any) -> list[tuple[str, str, str, str]]:
+    """Every 3D structure in the payload as (path, role, format, text), shallowest first.
+
+    The format comes from the key — `ligand_sdf` is SDF because BioQL named it so — and the text is then CHECKED
+    against that format. A key and its contents that disagree are not guessed between: the caller refuses the pair
+    and says which key and which format, because a mislabelled structure handed to a viewer is drawn wrong rather
+    than not drawn.
+    """
+    found: list[tuple[int, str, str, str, str]] = []
+    seen: set[str] = set()
+    for path, value in _walk(payload):
+        if not isinstance(value, str) or not value.strip() or path in seen:
+            continue
+        key = _leaf_key(path)
+        for name, fmt, role in STRUCT_KEYS:
+            if key != name:
+                continue
+            seen.add(path)
+            found.append((path.count(".") + path.count("["), path, role, fmt, value))
+            break
+    found.sort(key=lambda r: r[0])
+    return [(p, role, fmt, text) for _, p, role, fmt, text in found]
+
+
+def _structure_blocks(payload: Any, consumed: set[str]) -> list[dict]:
+    """The 3D structure, whole. One block, carrying every part of the SAME structure — a ligand and the protein it
+    sits in are one picture, which is what BioQL's own viewer is given.
+
+    Never cut: a structure with lines missing is a different molecule, so a part too large to carry is named and
+    left out with its size, and the rest still travels.
+    """
+    parts = _struct_parts(payload)
+    if not parts:
+        return []
+    out: list[dict] = []
+    first = parts[0][0]
+    stem = first.rsplit(".", 1)[0] if "." in first else ""
+    carried: list[dict] = []
+    total = 0
+    for path, role, fmt, text in parts:
+        same = (path.rsplit(".", 1)[0] if "." in path else "") == stem
+        if not same:
+            continue                       # another candidate's structure: counted below, not merged into this one
+        consumed.add(path)
+        mark = STRUCT_MARK.get(fmt)
+        if mark is not None and not mark.search(text):
+            out.append({"type": "absent", "what": f"molecule3d ({role})",
+                        "why": f"{path} is named {fmt} and its text does not read as {fmt}; the card will not hand "
+                               f"a viewer a structure under a format the payload contradicts"})
+            continue
+        if total + len(text) > MAX_STRUCT_BYTES:
+            out.append({"type": "absent", "what": f"molecule3d ({role})",
+                        "why": f"{path} is {len(text)} bytes and the card carries at most {MAX_STRUCT_BYTES}; "
+                               f"a structure is never cut, so this part is left out whole"})
+            continue
+        total += len(text)
+        carried.append({"role": role, "format": fmt, "data": text, "path": path, "bytes": len(text)})
+    if carried:
+        block: dict = {"type": "molecule3d", "parts": carried, "label": stem or first}
+        only = [c for c in carried if c["format"] == "sdf"]
+        if len(carried) == 1 and only:
+            block["sdf"] = only[0]["data"]          # the one-SDF shape this block had before it carried parts
+        out.insert(0, block)
+    more = {p.rsplit(".", 1)[0] for p, _, _, _ in parts} - {stem}
+    if more:
+        out.append({"type": "text",
+                    "text": f"{len(more)} further structure(s) in this result are not drawn, one card carries one: "
+                            + ", ".join(sorted(more)[:6])})
+    return out
+
+
+# The eight axes of BioQL's own ADMET radar, in its own order, read off `ADMETRadarChart.tsx`'s `radar_summary`
+# branch. The key is BioQL's; the label is the one its chart shows.
+RADAR_AXES: tuple[tuple[str, str], ...] = (
+    ("absorption", "Absorption"), ("distribution", "Distribution"), ("metabolism", "Metabolism"),
+    ("excretion", "Excretion"), ("safety", "Safety"), ("drug_likeness", "Drug-likeness"),
+    ("solubility", "Solubility"), ("selectivity", "Selectivity"),
+)
+
+
+def _radar_blocks(payload: Any, consumed: set[str]) -> list[dict]:
+    """BioQL's ADMET radar, from the numbers BioQL computed and from nothing else.
+
+    `ADMETRadarChart.tsx` clamps each score into 0..1 and that clamp is copied. What is NOT copied is its fallback:
+    an axis BioQL did not state is drawn as a spoke with no vertex and named in an `absent` block, never as the
+    0.5 that component uses, because a radar is read as an assessment and a shape made of defaults is the
+    plausible-value-instead-of-stopping defect in a picture.
+    """
+    path, summary = _first(payload, "radar_summary")
+    if not isinstance(summary, dict):
+        return []
+    consumed.add(path)
+    axes: list[dict] = []
+    missing: list[str] = []
+    for key, label in RADAR_AXES:
+        v = summary.get(key)
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(float(v)):
+            axes.append({"label": label, "value": None,
+                         "why": f"{path}.{key} is not a number BioQL stated"})
+            missing.append(label)
+            continue
+        axes.append({"label": label, "value": min(1.0, max(0.0, float(v)))})
+    out: list[dict] = [{"type": "radar", "axes": axes, "source": path, "max": 1}]
+    if missing:
+        out.append({"type": "absent", "what": "radar axes",
+                    "why": f"{', '.join(missing)} — {path} does not state them, and an axis drawn at a value this "
+                           f"window chose would be a measurement nobody made"})
     return out
 
 
@@ -761,6 +891,7 @@ def card(payload: Any, tool: str | None = None, meta: dict | None = None) -> dic
     if isinstance(payload, (dict, list)):
         # Every detector runs, whatever the kind says. They are guarded by the shapes they read, and gating them on
         # one kind is what let a pipeline carrying `mol_3d` be drawn as an ADMET card with no structure in it.
+        blocks += _radar_blocks(payload, consumed)
         blocks += _admet_blocks(payload, consumed)
         blocks += _catalogue_blocks(payload, consumed)
         blocks += _molecule_blocks(payload, consumed)

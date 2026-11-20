@@ -911,6 +911,241 @@ async function showFrame(s, mine) {
   return up;
 }
 
+// ------------------------------------------------------------------ the structure, and the charts
+//
+// BioQL's own window draws a result's structure with 3Dmol.js (`3dmol` 2.5.5 in its package.json) and its charts
+// with recharts. The same 3Dmol build travels inside this app, served from its own origin — `script-src 'self'`
+// forbids a CDN, and an app whose whole design is 127.0.0.1 does not reach the internet to draw a molecule. There
+// is no recharts here (it is React): the charts below are plain SVG, which is also what keeps them inside
+// `style-src 'self'` — every attribute is a presentation attribute or a class, never an inline `style=`.
+
+let molLoading = null;
+
+function load3Dmol() {
+  if (window.$3Dmol) return Promise.resolve(window.$3Dmol);
+  if (molLoading) return molLoading;
+  molLoading = new Promise((ok, bad) => {
+    const s = document.createElement("script");
+    s.src = "/vendor/3Dmol-min.js";
+    s.onload = () => (window.$3Dmol ? ok(window.$3Dmol) : bad(new Error("3Dmol cargó y no se registró")));
+    s.onerror = () => bad(new Error("no se pudo cargar /vendor/3Dmol-min.js"));
+    document.head.appendChild(s);
+  });
+  return molLoading;
+}
+
+// What each part is drawn as. A protein is a cartoon and the ligand inside it is sticks, which is how BioQL's own
+// viewer shows a docked pair; the ligand is what the view centres on, because it is the thing that was designed.
+const STRUCT_STYLE = {
+  protein: { cartoon: { color: "spectrum" } },
+  complex: { cartoon: { color: "spectrum" } },
+  pocket: { cartoon: { color: "spectrum" } },
+  ligand: { stick: { radius: 0.18 }, sphere: { scale: 0.22 } },
+  molecule: { stick: { radius: 0.18 }, sphere: { scale: 0.22 } },
+  structure: { cartoon: { color: "spectrum" } },
+};
+
+function structureNode(b) {
+  const parts = Array.isArray(b.parts) && b.parts.length
+    ? b.parts
+    : (b.sdf ? [{ role: "molecule", format: "sdf", data: b.sdf, path: b.label || "structure" }] : []);
+  const box = el("div", "mol3d");
+  const head = el("div", "mol3d-head");
+  parts.forEach((p) => head.appendChild(chip(p.role + " · " + p.format, "neutral")));
+  box.appendChild(head);
+  if (!parts.length) return box;
+
+  const stage = el("div", "mol3d-stage");
+  box.appendChild(stage);
+  const note = el("p", "fine");
+  box.appendChild(note);
+
+  const fallback = (why) => {
+    // A viewer that cannot run is said, and the structure is still shown as what it is: text BioQL wrote. Drawing
+    // nothing, or drawing a placeholder molecule, would both be this window inventing an answer.
+    stage.remove();
+    note.textContent = "la estructura no se pudo dibujar aquí (" + why + "); va entera en el resultado";
+    parts.forEach((p) => {
+      const lines = String(p.data).split("\n");
+      const pre = el("pre", "sdf", lines.slice(0, 6).join("\n")
+        + (lines.length > 6 ? "\n… " + (lines.length - 6) + " línea(s) más" : ""));
+      box.appendChild(pre);
+    });
+  };
+
+  load3Dmol().then(($) => {
+    let viewer;
+    try {
+      viewer = $.createViewer(stage, { backgroundColor: "white", antialias: true });
+      parts.forEach((p) => {
+        viewer.addModel(String(p.data), p.format);
+      });
+      viewer.setStyle({}, { line: {} });
+      parts.forEach((p, i) => {
+        viewer.setStyle({ model: i }, STRUCT_STYLE[p.role] || STRUCT_STYLE.molecule);
+      });
+      // Encuadre: la estructura ENTERA. Centrar en el ligando deja la camara dentro de la proteina y lo que se ve
+      // es un trozo de helice, no un complejo (comprobado en WebKit con el cuerpo real: 129 KB de proteina).
+      const lig = parts.findIndex((p) => p.role === "ligand" || p.role === "molecule");
+      viewer.zoomTo();
+      if (lig >= 0 && parts.length > 1) viewer.center({ model: lig }, 0);
+      viewer.render();
+      note.textContent = parts.map((p) => p.path + " (" + (p.bytes || String(p.data).length) + " bytes)").join(" · ");
+    } catch (e) {
+      fallback(String((e && e.message) || e));
+    }
+  }).catch((e) => fallback(String((e && e.message) || e)));
+
+  return box;
+}
+
+// ---- charts, in plain SVG -------------------------------------------------
+function svgEl(tag, attrs) {
+  const n = document.createElementNS("http://www.w3.org/2000/svg", tag);
+  Object.keys(attrs || {}).forEach((k) => n.setAttribute(k, String(attrs[k])));
+  return n;
+}
+
+function niceTicks(lo, hi, count) {
+  if (!(hi > lo)) return [lo];
+  const raw = (hi - lo) / Math.max(1, count);
+  const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+  const step = [1, 2, 5, 10].map((m) => m * mag).find((s) => s >= raw) || mag * 10;
+  const out = [];
+  for (let v = Math.ceil(lo / step) * step; v <= hi + step / 2; v += step) out.push(v);
+  return out;
+}
+
+function fmtNum(v) {
+  if (!isFinite(v)) return String(v);
+  const a = Math.abs(v);
+  if (a !== 0 && (a < 1e-3 || a >= 1e6)) return v.toExponential(1);
+  return String(Math.round(v * 1000) / 1000);
+}
+
+/** A series BioQL measured: one line, its own axes, and no scale this window invented. */
+function seriesNode(b) {
+  const pts = (b.points || []).filter((p) => p && isFinite(p[0]) && isFinite(p[1]));
+  const box = el("div", "chart");
+  box.appendChild(el("div", "chart-title", (b.y_label || "series") + " / " + (b.x_label || "x")));
+  if (pts.length < 2) {
+    box.appendChild(el("p", "fine", pts.length + " punto(s): hacen falta dos para una línea"));
+    return box;
+  }
+  const W = 560, H = 210, L = 54, R = 12, T = 12, B = 30;
+  const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
+  const x0 = Math.min(...xs), x1 = Math.max(...xs);
+  let y0 = Math.min(...ys), y1 = Math.max(...ys);
+  if (y0 === y1) { y0 -= 0.5; y1 += 0.5; }          // una serie plana es una línea recta, no una división por cero
+  const sx = (v) => L + ((v - x0) / (x1 - x0 || 1)) * (W - L - R);
+  const sy = (v) => H - B - ((v - y0) / (y1 - y0)) * (H - T - B);
+
+  const svg = svgEl("svg", { class: "chart-svg", viewBox: `0 0 ${W} ${H}`, role: "img",
+                             "aria-label": (b.y_label || "series") + " contra " + (b.x_label || "x") });
+  niceTicks(y0, y1, 4).forEach((v) => {
+    svg.appendChild(svgEl("line", { class: "ch-grid", x1: L, x2: W - R, y1: sy(v), y2: sy(v) }));
+    const tx = svgEl("text", { class: "ch-tick", x: L - 6, y: sy(v) + 4, "text-anchor": "end" });
+    tx.textContent = fmtNum(v);
+    svg.appendChild(tx);
+  });
+  [x0, x1].forEach((v, i) => {
+    const tx = svgEl("text", { class: "ch-tick", x: sx(v), y: H - 10, "text-anchor": i ? "end" : "start" });
+    tx.textContent = fmtNum(v);
+    svg.appendChild(tx);
+  });
+  const d = pts.map((p, i) => (i ? "L" : "M") + sx(p[0]).toFixed(1) + " " + sy(p[1]).toFixed(1)).join(" ");
+  const path = svgEl("path", { class: "ch-line", d: d, fill: "none" });
+  svg.appendChild(path);
+  pts.slice(0, 200).forEach((p) => svg.appendChild(svgEl("circle", { class: "ch-dot", cx: sx(p[0]), cy: sy(p[1]), r: 2.5 })));
+  box.appendChild(svg);
+  // El trazo se dibuja solo; `prefers-reduced-motion` lo apaga en app.css.
+  const len = path.getTotalLength ? path.getTotalLength() : 0;
+  if (len) { path.setAttribute("stroke-dasharray", String(len)); path.setAttribute("stroke-dashoffset", String(len));
+             requestAnimationFrame(() => path.classList.add("drawn")); }
+  return box;
+}
+
+/** El radar de ADMET, con los ejes y la escala 0..1 de `ADMETRadarChart.tsx` — su rama `radar_summary`, la que su
+    propio comentario llama "quantum-computed, not heuristic". Un eje que BioQL no dio se dibuja como radio sin
+    vertice: el poligono se cierra solo entre lo medido, porque una figura rellena con valores por defecto se lee
+    como una evaluacion que nadie hizo. */
+function radarNode(b) {
+  const axes = (b.axes || []).filter((a) => a && a.label);
+  const box = el("div", "chart");
+  box.appendChild(el("div", "chart-title", "ADMET · " + (b.source || "radar_summary")));
+  if (axes.length < 3) {
+    box.appendChild(el("p", "fine", axes.length + " eje(s): un radar necesita tres"));
+    return box;
+  }
+  const S = 320, c = S / 2, R = c - 54, max = b.max || 1;
+  const ang = (i) => (Math.PI * 2 * i) / axes.length - Math.PI / 2;
+  const at = (i, r) => [c + Math.cos(ang(i)) * r, c + Math.sin(ang(i)) * r];
+  const svg = svgEl("svg", { class: "chart-svg radar", viewBox: `0 0 ${S} ${S}`, role: "img",
+                             "aria-label": "radar ADMET de " + axes.length + " ejes" });
+  [0.25, 0.5, 0.75, 1].forEach((f) => {
+    const pts = axes.map((_, i) => at(i, R * f).map((n) => n.toFixed(1)).join(",")).join(" ");
+    svg.appendChild(svgEl("polygon", { class: "ch-ring", points: pts, fill: "none" }));
+  });
+  axes.forEach((a, i) => {
+    const [x, y] = at(i, R);
+    svg.appendChild(svgEl("line", { class: "ch-spoke" + (a.value === null || a.value === undefined ? " none" : ""),
+                                    x1: c, y1: c, x2: x, y2: y }));
+    const [lx, ly] = at(i, R + 20);
+    const tx = svgEl("text", {
+      class: "ch-axis" + (a.value === null || a.value === undefined ? " none" : ""),
+      x: lx.toFixed(1), y: (ly + 4).toFixed(1),
+      "text-anchor": Math.abs(lx - c) < 6 ? "middle" : (lx > c ? "start" : "end"),
+    });
+    tx.textContent = a.label;
+    svg.appendChild(tx);
+  });
+  const known = axes.map((a, i) => [a, i]).filter(([a]) => typeof a.value === "number" && isFinite(a.value));
+  if (known.length >= 3) {
+    const pts = known.map(([a, i]) => at(i, (R * Math.min(1, a.value / max))).map((n) => n.toFixed(1)).join(",")).join(" ");
+    const poly = svgEl("polygon", { class: "ch-area", points: pts });
+    svg.appendChild(poly);
+    requestAnimationFrame(() => poly.classList.add("drawn"));
+  }
+  known.forEach(([a, i]) => {
+    const [x, y] = at(i, R * Math.min(1, a.value / max));
+    const dot = svgEl("circle", { class: "ch-dot", cx: x.toFixed(1), cy: y.toFixed(1), r: 3 });
+    const title = svgEl("title", {});
+    title.textContent = a.label + ": " + fmtNum(a.value);
+    dot.appendChild(title);
+    svg.appendChild(dot);
+  });
+  box.appendChild(svg);
+  const sin = axes.filter((a) => a.value === null || a.value === undefined).map((a) => a.label);
+  if (sin.length) box.appendChild(el("p", "fine", "sin medir: " + sin.join(", ")));
+  return box;
+}
+
+/** Numbers BioQL measured, side by side. Bars, not a radar: a radar needs a range per property to normalise
+    against, and a range this window chose would be a scale nobody measured. The values are drawn as they came. */
+function barsNode(rows, title) {
+  const num = rows.filter((r) => typeof r.value === "number" && isFinite(r.value));
+  if (num.length < 2) return null;
+  const box = el("div", "chart");
+  box.appendChild(el("div", "chart-title", title));
+  const W = 560, rowH = 22, L = 190, R = 60;
+  const H = num.length * rowH + 10;
+  const hi = Math.max(...num.map((r) => Math.abs(r.value))) || 1;
+  const svg = svgEl("svg", { class: "chart-svg", viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": title });
+  num.forEach((r, i) => {
+    const y = i * rowH + 6;
+    const w = (Math.abs(r.value) / hi) * (W - L - R);
+    const lab = svgEl("text", { class: "ch-tick", x: L - 8, y: y + 11, "text-anchor": "end" });
+    lab.textContent = String(r.label).slice(0, 30);
+    svg.appendChild(lab);
+    svg.appendChild(svgEl("rect", { class: "ch-bar" + (r.value < 0 ? " neg" : ""), x: L, y: y, width: Math.max(1, w), height: rowH - 8, rx: 2 }));
+    const v = svgEl("text", { class: "ch-tick", x: L + w + 6, y: y + 11 });
+    v.textContent = fmtNum(r.value) + (r.unit ? " " + r.unit : "");
+    svg.appendChild(v);
+  });
+  box.appendChild(svg);
+  return box;
+}
+
 // ------------------------------------------------------------------ the chat: Claude Code, and the cards
 const SEEDS = ["Is the engine up and what did it actually run?",
                "ADMET on paracetamol, and tell me if the label matches the execution",
@@ -954,6 +1189,8 @@ function cardNode(card) {
         g.appendChild(f);
       });
       body.appendChild(g);
+      const bars = barsNode((b.rows || []).filter((r) => !r.absent), b.title || "medidas");
+      if (bars) body.appendChild(bars);
     } else if (b.type === "table") {
       const t = el("table", "grid"), hr = el("tr");
       (b.columns || []).forEach((c) => hr.appendChild(el("th", null, c)));
@@ -978,10 +1215,12 @@ function cardNode(card) {
         f.appendChild(el("div", "fact-v hash", b.smiles));
         body.appendChild(f);
       }
-    } else if (b.type === "molecule3d" && b.sdf) {
-      const lines = String(b.sdf).split("\n");
-      const top = lines.slice(0, 6).join("\n");
-      body.appendChild(el("pre", "sdf", top + (lines.length > 6 ? "\n… " + (lines.length - 6) + " more line(s)" : "")));
+    } else if (b.type === "molecule3d") {
+      body.appendChild(structureNode(b));
+    } else if (b.type === "series") {
+      body.appendChild(seriesNode(b));
+    } else if (b.type === "radar") {
+      body.appendChild(radarNode(b));
     } else if (b.type === "absent") {
       body.appendChild(el("p", "absent-block", (b.what || "this") + " — " + (b.why || "not computed")));
     } else if (b.type === "links") {

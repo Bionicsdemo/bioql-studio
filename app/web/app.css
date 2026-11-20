@@ -353,3 +353,39 @@ body[data-ring=alarm] .ring{border-color:var(--red);animation:breathe 1.3s ease-
 .prog-none{margin:0;font-size:11.5px;color:var(--orange)}
 .prog-why{font-size:10.5px;opacity:.45}
 @media (prefers-reduced-motion:reduce){.prog-fill{transition:none}}
+
+/* ------------------------------------------------------------------ la estructura y los graficos
+   El visor es 3Dmol.js, el mismo build que usa la ventana de BioQL en :3000, servido desde este origen.
+   Los graficos son SVG a mano: recharts es React, y aqui no hay React. Todo atributo de presentacion o clase,
+   nunca un `style=` en linea, porque la CSP dice `style-src 'self'`. */
+.mol3d { margin: 10px 0; }
+.mol3d-head { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 6px; }
+.mol3d-stage {
+  position: relative; width: 100%; height: 320px; border-radius: 10px; overflow: hidden;
+  border: 1px solid var(--sep); background: #fff;
+}
+.mol3d-stage canvas { display: block; }
+
+.chart { margin: 12px 0; }
+.chart-title { font-size: 12px; color: var(--label-2); margin-bottom: 4px; }
+.chart-svg { width: 100%; height: auto; display: block; }
+.ch-grid { stroke: var(--sep); stroke-width: 1; }
+.ch-tick { fill: var(--label-2); font-size: 10px; }
+.ch-line { stroke: var(--accent); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.ch-line.drawn { stroke-dashoffset: 0; transition: stroke-dashoffset 900ms ease-out; }
+.ch-dot { fill: var(--accent); }
+.ch-bar { fill: var(--accent); opacity: .85; }
+.ch-bar.neg { fill: var(--orange); }
+
+@media (prefers-reduced-motion: reduce) {
+  .ch-line.drawn { transition: none; }
+}
+.radar { max-width: 360px; margin: 0 auto; }
+.ch-ring { stroke: var(--sep); stroke-width: 1; }
+.ch-spoke { stroke: var(--sep); stroke-width: 1; }
+.ch-spoke.none { stroke-dasharray: 3 4; }
+.ch-axis { fill: var(--label-2); font-size: 10px; }
+.ch-axis.none { opacity: .45; }
+.ch-area { fill: var(--accent); fill-opacity: .18; stroke: var(--accent); stroke-width: 2; opacity: 0; }
+.ch-area.drawn { opacity: 1; transition: opacity 500ms ease-out; }
+@media (prefers-reduced-motion: reduce) { .ch-area.drawn { transition: none; } }

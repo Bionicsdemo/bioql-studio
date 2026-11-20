@@ -351,16 +351,34 @@ def test_a_denied_route_stays_denied_even_when_the_allowlist_file_names_it(studi
 
 
 def test_the_static_server_has_no_path_to_climb(svc):
-    """No request string becomes a filesystem path: a request names one of three keys or it is a 404."""
+    """No request string becomes a filesystem path: a request names one of the keys or it is a 404."""
     for path in ("/../app/service.py", "/..%2f..%2fapp/service.py", "/%2e%2e/service.py", "/web/app.js",
-                 "/app.js/", "/ui.token", "/runs.jsonl", "/../../ui.token", "/favicon.ico", "/nope.html"):
+                 "/app.js/", "/ui.token", "/runs.jsonl", "/../../ui.token", "/favicon.ico", "/nope.html",
+                 # el directorio del visor no se puede recorrer: solo el fichero que esta en la lista
+                 "/vendor/", "/vendor/SHA256.txt", "/vendor/../app.js", "/vendor/3Dmol-min.js.LICENSE.txt"):
         code, raw, _ = svc.req(path, token=None)
         assert code == 404, (path, code)
         assert b"def " not in raw and b"import " not in raw
-    for path in ("/", "/index.html", "/app.js", "/app.css"):
+    for path in ("/", "/index.html", "/app.js", "/app.css", "/vendor/3Dmol-min.js"):
         code, raw, _ = svc.req(path, token=None)
         assert code == 200 and raw, path
-    assert set(STATIC) == {"/", "/index.html", "/app.js", "/app.css"}
+    assert set(STATIC) == {"/", "/index.html", "/app.js", "/app.css", "/vendor/3Dmol-min.js"}
+
+
+def test_the_vendored_viewer_is_the_build_it_says_it_is(svc):
+    """3Dmol viaja dentro de la app con su sha256 anotado. Un visor que cambia sin que nadie lo anote es una
+    dependencia sin version, y es lo que separa "el mismo build que :3000" de una suposicion."""
+    import hashlib
+    web = Path(__file__).resolve().parents[1] / "app" / "web" / "vendor"
+    got = hashlib.sha256((web / "3Dmol-min.js").read_bytes()).hexdigest()
+    anotado = (web / "SHA256.txt").read_text().split()[0]
+    assert got == anotado, "el visor del disco no es el que anota SHA256.txt"
+    assert "3dmol v2.5.5" in (web / "3Dmol-min.js.LICENSE.txt").read_text(errors="replace").lower()
+    assert "2.5.5" in (web / "PROCEDENCIA.txt").read_text()
+    assert "$3Dmol" in (web / "3Dmol-min.js").read_text(errors="replace")
+    code, raw, hdr = svc.req("/vendor/3Dmol-min.js", token=None)
+    assert code == 200 and hashlib.sha256(raw).hexdigest() == got
+    assert "javascript" in hdr.get("Content-Type", "")
 
 
 def test_no_unknown_api_route_answers(svc):

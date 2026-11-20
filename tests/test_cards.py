@@ -93,7 +93,7 @@ def leaves(o, path=""):
 
 
 ALLOWED = {"facts": {"rows"}, "table": {"columns", "rows"}, "molecule2d": {"png_base64", "smiles"},
-           "molecule3d": {"sdf"}, "series": {"x_label", "y_label", "points"}, "text": {"text"},
+           "molecule3d": {"sdf", "parts", "label"}, "radar": {"axes", "source", "max"}, "series": {"x_label", "y_label", "points"}, "text": {"text"},
            "links": {"items"}, "absent": {"what", "why"}}
 
 
@@ -323,13 +323,13 @@ def test_a_chart_image_is_not_passed_off_as_the_molecule():
     check_schema(spec)
 
 
-def test_pdb_text_is_not_offered_as_sdf():
-    """`structure_3d.pdb` is protein text; this block type carries SDF. Calling it SDF would hand the window a file
-    it cannot open and label it a structure."""
+def test_a_key_that_contradicts_its_own_text_is_refused():
+    """`mol` says SDF and the text is PDB. The format is read off the KEY — BioQL named it — and then CHECKED:
+    a structure handed to a viewer under the wrong format is drawn wrong, which is worse than not drawn."""
     spec = card({"mol": "HEADER    TEST\nATOM      1  N   MET A   1      0.0 0.0 0.0\nEND\n", "plddt": 91.2})
     assert not blocks_of(spec, "molecule3d")
-    assert "SDF only" in absent_about(spec, "molecule3d")[0]["why"]
-    assert any("ATOM" in b["text"] for b in blocks_of(spec, "text"))
+    why = absent_about(spec, "molecule3d (molecule)")[0]["why"]
+    assert "named sdf" in why and "does not read as sdf" in why
     check_schema(spec)
 
 
@@ -569,10 +569,10 @@ def test_the_real_pdb_keys_are_recognised_and_capped():
     pdb = "HEADER    X\n" + "ATOM      1  N   MET A   1       0.0   0.0   0.0\n" * 900
     spec = card({"structure_3d": {"pdb": pdb, "plddt": 91.2, "length_aa": 285}})
     assert spec["kind"] == "structure"
-    assert not blocks_of(spec, "molecule3d")
-    assert "SDF only" in absent_about(spec, "molecule3d")[0]["why"]
-    text = [b["text"] for b in blocks_of(spec, "text") if "ATOM" in b["text"]][0]
-    assert "further characters are not shown" in text
+    b = blocks_of(spec, "molecule3d")[0]
+    assert [(x["role"], x["format"]) for x in b["parts"]] == [("protein", "pdb")]
+    # entera: una estructura recortada es otra molecula
+    assert b["parts"][0]["data"] == pdb and b["parts"][0]["bytes"] == len(pdb)
     rows = {r["label"]: r for b in blocks_of(spec, "facts") for r in b["rows"]}
     assert rows["structure_3d.plddt"]["value"] == 91.2 and rows["structure_3d.length_aa"]["unit"] == "aa"
     check_schema(spec)
@@ -622,3 +622,88 @@ def test_an_undeclared_url_must_be_absolute_http():
     from studio import cards as c
     out = c.card({"report_url": "/api/x"})
     assert [b for b in out["blocks"] if b["type"] == "links"] == []
+
+
+# ------------------------------------------------- la estructura que BioQL devuelve de verdad: un par
+REAL_COMPLEX = {
+    "pipeline": "quantum_antibody_discovery",
+    "mol_3d": {
+        "ligand_sdf": "AB-KRAS-005\n  BioQL\n\n 17 16  0  0  0  0  0  0  0  0999 V2000\nM  END\n",
+        "protein_pdb": "ATOM      1  N   GLY A   0      25.852  11.0  3.0\n" * 40,
+    },
+}
+
+
+def test_a_ligand_and_its_protein_are_one_structure():
+    """Medido en un resultado real (job 10620ccd-07b): BioQL no devuelve un fichero, devuelve un par —
+    `mol_3d.ligand_sdf` y `mol_3d.protein_pdb`— que es lo que su propia ventana le da al visor. Llevando solo SDF
+    se perdia la proteina y el ligando se anunciaba como "SDF only": la tarjeta se quedaba sin estructura."""
+    spec = card(REAL_COMPLEX, tool="quantum_antibody_discovery")
+    b = blocks_of(spec, "molecule3d")
+    assert len(b) == 1, "un ligando dentro de su proteina es UNA figura, no dos tarjetas"
+    assert [(p["role"], p["format"]) for p in b[0]["parts"]] == [("ligand", "sdf"), ("protein", "pdb")]
+    assert b[0]["parts"][1]["data"] == REAL_COMPLEX["mol_3d"]["protein_pdb"]      # entera
+    check_schema(spec)
+
+
+def test_another_candidates_structure_is_named_not_merged():
+    """Dos candidatos traen dos estructuras. Mezclarlas pondria el ligando de uno dentro de la proteina del otro."""
+    payload = {"best_candidate": {"mol_3d": REAL_COMPLEX["mol_3d"]},
+               "candidates": [{"mol_3d": REAL_COMPLEX["mol_3d"]}]}
+    spec = card(payload)
+    assert len(blocks_of(spec, "molecule3d")) == 1
+    assert any("further structure(s)" in b["text"] for b in blocks_of(spec, "text"))
+    check_schema(spec)
+
+
+def test_a_structure_too_large_is_left_out_whole_and_said():
+    import studio.cards as C
+    big = "ATOM      1  N   GLY A   0      25.852  11.0  3.0\n" * 10
+    old = C.MAX_STRUCT_BYTES
+    C.MAX_STRUCT_BYTES = 50
+    try:
+        spec = card({"mol_3d": {"protein_pdb": big}})
+    finally:
+        C.MAX_STRUCT_BYTES = old
+    assert not blocks_of(spec, "molecule3d")
+    why = absent_about(spec, "molecule3d (protein)")[0]["why"]
+    assert "never cut" in why and str(len(big)) in why
+    check_schema(spec)
+
+
+# ------------------------------------------------------------------ el radar de ADMET
+def test_the_radar_copies_bioqls_own_scores_and_its_clamp():
+    """Los ejes y el recorte a 0..1 son los de `ADMETRadarChart.tsx`, rama `radar_summary`."""
+    spec = card({"admet": {"radar_summary": {"absorption": 0.82, "distribution": 0.4, "metabolism": 1.6,
+                                             "excretion": 0.55, "safety": 0.9, "drug_likeness": 0.7,
+                                             "solubility": 0.3, "selectivity": -2}}})
+    r = blocks_of(spec, "radar")[0]
+    vals = {a["label"]: a["value"] for a in r["axes"]}
+    assert [a["label"] for a in r["axes"]][:3] == ["Absorption", "Distribution", "Metabolism"]
+    assert vals["Metabolism"] == 1.0 and vals["Selectivity"] == 0.0        # el recorte, no un valor inventado
+    assert vals["Absorption"] == 0.82
+    check_schema(spec)
+
+
+def test_an_axis_bioql_did_not_state_is_a_spoke_not_a_half():
+    """`ADMETRadarChart.tsx` tiene una segunda rama que se fabrica la figura: una categoria sin numeros vale 0.5,
+    un valor mayor que 1 "se asume" porcentaje, y las palabras high/moderate/low valen 0.8/0.5/0.2. Medido en dos
+    resultados reales (10620ccd-07b y 5a362e56-077): NINGUNO trae `radar_summary`, asi que todo radar que :3000
+    dibuja para ellos es esa fabricacion. Aqui un eje sin numero se queda sin vertice."""
+    spec = card({"admet": {"radar_summary": {"absorption": 0.8, "distribution": 0.4, "metabolism": 0.6,
+                                             "excretion": None, "safety": "alta", "drug_likeness": True}}})
+    r = blocks_of(spec, "radar")[0]
+    vals = {a["label"]: a["value"] for a in r["axes"]}
+    assert vals["Excretion"] is None and vals["Safety"] is None
+    assert vals["Drug-likeness"] is None, "un booleano no es una puntuacion medida"
+    assert all(v != 0.5 for v in vals.values() if v is not None)
+    why = absent_about(spec, "radar axes")[0]["why"]
+    assert "Excretion" in why and "Safety" in why
+    check_schema(spec)
+
+
+def test_no_radar_summary_no_radar():
+    """Los dos resultados reales no lo traen: la tarjeta no dibuja un radar en vez de dibujar uno inventado."""
+    spec = card({"admet": {"absorption": {"hia": 0.9}, "distribution": {"ppb": 92.0}}})
+    assert not blocks_of(spec, "radar")
+    check_schema(spec)

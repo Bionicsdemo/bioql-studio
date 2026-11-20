@@ -53,7 +53,12 @@ WEB = Path(__file__).resolve().parent / "web"
 STATIC = {"/": ("index.html", "text/html; charset=utf-8"),
           "/index.html": ("index.html", "text/html; charset=utf-8"),
           "/app.js": ("app.js", "text/javascript; charset=utf-8"),
-          "/app.css": ("app.css", "text/css; charset=utf-8")}
+          "/app.css": ("app.css", "text/css; charset=utf-8"),
+          # 3Dmol.js 2.5.5, the same build BioQL's own window uses, copied into `app/web/vendor` with its licence
+          # and its sha256 (see vendor/PROCEDENCIA.txt). It is served from here, not from a CDN: the CSP says
+          # `script-src 'self'` and an app whose whole design is 127.0.0.1 does not reach the internet to draw a
+          # molecule. The map stays a closed list — a path is never built out of the request.
+          "/vendor/3Dmol-min.js": ("vendor/3Dmol-min.js", "text/javascript; charset=utf-8")}
 
 # Agtr's CSP (agtrcore/app.py:607-612) allows 'unsafe-inline' styles and frames from ANY localhost port, because its
 # window embeds VS Code and sandboxed canvases. Studio keeps the strict half — nothing inline, nothing loaded from
