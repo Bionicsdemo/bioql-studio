@@ -1123,10 +1123,15 @@ function radarNode(b) {
 /** Numbers BioQL measured, side by side. Bars, not a radar: a radar needs a range per property to normalise
     against, and a range this window chose would be a scale nobody measured. The values are drawn as they came. */
 function barsNode(rows, title) {
-  const num = rows.filter((r) => typeof r.value === "number" && isFinite(r.value));
-  if (num.length < 2) return null;
+  const all = rows.filter((r) => typeof r.value === "number" && isFinite(r.value));
+  if (all.length < 2) return null;
+  // Un tope: 290 barras en una tarjeta (medido con el resultado real de anticuerpos) no es un grafico, es una
+  // pared. Se dibujan las primeras y se dice cuantas quedan, que siguen enteras arriba en la lista de medidas.
+  const MAX_BARS = 24;
+  const num = all.slice(0, MAX_BARS);
   const box = el("div", "chart");
-  box.appendChild(el("div", "chart-title", title));
+  box.appendChild(el("div", "chart-title",
+    title + (all.length > MAX_BARS ? ` · ${MAX_BARS} de ${all.length}` : "")));
   const W = 560, rowH = 22, L = 190, R = 60;
   const H = num.length * rowH + 10;
   const hi = Math.max(...num.map((r) => Math.abs(r.value))) || 1;
@@ -1323,21 +1328,64 @@ async function send(text) {
 let view = "chat";
 const openTabs = ["chat"];
 
+// Que grupos estan plegados. Es una comodidad por ventana, no estado del trabajo: si el navegador no deja
+// guardarla (ventana privada, datos bloqueados) el menu abre entero, que es el estado util.
+const SHUT_KEY = "bioql-studio.nav.shut";
+
+function shutGroups() {
+  try {
+    const raw = localStorage.getItem(SHUT_KEY);
+    const v = raw ? JSON.parse(raw) : [];
+    return new Set(Array.isArray(v) ? v.filter((x) => typeof x === "string") : []);
+  } catch (e) {
+    return new Set();
+  }
+}
+
+function rememberShut(set) {
+  try { localStorage.setItem(SHUT_KEY, JSON.stringify([...set])); } catch (e) { /* nada que recordar, nada roto */ }
+}
+
+const GROUP_NAME = { Iris: "Instrument", BioQL: "BioQL window", Record: "The record" };
+
 function buildNav() {
   const nav = $("nav");
   clear(nav);
+  const shut = shutGroups();
   GROUPS.forEach((g) => {
-    nav.appendChild(el("div", "side-h", g === "Iris" ? "Instrument" : g === "BioQL" ? "BioQL's own window" : g));
-    Object.keys(SECTIONS).filter((k) => SECTIONS[k].group === g).forEach((k) => {
+    const keys = Object.keys(SECTIONS).filter((k) => SECTIONS[k].group === g);
+    if (!keys.length) return;
+    const box = el("div", "side-g" + (shut.has(g) ? " shut" : ""));
+    const head = el("button", "side-h");
+    head.type = "button";
+    head.setAttribute("aria-expanded", shut.has(g) ? "false" : "true");
+    const chev = icon("chev", "ic chev");
+    head.appendChild(chev);
+    head.appendChild(el("span", "nm", GROUP_NAME[g] || g));
+    head.appendChild(el("span", "ct", String(keys.length)));
+    const items = el("div", "side-items");
+    head.addEventListener("click", () => {
+      const now = shutGroups();
+      if (now.has(g)) { now.delete(g); } else { now.add(g); }
+      rememberShut(now);
+      box.classList.toggle("shut", now.has(g));
+      head.setAttribute("aria-expanded", now.has(g) ? "false" : "true");
+    });
+    box.appendChild(head);
+    keys.forEach((k) => {
       const s = SECTIONS[k];
       const b = el("button");
+      b.type = "button";
       b.dataset.v = k;
+      b.title = s.label;
       b.appendChild(icon(s.icon));
       b.appendChild(el("span", null, s.label));
       b.appendChild(el("em"));
       b.addEventListener("click", () => open_(k));
-      nav.appendChild(b);
+      items.appendChild(b);
     });
+    box.appendChild(items);
+    nav.appendChild(box);
   });
 }
 

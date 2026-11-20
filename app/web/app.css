@@ -66,16 +66,43 @@ code{font:11.5px var(--mono);-webkit-user-select:text;user-select:text}
   scrollbar-width:none;box-shadow:.5px 0 0 var(--sep)}
 .side::-webkit-scrollbar{display:none}
 .side-top{height:8px;flex:none}
-nav{display:flex;flex-direction:column;gap:1px}
-nav button{display:flex;align-items:center;gap:8px;height:30px;padding:0 8px;border-radius:7px;text-align:left;
-  font-size:13px;color:var(--label)}
-nav button .ic{color:var(--accent)}
+nav{display:flex;flex-direction:column}
+
+/* Un grupo se pliega. Veintitres entradas en una lista plana se recorren leyendo; plegadas se recorren mirando,
+   que es como se usa un menu de trabajo (Benchling, Maestro, Dotmatics: sus barras laterales se pliegan y la
+   seccion abierta es la unica larga). Lo que esta plegado se recuerda por ventana. */
+.side-g{display:flex;flex-direction:column}
+.side-g + .side-g{margin-top:10px;padding-top:10px;box-shadow:inset 0 .5px 0 var(--sep)}
+.side-h{display:flex;align-items:center;gap:6px;width:100%;padding:4px 8px 6px;text-align:left;
+  font-size:10.5px;font-weight:650;color:var(--label-3);letter-spacing:.055em;text-transform:uppercase}
+.side-h:hover{color:var(--label-2)}
+.side-h .chev{width:11px;height:11px;flex:none;color:currentColor;transition:transform 140ms ease}
+.side-g.shut .side-h .chev{transform:rotate(-90deg)}
+.side-h .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
+.side-h .ct{font-variant-numeric:tabular-nums;opacity:0;transition:opacity 120ms ease}
+.side-g.shut .side-h .ct,.side-h:hover .ct{opacity:1}
+.side-items{display:flex;flex-direction:column;gap:1px;overflow:hidden}
+.side-g.shut .side-items{display:none}
+
+/* La fila activa: riel de acento a la izquierda, fondo tenido y el icono encendido. Antes TODOS los iconos iban
+   en acento, y un menu donde todo esta resaltado no resalta nada: el ojo no encuentra donde esta. */
+nav button{position:relative;display:flex;align-items:center;gap:9px;height:31px;padding:0 8px 0 10px;
+  border-radius:7px;text-align:left;font-size:13px;color:var(--label-2)}
+nav button .ic{color:var(--label-3);flex:none;transition:color 120ms ease}
 nav button span{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-nav button em{font-style:normal;font-size:11.5px;color:var(--label-3);font-variant-numeric:tabular-nums}
-nav button em.hot{color:var(--red);font-weight:600}
-nav button:hover{background:var(--fill-3)}
-nav button.on{background:var(--fill)}
-.side-h{font-size:11px;font-weight:600;color:var(--label-3);padding:15px 8px 5px;letter-spacing:.01em}
+nav button em{font-style:normal;font-size:11px;color:var(--label-3);font-variant-numeric:tabular-nums;
+  padding:1px 5px;border-radius:5px;background:var(--fill-3)}
+nav button em:empty{display:none}
+nav button em.hot{color:var(--on-accent);background:var(--red);font-weight:600}
+nav button:hover{background:var(--fill-3);color:var(--label)}
+nav button:hover .ic{color:var(--label-2)}
+nav button.on{background:color-mix(in srgb,var(--accent) 14%,transparent);color:var(--label);font-weight:560}
+nav button.on .ic{color:var(--accent)}
+nav button.on::before{content:"";position:absolute;left:0;top:7px;bottom:7px;width:3px;border-radius:0 2px 2px 0;
+  background:var(--accent)}
+@media (prefers-reduced-motion:reduce){
+  .side-h .chev,nav button .ic,.side-h .ct{transition:none}
+}
 .side-foot{margin-top:auto;padding:10px 8px 0;display:grid;gap:3px}
 .hub{display:flex;align-items:center;gap:7px;font-size:11.5px;color:var(--label-2);min-width:0}
 .hub span:last-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -304,7 +331,8 @@ body[data-ring=alarm] .ring{border-color:var(--red);animation:breathe 1.3s ease-
 
 @media (max-width:900px){
   body{grid-template-columns:48px minmax(0,1fr)}
-  nav button span,.side-foot,.side-h{display:none}
+  nav button span,nav button em,.side-foot,.side-h{display:none}
+  .side-g.shut .side-items{display:flex}
   nav button{width:36px;justify-content:center;padding:0}
   .side{align-items:center;padding:0 4px}
 }

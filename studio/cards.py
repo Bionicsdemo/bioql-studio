@@ -912,3 +912,122 @@ def card(payload: Any, tool: str | None = None, meta: dict | None = None) -> dic
             "verdict": verdict if isinstance(verdict, str) and verdict.strip() else None,
             "findings": list(findings) if isinstance(findings, list) else [],
             "blocks": blocks}
+
+
+# --------------------------------------------------------------------------- the sections of a result
+# One BioQL result is not one card in BioQL's own window: `ChatMessage.tsx` splits it and draws a card per section —
+# the ADMET one, the docking one, toxicology, pharmacology, the clinical simulation, the candidates, the audit.
+# The dot-paths below are COPIED from `src/frontend/src/services/cardRegistry.ts`, which is BioQL's own manifest of
+# which card fires on which shape, read on 2026-11-19 (43 entries). They are not guessed and they are not matched by
+# tool name: a pipeline nobody has heard of gets its sections for free, exactly as BioQL intends.
+#
+# Measured against a real `quantum_antibody_discovery` result (job 10620ccd-07b): BioQL's window draws 12 cards for
+# it and this module drew ONE, 276 blocks deep, with every section's numbers in the same undivided list.
+SECTIONS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    ("candidates", "Candidates",
+     ("candidates", "discovery.candidates", "candidates_generated.small_molecules",
+      "candidates_generated.peptides", "candidates_generated.nanobodies")),
+    ("admet", "ADMET",
+     ("admet", "stages.2_admet.data", "analyses.admet", "best_candidate.analyses.admet", "best_candidate.admet",
+      "candidates.0.analyses.admet", "candidates.0.admet")),
+    ("docking", "Docking",
+     ("docking", "stages.9_docking", "stages.6_docking", "analyses.docking",
+      "best_candidate.analyses.docking", "best_candidate.docking",
+      "candidates.0.analyses.docking", "candidates.0.docking")),
+    ("toxicology", "Toxicology",
+     ("toxicology", "stages.3_toxicology.data", "toxicology_study", "admet.toxicology", "analyses.toxicology",
+      "best_candidate.analyses.toxicology", "best_candidate.toxicology", "best_candidate.admet.toxicology",
+      "candidates.0.analyses.toxicology", "candidates.0.toxicology", "candidates.0.admet.toxicology",
+      "discovery.toxicology", "stages.7_toxicology.data")),
+    ("pharmacology", "Pharmacology",
+     ("pharmacology", "stages.4_pharmacology.data", "pharmacology_study", "analyses.pharmacology",
+      "best_candidate.analyses.pharmacology", "best_candidate.pharmacology",
+      "candidates.0.analyses.pharmacology", "candidates.0.pharmacology", "discovery.pharmacology",
+      "pharmacokinetics")),
+    ("clinical", "Clinical simulation",
+     ("clinical_trial", "stages.5_clinical_trial.data", "stages.clinical_trial_simulation.trials.0",
+      "clinical_trials", "analyses.clinical_trial", "best_candidate.analyses.clinical_trial",
+      "best_candidate.clinical_trial", "candidates.0.analyses.clinical_trial", "candidates.0.clinical_trial")),
+    ("generative", "Generative model", ("trained_generator", "stages.iglm_proposer")),
+    ("qdiffvision", "QDiffVision", ("qdiffvision",)),
+    ("quantum_cell", "Quantum cell", ("quantum_cell", "cell_simulation")),
+    ("consistency_audit", "Consistency audit", ("consistency_audit",)),
+    ("visualization", "Visualization", ("visualization",)),
+    ("structure", "Structure", ("mol_3d", "structure_3d", "best_candidate.mol_3d", "candidates.0.mol_3d",
+                                "stages.10_3d_structure")),
+)
+
+
+def _at(payload: Any, path: str) -> Any:
+    """A dot-path, with a numeric part reading a list index — `candidates.0.admet` is how the registry writes it."""
+    cur = payload
+    for part in path.split("."):
+        if isinstance(cur, dict):
+            cur = cur.get(part)
+        elif isinstance(cur, list) and part.isdigit() and int(part) < len(cur):
+            cur = cur[int(part)]
+        else:
+            return None
+    return cur
+
+
+def _nonempty(v: Any) -> bool:
+    """BioQL's own `isNonEmpty` (cardRegistry.ts): null, "", [] and {} are absent, and 0 and false are NOT."""
+    if v is None or v == "":
+        return False
+    if isinstance(v, (list, dict, tuple)) and len(v) == 0:
+        return False
+    return True
+
+
+def sections(payload: Any) -> list[tuple[str, str, str, Any]]:
+    """(id, title, the path it was found at, the subtree) for every section BioQL's own manifest would fire on.
+
+    The FIRST path that resolves wins, in the registry's own order, so a section is read where BioQL reads it and
+    `best_candidate.admet` does not become a second ADMET card beside `admet`.
+    """
+    out: list[tuple[str, str, str, Any]] = []
+    if not isinstance(payload, (dict, list)):
+        return out
+    for sid, title, paths in SECTIONS:
+        for path in paths:
+            v = _at(payload, path)
+            if _nonempty(v):
+                out.append((sid, title, path, v))
+                break
+    return out
+
+
+def cards_of(payload: Any, tool: str | None = None, meta: dict | None = None) -> dict:
+    """One result as the cards BioQL's own window draws for it: one per section, plus one for what is left.
+
+    A section that is not there is simply not a card — never an empty one. What no section claimed still gets its
+    card, because a number that falls between the sections must not disappear: that is how a result quietly loses
+    the one field somebody was looking for.
+    """
+    found = sections(payload)
+    if len(found) < 2:
+        return card(payload, tool=tool, meta=meta)
+    meta = meta if isinstance(meta, dict) else {}
+    claimed = {path for _, _, path, _ in found}
+    rest = payload
+    if isinstance(payload, dict):
+        rest = {k: v for k, v in payload.items() if k not in {p.split(".")[0] for p in claimed}}
+    kids = []
+    for sid, title, path, sub in found:
+        c = card(sub, tool=f"{title} — {path}", meta=meta)
+        c["title"] = title
+        c["subtitle"] = path
+        c["section"] = sid
+        kids.append(c)
+    if isinstance(rest, dict) and rest:
+        c = card(rest, tool=tool, meta=meta)
+        c["title"] = "The rest of the result"
+        c["subtitle"] = "what no section claimed — nothing is dropped"
+        c["section"] = "rest"
+        kids.append(c)
+    title, subtitle = _title_of(payload, _kind_of(payload), tool)
+    return {"kind": "group", "title": title, "subtitle": f"{len(kids)} card(s) · {subtitle}" if subtitle else
+            f"{len(kids)} card(s)", "cards": kids, "blocks": [],
+            "provenance": kids[0].get("provenance") if kids else {},
+            "verdict": meta.get("verdict"), "findings": meta.get("findings") or []}

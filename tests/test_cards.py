@@ -101,7 +101,9 @@ def check_schema(spec):
     """The contract, checked field by field: exact top-level keys, a known kind, and only the eight block types with
     only their own keys. Run over every fixture and over every junk payload, because a spec the window cannot read
     is the same failure as a wrong number."""
-    assert set(spec) == {"kind", "title", "subtitle", "provenance", "verdict", "findings", "blocks"}
+    # `section` es opcional: una tarjeta que vino de una seccion del resultado lleva cual, y nada mas cambia.
+    assert set(spec) - {"section"} == {"kind", "title", "subtitle", "provenance", "verdict", "findings",
+                                       "blocks"}
     assert spec["kind"] in KINDS
     assert isinstance(spec["title"], str) and spec["title"]
     assert spec["subtitle"] is None or isinstance(spec["subtitle"], str)
@@ -707,3 +709,53 @@ def test_no_radar_summary_no_radar():
     spec = card({"admet": {"absorption": {"hia": 0.9}, "distribution": {"ppb": 92.0}}})
     assert not blocks_of(spec, "radar")
     check_schema(spec)
+
+
+# ------------------------------------------------- un resultado son las tarjetas que :3000 dibuja, no una sola
+def test_a_result_becomes_the_sections_bioql_draws():
+    """Las rutas salen de `cardRegistry.ts`, el manifiesto de BioQL. Medido en un resultado real
+    (10620ccd-07b): su ventana dibuja 12 tarjetas y este modulo dibujaba UNA de 276 bloques."""
+    from studio.cards import cards_of
+    payload = {"pipeline": "quantum_antibody_discovery",
+               "candidates": [{"id": "AB-1", "score": 0.8}],
+               "admet": {"logp": 1.2},
+               "toxicology": {"ames": 0.17},
+               "pharmacology": {"half_life_days": 11.0},
+               "clinical_trial": {"phase_I": {"n": 24}},
+               "consistency_audit": {"status": "ok"},
+               "algo_que_nadie_reclama": {"x": 1}}
+    g = cards_of(payload, tool="quantum_antibody_discovery")
+    assert g["kind"] == "group"
+    titles = [c["title"] for c in g["cards"]]
+    assert titles[:6] == ["Candidates", "ADMET", "Toxicology", "Pharmacology", "Clinical simulation",
+                          "Consistency audit"]
+    # nada se pierde entre secciones
+    rest = [c for c in g["cards"] if c["section"] == "rest"][0]
+    assert any("algo_que_nadie_reclama" in str(r.get("label")) for b in rest["blocks"]
+               if b["type"] == "facts" for r in b["rows"])
+    for c in g["cards"]:
+        check_schema(c)
+
+
+def test_one_section_is_still_one_card():
+    """Una respuesta pequena no se envuelve en un grupo de uno."""
+    from studio.cards import cards_of
+    g = cards_of({"admet": {"logp": 1.2}}, tool="admet_standalone")
+    assert g["kind"] != "group"
+
+
+def test_a_section_is_read_where_bioql_reads_it():
+    """La PRIMERA ruta del manifiesto que resuelve gana: `best_candidate.admet` no abre una segunda tarjeta ADMET
+    al lado de `admet`."""
+    from studio.cards import sections
+    found = sections({"admet": {"a": 1}, "best_candidate": {"admet": {"b": 2}}, "docking": {"score": -8.1}})
+    ids = [s[0] for s in found]
+    assert ids.count("admet") == 1
+    assert [s[2] for s in found if s[0] == "admet"] == ["admet"]
+
+
+def test_a_zero_is_a_section_and_an_empty_dict_is_not():
+    """`isNonEmpty` de BioQL: 0 y false son valores; null, "", [] y {} son ausencia."""
+    from studio.cards import sections
+    assert [s[0] for s in sections({"docking": 0})] == ["docking"]
+    assert sections({"docking": {}}) == []

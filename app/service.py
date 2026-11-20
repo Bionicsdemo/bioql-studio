@@ -549,7 +549,10 @@ class Studio:
         value = payload.get("value", payload)
         try:
             from studio import cards
-            return cards.card(value, tool=meta.get("tool"), meta=meta)
+            # `cards_of`, not `card`: BioQL's own window splits a result into a card per section and so does this.
+            # With fewer than two sections it falls back to the single card, so a small answer is not wrapped in a
+            # group of one.
+            return cards.cards_of(value, tool=meta.get("tool"), meta=meta)
         except Exception:                           # noqa: BLE001 - no card module yet, or a shape it cannot read
             return {"kind": "text", "title": meta.get("tool") or "result",
                     "provenance": meta.get("provenance") or {}, "verdict": meta.get("verdict"),
