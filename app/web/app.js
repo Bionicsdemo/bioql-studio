@@ -347,17 +347,30 @@ async function drawFindings(box) {
   const { code, body } = await api("/api/ledger?limit=100");
   if (code !== 200) return empty(box, body.error || "the record did not answer");
   const rows = (body.rows || []).filter((r) => r.verdict || (r.findings || []).length).reverse();
-  const bad = rows.filter((r) => r.verdict === "contradicted").length;
+  const flagged = rows.filter((r) => r.verdict && r.verdict !== "clean");
+  const bad = flagged.filter((r) => r.verdict === "contradicted").length;
+
+  // The badge counts what NEEDS ATTENTION, not how much work was checked. It used to show the total — "92" beside
+  // Findings, where 86 of those rows said "nothing contradicted" — and a number in a badge is read as a number of
+  // problems. A clean verdict is good news and good news does not belong in a badge.
   const em = document.querySelector('nav button[data-v=findings] em');
-  if (em) { em.textContent = rows.length ? String(rows.length) : ""; em.className = bad ? "hot" : ""; }
+  if (em) { em.textContent = flagged.length ? String(flagged.length) : ""; em.className = bad ? "hot" : ""; }
   $("stFind").querySelector("span").textContent = rows.length
-    ? `${rows.length} verdict(s)` + (bad ? ` · ${bad} contradicted` : "") : "nothing verified yet";
+    ? (flagged.length ? `${flagged.length} of ${rows.length} need a look` : `${rows.length} checked · all clean`)
+    : "nothing verified yet";
   $("stFind").className = "st" + (bad ? " bad" : "");
   if (bad) ring("alarm");
   if (!rows.length) return empty(box, "nothing verified yet. A verdict is recorded on every call that resolves.");
   clear(box);
+  box.appendChild(el("p", "fine", flagged.length
+    ? `${flagged.length} verdict(s) need a look, shown first; ${rows.length - flagged.length} were clean.`
+    : `${rows.length} verdict(s), all clean. A clean verdict means nothing in the answer contradicted itself — ` +
+      `it is not a statement that the science is right.`));
+  // Flagged first. Scrolling past eighty-six clean rows to reach the one that is not is how a contradiction gets
+  // missed, and a contradiction missed is the whole point of this page failing silently.
+  const ordered = flagged.concat(rows.filter((r) => !(r.verdict && r.verdict !== "clean")));
   const g = el("div", "group");
-  rows.forEach((r) => {
+  ordered.forEach((r) => {
     const row = el("div", "row");
     const head = el("div", "row-head");
     head.appendChild(el("span", "row-tool", r.tool));
@@ -1038,32 +1051,74 @@ async function drawGuard(box) {
     $("stGuard").querySelector("span").textContent = "no snapshot pair";
     return empty(box, (body.detail || "") + "  Take one with: python3 -m studio guard snapshot <name>");
   }
-  const rep = body.report || body;
+  // `value`, which is what /api/guard sends. It used to read `body.report`, which that route has never set, so
+  // `rep.roots` was undefined and the page drew the alarm line over an EMPTY list: a red strip saying BioQL had
+  // changed, naming not one file. An alarm a person cannot act on is worse than no alarm.
+  const rep = body.value || body.report || {};
+  const roots = rep.roots || {};
   clear(box);
-  box.appendChild(el("p", rep.clean ? "fine" : "alarm-strip", rep.clean
-    ? "BioQL is as it was between the two most recent snapshots."
-    : "BioQL changed between the two most recent snapshots. The guard names the files; it never says who changed them."));
+
+  // How old the two snapshots are. A comparison of yesterday's files is not a reading of this minute, and saying
+  // so is the difference between "BioQL changed" and "BioQL had changed by 11:25 yesterday".
+  const taken = body.taken;
+  if (taken) {
+    const age = Math.max(0, (Date.now() / 1000) - Number(taken.newer.t));
+    const old_ = age < 90 ? "just now"
+      : age < 5400 ? Math.round(age / 60) + " min ago"
+      : age < 172800 ? Math.round(age / 3600) + " h ago"
+      : Math.round(age / 86400) + " days ago";
+    box.appendChild(el("p", "fine", `${taken.older.name} → ${taken.newer.name} · the newer one was taken ${old_}` +
+      ". Opening this page takes no snapshot: run `python3 -m studio guard snapshot <name>` for a fresh one."));
+  }
+
+  // The alarm is for SOURCE. A finished pipeline writes its result and its report, and that used to turn this red
+  // after every single run — a guard that is always red is a guard nobody reads. Outputs are still listed, still
+  // counted, and still keep the report from being clean; they just do not raise the alarm.
+  const srcClean = rep.source_clean !== false;
+  const outs = Number(rep.outputs_written || 0);
+  box.appendChild(el("p", srcClean ? "fine" : "alarm-strip", srcClean
+    ? ("BioQL's own files are as they were between these two snapshots."
+       + (outs ? ` ${outs} file(s) were WRITTEN by BioQL as it ran — listed below, which is not an edit.` : ""))
+    : "BioQL's own files changed between these two snapshots. The guard names them; it never says who changed them."));
+
   const g = el("div", "group");
-  Object.keys(rep.roots || {}).forEach((name) => {
-    const r = rep.roots[name];
+  Object.keys(roots).forEach((name) => {
+    const r = roots[name];
+    const src = r.source || { added: r.added || [], removed: r.removed || [], changed: r.changed || [] };
+    const outList = r.outputs || [];
     const row = el("div", "row");
     const head = el("div", "row-head");
     head.appendChild(el("span", "row-tool", name));
-    head.appendChild(chip(r.clean ? "unchanged" : "changed", r.clean ? "clean" : "concerns"));
+    const dirty = (src.added || []).length + (src.removed || []).length + (src.changed || []).length;
+    head.appendChild(chip(dirty ? "source changed" : "source unchanged", dirty ? "concerns" : "clean"));
+    if (outList.length) head.appendChild(chip(outList.length + " written", "neutral"));
     head.appendChild(el("span", "hash", `${r.files} file(s) watched`));
     row.appendChild(head);
+    if (!r.readable) {
+      row.appendChild(el("p", "row-why", "part of this root could not be read, so nothing is claimed about it: "
+        + (r.unreadable || []).slice(0, 3).join("; ")));
+    }
     ["added", "removed", "changed"].forEach((k) => {
-      if (!(r[k] || []).length) return;
-      row.appendChild(el("p", "row-why", `${k}: ${r[k].slice(0, 6).join(", ")}` +
-        (r[k].length > 6 ? ` … and ${r[k].length - 6} more` : "")));
+      const list = src[k] || [];
+      if (!list.length) return;
+      row.appendChild(el("p", "row-why", `${k}: ${list.slice(0, 8).join(", ")}` +
+        (list.length > 8 ? ` … and ${list.length - 8} more` : "")));
     });
+    if (outList.length) {
+      row.appendChild(el("p", "fine", `written while running: ${outList.slice(0, 6).join(", ")}` +
+        (outList.length > 6 ? ` … and ${outList.length - 6} more` : "")));
+    }
+    if (r.git && Object.keys(r.git).length) {
+      row.appendChild(el("p", "row-why", "git: " + Object.keys(r.git).join(", ") + " moved"));
+    }
     g.appendChild(row);
   });
   box.appendChild(g);
-  $("stGuard").querySelector("span").textContent = rep.clean ? "BioQL unchanged" : "BioQL changed";
-  $("stGuard").className = "st" + (rep.clean ? "" : " warn");
+
+  $("stGuard").querySelector("span").textContent = srcClean ? "BioQL unchanged" : "BioQL changed";
+  $("stGuard").className = "st" + (srcClean ? "" : " warn");
   const em = document.querySelector('nav button[data-v=guard] em');
-  if (em) { em.textContent = rep.clean ? "" : "!"; em.className = rep.clean ? "" : "hot"; }
+  if (em) { em.textContent = srcClean ? "" : "!"; em.className = srcClean ? "" : "hot"; }
 }
 
 // BioQL's own health panel checks four servers (Sidebar.tsx::SERVERS): the backend, its liveness, the quantum

@@ -312,12 +312,11 @@ class Studio:
         try:
             # `check` passes but `call` can still refuse: a `{job_id}` segment is filled only from an argument that
             # looks like an id, so `job_id: "../../api/scripts/execute"` is refused where the path is built, not here.
-            res = self.adapter.call(name, args, approved_by=None, by="window")
+            res = self.adapter.call(name, args, approved_by=None, by="window", note={"window_event": "call"})
         except Refused as why:
             self._refused(name, args, str(why), event="call")
             return {"state": "REFUSED", "detail": str(why)}, 403
         self.calls += 1
-        self._note(name, res, by="window", event="call")
         out = self._shape(res)
         if res.resolved:
             # The card is built HERE, beside the answer, so a result opened on a work page is the same card the
@@ -427,7 +426,8 @@ class Studio:
         # missing — and read that absence as "nothing was found", which is the failure this whole layer exists to
         # prevent. While it is "RUNNING" nothing about it is claimed at all.
         try:
-            res = self.adapter.call(p.tool, p.args, approved_by=who, by="window")
+            res = self.adapter.call(p.tool, p.args, approved_by=who, by="window",
+                                    note={"window_event": "approved_call", "pending_id": p.id})
         except Refused as why:                       # the allowlist changed under us, or the entry was disabled
             self.refusals += 1
             run.detail = str(why)[:300]
@@ -444,7 +444,6 @@ class Studio:
         run.provenance = res.meta.get("provenance")
         run.seconds = res.meta.get("seconds")
         run.result_sha256 = ledger.digest(res.value) if res.resolved else None
-        self._note(p.tool, res, by="window", event="approved_call", approved_by=who, pending_id=p.id)
         run.state = res.state
 
     # ------------------------------------------------------------------ the record
@@ -453,27 +452,19 @@ class Studio:
         ledger.append({"tool": name if isinstance(name, str) else None, "args": trim(args), "state": "REFUSED",
                        "by": "window", "window_event": event, "verdict": None, "detail": why[:300]})
 
-    def _note(self, name: str, res, by: str, event: str, **extra) -> None:
-        """The verifier's verdict and findings, on the record.
-
-        studio.adapter._note writes one row per call but carries only `provenance` from res.meta — the `verdict` and
-        `findings` it also computes never reach runs.jsonl, although the project's README says they do. `studio/` is
-        sealed, so Studio's window adds a second row of its own with them. A row with no `verdict` key was written by
-        something that did not record one, and the window shows it as "not recorded", never as "clean".
-
-        Only the findings' codes, severities and paths are stored: a full finding list on a large result would be a
-        very long line, and ledger._last_hash reads only the final 64 KB of the file to find the previous hash, so one
-        oversized line would break the chain for every line after it.
-        """
-        f = res.meta.get("findings") or []
-        ledger.append({"tool": name, "state": res.state, "by": by, "window_event": event,
-                       "verdict": res.meta.get("verdict"),
-                       "findings": [{"severity": x.get("severity"), "code": x.get("code"), "path": str(x.get("path"))[:120]}
-                                    for x in f[:20]],
-                       "findings_total": len(f),
-                       "result_sha256": ledger.digest(res.value) if res.resolved else None,
-                       "provenance": res.meta.get("provenance"),
-                       "seconds": res.meta.get("seconds"), **extra})
+    # There is no `_note` here any more, and there must not be one again.
+    #
+    # It wrote a SECOND ledger row for every window call. It was right to exist once: `studio.adapter._note`
+    # recorded only `provenance`, so the verdict and the findings never reached the record and this window added
+    # them. The adapter was fixed to record both — and this row survived the fix, so from then on every call from
+    # the window was on the signed record twice: once complete, once with findings stripped of their `detail`.
+    #
+    # What that cost, measured on this Mac on 2026-11-20: Findings showed 92 rows where 46 calls had been made,
+    # six "contradicted" for three distinct results, and half of them printed a bare code — `subspace_fraction_
+    # missing` — with nothing a person could act on, because the duplicate had thrown the explanation away.
+    #
+    # The facts this row carried that the adapter's does not (which window event, which approval) now travel as
+    # `note=` on the call itself and land on the one row.
 
     def _shape(self, res) -> dict:
         d = res.as_dict()
@@ -684,7 +675,12 @@ class Studio:
             return {"state": "UNRESOLVABLE", "source": "studio guard",
                     "detail": f"{when}: part of BioQL could not be read — " + "; ".join(report["unreadable"][:3]),
                     "meta": {"report": report}}
-        return {"state": "RESOLVED", "source": "studio guard", "detail": when, "value": report}
+        # WHEN the two snapshots were taken travels with the report. Without it the window drew a comparison of
+        # two day-old files as though it were a reading of this minute, and "BioQL changed" could mean a change
+        # from yesterday that somebody has already dealt with.
+        taken = {"older": {"name": older.name, "t": older.stat().st_mtime},
+                 "newer": {"name": newer.name, "t": newer.stat().st_mtime}}
+        return {"state": "RESOLVED", "source": "studio guard", "detail": when, "value": report, "taken": taken}
 
 
 # ---------------------------------------------------------------------------------------------- HTTP

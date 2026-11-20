@@ -171,10 +171,17 @@ class Adapter:
 
     # ------------------------------------------------------------------ calling
     def call(self, name: str, args: dict | None = None, approved_by: str | None = None, by: str = "owner",
-             group: str | None = None) -> Resolution:
+             group: str | None = None, note: dict | None = None) -> Resolution:
         """`group` names a fan-out this call belongs to (see `studio/fanout.py`): several independent calls run at
         the same time. It goes on the line and changes nothing else — the gate, the verifier and the record are
-        the same whether a call runs alone or beside five others."""
+        the same whether a call runs alone or beside five others.
+
+        `note` is extra facts the CALLER knows and this module does not — which window event started the call, which
+        approval unlocked it — merged onto the one row. It exists so a caller never has to write a SECOND row for
+        the same call: Studio's window used to, back when this module recorded no verdict, and the duplicate
+        survived the fix. Every window call was on the record twice, the copy carried findings with no `detail`,
+        and anything counting the record counted each call twice.
+        """
         args = dict(args or {})
         began = time.time()
         try:
@@ -184,7 +191,7 @@ class Adapter:
                 # BioQL's own async door; the endpoint is this entry's, from the allowlist, never from the caller.
                 url, body = self.base + al.SUBMIT_PATH, {"endpoint": e["path"], "params": body}
         except Refused as why:
-            self._note(name, None, args, "REFUSED", str(why), None, None, began, by, approved_by, group)
+            self._note(name, None, args, "REFUSED", str(why), None, None, began, by, approved_by, group, note)
             raise
         res, http = self._http(e["method"], url, body if e["method"] == "POST" else None, e["timeout"], e["absent_on_404"])
         if e["via"] == "submit" and res.resolved and isinstance(res.value, dict):
@@ -198,7 +205,7 @@ class Adapter:
         res = Resolution(res.state, res.source, res.detail, res._value,
                          {**res.meta, "provenance": prov, "tool": name, "seconds": round(time.time() - began, 3),
                           "verdict": verify.verdict(checked) if res.resolved else None, "findings": checked})
-        self._note(name, e, args, res.state, res.detail, http, res, began, by, approved_by, group)
+        self._note(name, e, args, res.state, res.detail, http, res, began, by, approved_by, group, note)
         return res
 
     def _http(self, method: str, url: str, body: dict | None, timeout: float, absent_on_404: bool) -> tuple[Resolution, int | None]:
@@ -337,7 +344,8 @@ class Adapter:
         except Exception as why:                 # noqa: BLE001 - no crypto, no key, a broken key: all land here
             return ledger.append({**row, "unsigned_because": f"{type(why).__name__}: {why}"[:160]})
 
-    def _note(self, name, e, args, state, detail, http, res, began, by, approved_by, group=None) -> None:
+    def _note(self, name, e, args, state, detail, http, res, began, by, approved_by, group=None,
+              note: dict | None = None) -> None:
         if not self.log:
             return
         self._record({"tool": name, "method": e and e["method"], "path": e and e["path"], "args": args,
@@ -348,11 +356,16 @@ class Adapter:
                        # every row read back "verdict not recorded", and anything built on the ledger — the board,
                        # the notebook, a report — could not tell an unchecked result from a clean one.
                        "verdict": res.meta.get("verdict") if res is not None else None,
-                       "findings": (res.meta.get("findings") or [])[:20] if res is not None else [],
+                       # Each finding keeps its `detail` — a code with no explanation is a page that says
+                       # "quantum_label_vs_execution" and nothing a person can act on. It is capped at 300
+                       # characters apiece because `ledger._last_hash` reads only the final 64 KB of the file to
+                       # find the previous hash, and one oversized line would break the chain for every line after.
+                       "findings": [{**x, "detail": str(x.get("detail") or "")[:300]}
+                                    for x in (res.meta.get("findings") or [])[:20]] if res is not None else [],
                        "findings_total": len(res.meta.get("findings") or []) if res is not None else 0,
                        "job_id": (res.meta.get("job_id") or (res.value.get("job_id")
                                                              if res is not None and res.resolved
                                                              and isinstance(res.value, dict) else None))
                                  if res is not None else None,
                        "seconds": round(time.time() - began, 3), "by": by, "approved_by": approved_by or None,
-                       "group": group})
+                       "group": group, **(note or {})})

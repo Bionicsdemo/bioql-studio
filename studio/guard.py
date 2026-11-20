@@ -32,6 +32,28 @@ SKIP_DIRS = {"node_modules", ".git", "__pycache__", ".venv", "venv", "dist", "bu
              ".pytest_cache", ".mypy_cache", ".ruff_cache", ".local_stack_logs", "logs", ".remember", ".next", ".vite",
              "runtime", "results", "outputs", "cache", ".cache", "tmp"}
 
+# What BioQL WRITES while it works, as opposed to what it is made of. A pipeline that finishes drops its result
+# under `job_results/` and its report under `artifacts/`; a run that does that has not been edited, it has run.
+#
+# This does NOT hide anything: an output is still listed, still counted and still makes the report not clean. What
+# it changes is which half raises the alarm. Before this, every single pipeline run turned the guard red with
+# "BioQL changed", and a guard that is red after every run is a guard nobody reads — which is the same as not
+# having one. The alarm is for SOURCE.
+OUTPUT_MARKS = ("job_results/", "artifacts/", "outputs/", "reports/", "checkpoints/", "exports/")
+OUTPUT_EXT = (".log", ".png", ".jpg", ".svg", ".pdf", ".csv", ".parquet", ".pkl", ".npy", ".npz", ".h5", ".ckpt")
+
+
+def is_output(path: str) -> bool:
+    """Whether this path is something BioQL WROTE rather than something BioQL IS. Said by rule, in one place, so a
+    person reading the report can check the rule against the path themselves.
+
+    Paths in a snapshot are built by this module with `/`, so there is no separator to normalise — and no string
+    `.replace` here, which the source guard in tests/test_guard_and_contract.py reads as a write.
+    """
+    p = str(path)
+    return any(p.startswith(m) or ("/" + m) in p for m in OUTPUT_MARKS) or p.endswith(OUTPUT_EXT)
+
+
 HOME = Path.home()
 ROOTS = [
     {"name": "Spectrix_BioQL", "path": str(HOME / "Documents/Proyectos/Spectrix_BioQL"), "git": True},
@@ -144,12 +166,25 @@ def compare(before: dict, after: dict) -> dict:
         if blind:
             added = removed = changed = []
             git = {}
+        # Source and output are counted apart. `clean` still means "nothing moved at all" — it is not softened —
+        # but `source_clean` is what the window raises an alarm on, because a finished pipeline writing its own
+        # result is not BioQL being edited.
+        src = {"added": [x for x in added if not is_output(x)],
+               "removed": [x for x in removed if not is_output(x)],
+               "changed": [x for x in changed if not is_output(x)]}
+        outs = sorted(set(added + removed + changed) - set(src["added"] + src["removed"] + src["changed"]))
+        source_dirty = bool(src["added"] or src["removed"] or src["changed"] or git or b["exists"] != a["exists"])
         report["roots"][name] = {"added": added, "removed": removed, "changed": changed, "git": git,
                                  "clean": not dirty and not blind, "files": len(af),
+                                 "source": src, "outputs": outs,
+                                 "source_clean": not source_dirty and not blind,
                                  "unreadable": blind, "readable": not blind, "compared": not blind}
         report["clean"] = report["clean"] and not dirty and not blind
+        report["source_clean"] = report.get("source_clean", True) and not source_dirty and not blind
     report["unreadable"] = sorted({u for r in report["roots"].values() for u in r["unreadable"]})
     report["readable"] = not report["unreadable"]
+    report.setdefault("source_clean", True)
+    report["outputs_written"] = sum(len(r.get("outputs") or []) for r in report["roots"].values())
     return report
 
 

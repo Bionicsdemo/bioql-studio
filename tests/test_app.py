@@ -461,13 +461,18 @@ def test_an_unknown_run_id_is_a_404_and_never_a_path(svc):
 
 
 # ------------------------------------------------------------------ the record
-def test_the_ledger_records_the_verdict_and_the_findings(svc):
-    """Every row carries its verdict and findings, whoever wrote it.
+def test_one_row_per_call_carries_the_verdict_the_findings_and_their_detail(svc):
+    """ONE line per call, complete. Not two, and not one of them stripped.
 
-    This test used to assert the opposite for the adapter's own rows: `_note` computed the verdict and did not write
-    it, so anything reading the ledger back — the board, the notebook, a report — could not tell an unchecked result
-    from a clean one. The window compensated with a row of its own. The adapter records it now, and
-    `verdict_recorded` stays as the flag that tells "not recorded" apart from "clean"."""
+    The history: `studio.adapter._note` computed the verdict and did not write it, so the window added a second
+    row of its own to carry it. The adapter was fixed; the second row survived the fix. From then on every window
+    call was on the signed record TWICE — once complete, once with every finding's `detail` thrown away — so
+    Findings showed 92 rows for 46 calls, counted one contradiction as two, and printed bare codes like
+    `subspace_fraction_missing` with nothing a person could act on.
+
+    What the window knows and the adapter does not (which event, which approval) now rides on `note=` and lands on
+    the single row.
+    """
     ents = entries(twin={"method": "POST", "path": "/api/mixed", "kind": "local", "timeout": 30,
                          "why": "provenance that contradicts itself"})
     s2 = Svc(svc.s.home, svc.s.adapter.base, ents)
@@ -476,15 +481,16 @@ def test_the_ledger_records_the_verdict_and_the_findings(svc):
         assert code == 200 and body["verdict"] in ("concerns", "contradicted") and body["findings"]
         code, out, _ = s2.j("/api/ledger?limit=100")
         assert code == 200 and out["chain"]["ok"]
-        mine = [r for r in out["rows"] if r.get("window_event") == "call"]
-        assert mine and mine[-1]["verdict"] == body["verdict"]
-        assert [f["code"] for f in mine[-1]["findings"]] == [f["code"] for f in body["findings"]][:20]
-        assert mine[-1]["verdict_recorded"] is True
-        # the adapter's own rows now carry it too, and a row that genuinely has none still says so rather than
-        # reading as clean
-        theirs = [r for r in out["rows"] if "window_event" not in r]
-        assert theirs and all(r["verdict_recorded"] is (r["verdict"] is not None) for r in theirs)
-        assert any(r["verdict"] is not None for r in theirs), "the adapter must put the verdict on its own line"
+        mine = [r for r in out["rows"] if r.get("tool") == "twin"]
+        assert len(mine) == 1, f"one call wrote {len(mine)} rows"
+        row = mine[0]
+        assert row["window_event"] == "call" and row["by"] == "window"
+        assert row["verdict"] == body["verdict"] and row["verdict_recorded"] is True
+        assert [f["code"] for f in row["findings"]] == [f["code"] for f in body["findings"]][:20]
+        # the explanation travels WITH the code, bounded so one line cannot break the hash chain
+        assert all(f.get("detail") for f in row["findings"]), "a finding with no detail is a code nobody can act on"
+        assert all(len(f["detail"]) <= 300 for f in row["findings"])
+        assert row["method"] == "POST" and row["path"] == "/api/mixed"      # the adapter's own facts, same line
     finally:
         s2.stop()
 
