@@ -975,6 +975,13 @@ def make_handler(s: Studio):
                         since = 0
                     out, code = s.turn_of(tid, since)
                     return self._json(out, code)
+                if p == "/api/connect":
+                    # READ ONLY, and it stays that way. Registering BioQL edits the MCP configuration of the
+                    # person's Claude clients — their whole setup — so it is a command they run with their own
+                    # hands, not a button an app presses. This page says where it stands and what to type.
+                    from studio import connect as _connect
+                    return self._json({"clients": _connect.status(), "entry": _connect.entry(),
+                                       "command": "python3 -m studio connect"})
                 if p == "/api/brain":
                     # Where Claude Code is and what version. It does NOT probe: asking whether the account answers
                     # spends a turn of the person's own usage, so that is a button (POST), never a page load.

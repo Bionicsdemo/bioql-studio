@@ -940,6 +940,29 @@ async function drawBrain(box) {
     box.appendChild(el("p", "fine", "Run it in a terminal once. It signs in with your own Claude account, in " +
       "Claude Code, where it belongs — nothing about it passes through this app, and nothing is stored here."));
   }
+  // Where BioQL is plugged in. This page REPORTS; it does not register. Writing into a Claude client's MCP
+  // configuration changes that client for every session the person opens, which is their decision to make with
+  // their own hands — an app that rewires the agent on its own is the thing nobody should ship.
+  const { body: conn } = await api("/api/connect");
+  if (conn && conn.clients) {
+    box.appendChild(el("h3", "sect", "BioQL inside your other Claude clients"));
+    box.appendChild(el("p", "fine", "Studio is already an MCP server: " +
+      "BioQL's pipelines with the approval gate on them, plus the tools that read the record. Registered below, " +
+      "BioQL is there in whatever Claude you already have open — nothing new to launch."));
+    box.appendChild(tableNode(["client", "state", "what it says"],
+      conn.clients.map((c) => [c.client,
+        chip(String(c.state).toLowerCase().replace("_", " "),
+             c.state === "REGISTERED" ? "clean" : (c.state === "UNRESOLVABLE" ? "bad" : "plain")),
+        c.detail])));
+    box.appendChild(el("p", "fine", "To plug it in, run this yourself — it edits those clients' own configuration, " +
+      "so it is yours to run, and it copies each file aside first. `--remove` undoes it."));
+    box.appendChild(el("p", "cmd", conn.command || "python3 -m studio connect"));
+    box.appendChild(el("p", "fine", "What that widens: any Claude session running as you could then call BioQL's " +
+      "read-only entries without this window. What it does NOT widen: anything that spends compute or could reach " +
+      "real quantum hardware still refuses without a person's approval, which that door cannot give — and every " +
+      "call is still one line on the signed record."));
+  }
+
   box.appendChild(el("p", "fine", "What this app does with that connection: every question you ask goes to Claude " +
     "Code, which reaches BioQL only through Studio's closed list of 502 entries, with a person's approval required " +
     "for anything that spends compute, and one line on the signed record for every call. Claude also sees the " +

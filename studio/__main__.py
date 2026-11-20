@@ -10,6 +10,8 @@
   python -m studio release key                   make (or show) the Ed25519 key that signs releases
   python -m studio release sign DMG --version V  write latest.json and its signature beside the image
   python -m studio release check                 ask the channel what it publishes, and verify the signature
+  python -m studio connect [--remove|--status]   plug BioQL into every Claude on this Mac, over MCP
+  python -m studio refresh                       backfill what BioQL says about each entry, from its registry
 """
 from __future__ import annotations
 
@@ -36,7 +38,29 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("mcp")
     r = sub.add_parser("release"); r.add_argument("action", choices=("key", "sign", "check"))
     r.add_argument("dmg", nargs="?"); r.add_argument("--version")
+    cn = sub.add_parser("connect")
+    cn.add_argument("--remove", action="store_true", help="take BioQL out of those clients again")
+    cn.add_argument("--status", action="store_true", help="only say where it is plugged in")
+    sub.add_parser("refresh")
     ns = ap.parse_args(argv)
+
+    if ns.cmd == "connect":
+        from . import connect as cn
+        if ns.status:
+            for row in cn.status():
+                print(f"{row['client']:<16} {row['state']:<15} {row['detail']}")
+            return 0
+        res = cn.apply(remove=ns.remove)
+        print(json.dumps(res.as_dict(), indent=1, default=str))
+        return 0 if res.resolved or res.absent else 2
+
+    if ns.cmd == "refresh":
+        from . import allowlist as al2
+        res = Adapter(log=False).call("tools_registry")
+        if not res.resolved:
+            print(json.dumps(res.as_dict(), indent=1)); return 2
+        print(json.dumps(al2.refresh(res.value.get("tools") or []), indent=1, ensure_ascii=False))
+        return 0
 
     if ns.cmd == "release":
         from . import release as rel

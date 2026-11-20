@@ -188,5 +188,69 @@ def from_registry(tool: dict, kind: str | None = None) -> dict:
     return {"method": "POST", "path": tool["endpoint"], "kind": k,
             "required": list(s.get("required") or []), "optional": list(s.get("optional") or []),
             "approval": k in ("compute", "hardware") or bool(s.get("confirmation_required")), "timeout": 43200,
-            "why": (s.get("notes") or "")[:300], "from_registry": {"name": tool.get("name"), "version": s.get("version"),
-                                                                   "cost_tier": tier or None}}
+            "why": (s.get("notes") or "")[:300], "from_registry": meta_of(tool)}
+
+
+# What BioQL says ABOUT a tool, as opposed to how to call it. This used to be thrown away and it is the most
+# useful thing in the registry: with 502 entries in front of it, a model picks by these words.
+#
+# `forbidden_inference` is the one that matters most and it is not a nicety — it is BioQL stating, per pipeline,
+# which arguments a model MUST NOT invent. `peptide_discovery` forbids inferring `target` and `indication`: those
+# are the two that decide what gets designed and for what disease. Studio was dropping that rule on the floor.
+META_KEYS = ("cost_tier", "modality", "intent_terms", "forbidden_inference", "mutually_exclusive",
+             "confirmation_required")
+
+
+def meta_of(tool: dict) -> dict:
+    s = tool.get("schema") or {}
+    out = {"name": tool.get("name"), "version": s.get("version")}
+    for key in META_KEYS:
+        v = s.get(key)
+        if v not in (None, "", [], {}):
+            out[key] = [str(x)[:60] for x in v][:12] if isinstance(v, list) else v
+    if isinstance(out.get("cost_tier"), str):
+        out["cost_tier"] = out["cost_tier"].lower()
+    return out
+
+
+def refresh(reg_tools: list[dict]) -> dict:
+    """Backfill what BioQL says about entries that already exist, from its own registry.
+
+    The 498 entries on this Mac were written before `meta_of` kept any of it, so every one of them had lost its
+    intent terms, its modality and — the one that matters — its `forbidden_inference`. This puts that back.
+
+    What it will NOT touch, ever: `path`, `kind`, `approval`, `enabled`, `method`, `via`, `timeout`. Those are the
+    owner's decisions about what Studio may reach and what needs a person, and a refresh from BioQL's registry is
+    not a vote on them. `required`/`optional` are filled only when the entry has NONE — BioQL is the source for
+    them, but an entry the owner has already shaped is not overwritten behind their back.
+    """
+    by_name: dict[str, dict] = {}
+    by_path: dict[str, dict] = {}
+    for t in reg_tools:
+        if t.get("name"):
+            by_name[str(t["name"])] = t
+        if t.get("endpoint"):
+            by_path[str(t["endpoint"])] = t
+    f = path_file()
+    own = json.loads(f.read_text(encoding="utf-8")) if f.exists() else {}
+    changed, filled, missed = 0, 0, 0
+    for name, e in own.items():
+        t = by_name.get(str((e.get("from_registry") or {}).get("name") or name)) or by_name.get(name) \
+            or by_path.get(str(e.get("path") or ""))
+        if t is None:
+            missed += 1
+            continue
+        meta = meta_of(t)
+        if meta != (e.get("from_registry") or {}):
+            e["from_registry"] = {**(e.get("from_registry") or {}), **meta}
+            changed += 1
+        s = t.get("schema") or {}
+        if not e.get("required") and not e.get("optional") and (s.get("required") or s.get("optional")):
+            e["required"] = list(s.get("required") or [])
+            e["optional"] = list(s.get("optional") or [])
+            filled += 1
+    write_private(f, json.dumps(own, indent=2, ensure_ascii=False) + "\n")
+    return {"entries": len(own), "metadata_updated": changed, "parameters_filled": filled,
+            "not_in_registry": missed,
+            "note": "paths, kinds, approval flags and enabled stay exactly as they were: this reads BioQL, it "
+                    "does not re-decide what Studio may reach."}

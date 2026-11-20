@@ -54,19 +54,52 @@ RUN_MANY = {
 
 
 def _schema(e: dict) -> dict:
-    props = {k: {"type": "string"} if k in ("smiles", "job_id", "target", "format") else {}
-             for k in e["required"] + e["optional"]}
+    # A parameter BioQL forbids inferring is SAID on the parameter itself, not only in the tool's description: a
+    # model reading one property at a time should still meet the rule.
+    forbid = set((e.get("from_registry") or {}).get("forbidden_inference") or [])
+    props = {}
+    for k in e["required"] + e["optional"]:
+        one: dict = {"type": "string"} if k in ("smiles", "job_id", "target", "format") else {}
+        if k in forbid:
+            one = {**one, "description": "BioQL forbids inferring this: it must come from the person who asked, "
+                                         "word for word. Ask them rather than choosing it."}
+        props[k] = one
     for p in __import__("re").findall(r"\{([a-z_][a-z0-9_]*)\}", e["path"]):
         props[p] = {"type": "string"}
     return {"type": "object", "properties": props, "required": list(dict.fromkeys(e["required"])),
             "additionalProperties": False}
 
 
+def _describe(e: dict) -> str:
+    """What BioQL itself says about this pipeline, which is how anything picks one out of five hundred.
+
+    The allowlist carried this all along and the tool list threw it away: the description was `[kind] why`, and
+    `why` is often BioQL's empty `notes`. The words a person would use for this pipeline (`intent_terms`), what it
+    costs, what it designs, and above all what must NOT be invented now travel with the tool.
+    """
+    m = e.get("from_registry") or {}
+    bits = [f"[{e['kind']}]"]
+    if m.get("modality"):
+        bits.append(f"{m['modality']} ·")
+    bits.append((e.get("why") or f"BioQL {m.get('name') or e['name']}").strip())
+    if m.get("cost_tier"):
+        bits.append(f"Cost tier: {m['cost_tier']}.")
+    if m.get("intent_terms"):
+        bits.append("Asked for as: " + ", ".join(m["intent_terms"]) + ".")
+    if m.get("forbidden_inference"):
+        bits.append("BioQL FORBIDS inferring " + ", ".join(m["forbidden_inference"])
+                    + ": take them from the person, word for word, or ask.")
+    if m.get("mutually_exclusive"):
+        bits.append("Not together with: " + ", ".join(m["mutually_exclusive"]) + ".")
+    if e["approval"] or e["kind"] == "hardware":
+        bits.append("Needs a person's approval; Claude cannot run it.")
+    return " ".join(bits).strip()
+
+
 def tool_list(ad: Adapter) -> list[dict]:
     out = []
     for e in ad.tools():
-        note = " Needs a person's approval; Claude cannot run it." if e["approval"] or e["kind"] == "hardware" else ""
-        out.append({"name": e["name"], "description": f"[{e['kind']}] {e['why']}{note}".strip(), "inputSchema": _schema(e)})
+        out.append({"name": e["name"], "description": _describe(e), "inputSchema": _schema(e)})
     out.append(dict(RUN_MANY))
     # And the instrument itself. Claude had 502 doors into BioQL and none into the record around it: it could run
     # a pipeline and not ask what had already been run, be told a result contradicted itself and have no way to

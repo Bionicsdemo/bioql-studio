@@ -1080,3 +1080,22 @@ def test_the_version_has_one_source_and_the_update_channel_reads_that_one():
     for script in ("build.sh", "dmg.sh"):
         src = (root / "app" / "macos" / script).read_text()
         assert 'app/__init__.py' in src, script
+
+
+def test_the_app_reports_where_bioql_is_plugged_in_and_never_registers_it_itself(svc):
+    """Registering BioQL edits the MCP configuration of the person's Claude clients — their whole setup, for every
+    session they open. That is theirs to run. This window says where it stands and what to type, and the service
+    has no route that writes it.
+    """
+    code, body, _ = svc.j("/api/connect")
+    assert code == 200
+    assert body["command"] == "python3 -m studio connect"
+    assert {c["client"] for c in body["clients"]} >= {"Claude Code", "Claude Desktop"}
+    assert all(c["state"] in ("REGISTERED", "NOT_REGISTERED", "STALE", "ABSENT", "UNRESOLVABLE")
+               for c in body["clients"])
+    # the registration carries no secret, and the window is shown it
+    assert "token" not in json.dumps(body["entry"]).lower()
+    # and there is NO route that writes a client config
+    src = (studio.Path(__file__).resolve().parents[1] / "app" / "service.py").read_text()
+    assert "connect.apply(" not in src and "_connect.apply" not in src
+    assert svc.j("/api/connect", {"register": True})[0] == 404      # not a POST either
