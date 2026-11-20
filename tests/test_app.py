@@ -355,14 +355,17 @@ def test_the_static_server_has_no_path_to_climb(svc):
     for path in ("/../app/service.py", "/..%2f..%2fapp/service.py", "/%2e%2e/service.py", "/web/app.js",
                  "/app.js/", "/ui.token", "/runs.jsonl", "/../../ui.token", "/favicon.ico", "/nope.html",
                  # el directorio del visor no se puede recorrer: solo el fichero que esta en la lista
-                 "/vendor/", "/vendor/SHA256.txt", "/vendor/../app.js", "/vendor/3Dmol-min.js.LICENSE.txt"):
+                 "/vendor/", "/vendor/SHA256.txt", "/vendor/../app.js", "/vendor/3Dmol-min.js.LICENSE.txt",
+                 "/vendor/PROCEDENCIA.txt", "/vendor/molstar.js.map"):
         code, raw, _ = svc.req(path, token=None)
         assert code == 404, (path, code)
         assert b"def " not in raw and b"import " not in raw
-    for path in ("/", "/index.html", "/app.js", "/app.css", "/vendor/3Dmol-min.js"):
+    for path in ("/", "/index.html", "/app.js", "/app.css", "/vendor/3Dmol-min.js",
+                 "/vendor/molstar.js", "/vendor/molstar.css"):
         code, raw, _ = svc.req(path, token=None)
         assert code == 200 and raw, path
-    assert set(STATIC) == {"/", "/index.html", "/app.js", "/app.css", "/vendor/3Dmol-min.js"}
+    assert set(STATIC) == {"/", "/index.html", "/app.js", "/app.css", "/vendor/3Dmol-min.js",
+                           "/vendor/molstar.js", "/vendor/molstar.css"}
 
 
 def test_the_vendored_viewer_is_the_build_it_says_it_is(svc):

@@ -1033,38 +1033,94 @@ def card(payload: Any, tool: str | None = None, meta: dict | None = None) -> dic
 #
 # Measured against a real `quantum_antibody_discovery` result (job 10620ccd-07b): BioQL's window draws 12 cards for
 # it and this module drew ONE, 276 blocks deep, with every section's numbers in the same undivided list.
-SECTIONS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
-    ("candidates", "Candidates",
-     ("candidates", "discovery.candidates", "candidates_generated.small_molecules",
-      "candidates_generated.peptides", "candidates_generated.nanobodies")),
-    ("admet", "ADMET",
-     ("admet", "stages.2_admet.data", "analyses.admet", "best_candidate.analyses.admet", "best_candidate.admet",
-      "candidates.0.analyses.admet", "candidates.0.admet")),
-    ("docking", "Docking",
-     ("docking", "stages.9_docking", "stages.6_docking", "analyses.docking",
-      "best_candidate.analyses.docking", "best_candidate.docking",
-      "candidates.0.analyses.docking", "candidates.0.docking")),
-    ("toxicology", "Toxicology",
-     ("toxicology", "stages.3_toxicology.data", "toxicology_study", "admet.toxicology", "analyses.toxicology",
-      "best_candidate.analyses.toxicology", "best_candidate.toxicology", "best_candidate.admet.toxicology",
-      "candidates.0.analyses.toxicology", "candidates.0.toxicology", "candidates.0.admet.toxicology",
-      "discovery.toxicology", "stages.7_toxicology.data")),
-    ("pharmacology", "Pharmacology",
-     ("pharmacology", "stages.4_pharmacology.data", "pharmacology_study", "analyses.pharmacology",
-      "best_candidate.analyses.pharmacology", "best_candidate.pharmacology",
-      "candidates.0.analyses.pharmacology", "candidates.0.pharmacology", "discovery.pharmacology",
-      "pharmacokinetics")),
-    ("clinical", "Clinical simulation",
-     ("clinical_trial", "stages.5_clinical_trial.data", "stages.clinical_trial_simulation.trials.0",
-      "clinical_trials", "analyses.clinical_trial", "best_candidate.analyses.clinical_trial",
-      "best_candidate.clinical_trial", "candidates.0.analyses.clinical_trial", "candidates.0.clinical_trial")),
-    ("generative", "Generative model", ("trained_generator", "stages.iglm_proposer")),
-    ("qdiffvision", "QDiffVision", ("qdiffvision",)),
-    ("quantum_cell", "Quantum cell", ("quantum_cell", "cell_simulation")),
-    ("consistency_audit", "Consistency audit", ("consistency_audit",)),
-    ("visualization", "Visualization", ("visualization",)),
-    ("structure", "Structure", ("mol_3d", "structure_3d", "best_candidate.mol_3d", "candidates.0.mol_3d",
-                                "stages.10_3d_structure")),
+# Las 39 secciones del manifiesto de BioQL, GENERADAS de `cardRegistry.ts` y no escritas a mano: id de
+# enriquecimiento, titulo, y sus condiciones. Cada condicion es una tupla de rutas en OR —cualquiera vale—
+# y TODAS las condiciones deben cumplirse, que es exactamente lo que hace `evaluateCard` alli. La seccion se
+# muestra desde la primera ruta de la PRIMERA condicion que resolvio: la principal.
+SECTIONS: tuple[tuple[str, str, tuple[tuple[str, ...], ...]], ...] = (
+    ('macrocycle', 'Macrocycle',
+     (('stages.1_build',), ('candidates',))),   # MacrocycleCard
+    ('consistencyAudit', 'Consistency audit',
+     (('consistency_audit.status',),)),   # ConsistencyAuditCard
+    ('generativeModel', 'Generative model',
+     (('trained_generator', 'stages.iglm_proposer'),)),   # GenerativeModelCard
+    ('qdiffvision', 'QDiffVision',
+     (('qdiffvision',),)),   # QDiffVisionCard — `pipeline` quitado de sus
+     # alternativas: cualquier resultado tiene esa clave, asi que la tarjeta se encenderia en TODOS. El propio
+     # `cardRegistry.ts` dice que una entrada rancia ahi es un fallo del manifiesto, no del despachador.
+    ('moleveraVeterinaryAntibodyDesign', 'Molevera Veterinary Antibody Design',
+     (('antigen_identity.status',), ('stages',), ('candidates', 'antigen_identity.reason'))),   # MoleveraVeterinaryAntibodyDesignCard
+     # `stages` sola encenderia en casi todo, pero aqui va EN Y con `antigen_identity`, que es suya.
+    ('veterinaryAntibodyProgram', 'Veterinary Antibody Program',
+     (('program_id',), ('phase_statuses',), ('artifact_bundle.manifest_path', 'summary.decision'))),   # VeterinaryAntibodyProgramCard
+    ('replicon', 'Replicon',
+     (('genome.organism',), ('genome.resolved',), ('replicon_design.construct',), ('summary.measured_quantum_pct',))),   # RepliconCard
+    (None, 'Mrna Therapeutic',
+     (('stages.1_protein_design.mature_length_aa',), ('structure_3d.length_aa', 'structure_3d.sequence'))),   # MrnaTherapeuticCard
+    ('protenix', 'Protenix Confidence Panel',
+     (('confidence.plddt', 'confidence.ptm', 'confidence.iptm', 'plddt', 'iptm'),)),   # ProtenixConfidencePanel
+    ('mol3d', 'Structure',
+     (('mol_3d', 'stages.10_3d_structure.mol_block', 'best_candidate.mol_3d', 'candidates.0.mol_3d'),)),   # (inline: InteractiveMoleculeViewer / MoleculeViewer3D)
+    ('docking', 'Docking',
+     (('docking', 'stages.9_docking', 'stages.6_docking', 'analyses.docking', 'best_candidate.analyses.docking', 'best_candidate.docking', 'candidates.0.analyses.docking', 'candidates.0.docking'),)),   # (inline JSX block)
+    ('admet', 'ADMET',
+     (('admet', 'stages.2_admet.data', 'analyses.admet', 'best_candidate.analyses.admet', 'best_candidate.admet', 'candidates.0.analyses.admet', 'candidates.0.admet'),)),   # ADMETRadarChart
+    ('candidates', 'Candidates',
+     (('candidates', 'discovery.candidates', 'candidates_generated.small_molecules', 'candidates_generated.peptides', 'candidates_generated.nanobodies'),)),   # PipelineResultsChart
+    ('toxicology', 'Toxicology',
+     (('toxicology', 'stages.3_toxicology.data', 'toxicology_study', 'admet.toxicology', 'analyses.toxicology', 'best_candidate.analyses.toxicology', 'best_candidate.toxicology', 'best_candidate.admet.toxicology', 'candidates.0.analyses.toxicology', 'candidates.0.toxicology', 'candidates.0.admet.toxicology', 'discovery.toxicology', 'stages.7_toxicology.data', 'acute_toxicity', 'ada_risk'),)),   # (inline: renderToxicology helper)
+    ('pharmacology', 'Pharmacology',
+     (('pharmacology', 'stages.4_pharmacology.data', 'pharmacology_study', 'analyses.pharmacology', 'best_candidate.analyses.pharmacology', 'best_candidate.pharmacology', 'candidates.0.analyses.pharmacology', 'candidates.0.pharmacology', 'discovery.pharmacology', 'pharmacokinetics', 'admet.excretion.half_life_days'),)),   # (inline: renderPharmacology helper)
+    ('clinical', 'Clinical simulation',
+     (('clinical_trial', 'stages.5_clinical_trial.data', 'stages.clinical_trial_simulation.trials.0', 'clinical_trials', 'analyses.clinical_trial', 'best_candidate.analyses.clinical_trial', 'best_candidate.clinical_trial', 'candidates.0.analyses.clinical_trial', 'candidates.0.clinical_trial', 'phase_I', 'phase_1'),)),   # (inline: renderClinicalTrial helper)
+    ('quantumCell', 'Quantum cell',
+     (('quantum_cell', 'cell_simulation'),)),   # `success` quitado: es una
+     # clave que lleva medio BioQL, y una tarjeta de celula cuantica encendida por ella no habla de una celula.   # QuantumCellCard
+    ('biomolecules', 'Biomolecules',
+     (('therapeutic_peptides.candidates', 'antibody_fragments.candidates', 'enzyme_mimetics.candidates'),)),   # (inline: renderBiomolecules helper)
+    ('structure3dPdb', 'Structure3d Pdb',
+     (('structure_3d.pdb', 'structure_3d.pdb_data', 'pdb_data', 'complex_pdb'), ('structure_3d.length_aa',))),   # (inline: InteractiveMoleculeViewer, via structure3dPdb + structure3dMeta)
+    ('complexPdb', 'Complex Pdb',
+     (('complex_structure_3d.pdb',),)),   # (inline: InteractiveMoleculeViewer, via complexPdb + complexMeta)
+    ('fep', 'FEP',
+     (('fep_rbfe_alchemical', 'fep_rbfe'),)),   # FEPResultsCard
+    ('diffdock', 'DiffDock',
+     (('engine', 'docking.engine', 'diffdock'),)),   # DiffDockCard
+    ('genmol', 'GenMol',
+     (('generative_genmol', 'genmol'),)),   # GenMolCard
+    ('binder', 'Binder Design',
+     (('denovo_scaffold', 'denovo_binder_design'),)),   # BinderDesignCard
+    ('crispr', 'CRISPR',
+     (('offtarget', 'guides'),)),   # CrisprOfftargetCard
+    ('metabolism', 'Metabolism',
+     (('site_of_metabolism', 'pk_clearance', 'pk_half_life'),)),   # MetabolismCard
+    ('qchem', 'Quantum Chem Boundary',
+     (('quantum_chem_advantage_boundary',),)),   # QuantumChemBoundaryCard
+    ('trustBadges', 'Trust Badges',
+     (('validated', 'component', 'badge'),)),   # TrustBadgesCard
+    ('selectivity', 'Selectivity',
+     (('selectivity_panel.selectivity_score', 'selectivity.selectivity_score', 'selectivity_panel.n_tested', 'selectivity_panel.targets', 'selectivity_panel.matrix', 'selectivity_panel.off_targets'),)),   # SelectivityCard
+    ('translational', 'Translational Safety',
+     (('structural_alerts', 'dose_response_model', 'pharmacogenomics', 'functional_engagement'),)),   # TranslationalSafetyCard
+    ('bionemoAug', 'Bio Ne Mo Aug',
+     (('bionemo_msa', 'msa_folding_uplift', 'bionemo_singlecell', 'quantum_cell_singlecell_xcheck'),)),   # BioNeMoAugCard
+    ('antibodyBench', 'Antibody Benchmark',
+     (('biophi_humanness', 'abbibench_zeroshot', 'abbind_ddg', 'abag_interaction', 'flab_developability', 'denovo_binder_design'),)),   # AntibodyBenchmarkCard
+    ('audit', 'Audit Panel',
+     (('audit',),)),   # AuditPanel
+    ('insights', 'Insight',
+     (('insights', 'best_candidate_full.insights'),)),   # InsightCard
+    ('validation', 'Validation Banner',
+     (('validation',),)),   # ValidationBanner
+    ('provenance', 'Provenance Panel',
+     (('provenance', 'best_candidate_full.provenance'),)),   # ProvenancePanel
+    ('molecularRelationships', 'Molecular Relationship Graph',
+     (('molecular_relationships', 'best_candidate_full.molecular_relationships'),)),   # MolecularRelationshipGraph
+    ('externalValidation', 'Clinical Validation Panel',
+     (('external_validation',),)),   # ClinicalValidationPanel
+    ('visualization', 'Visualization',
+     (('visualization',),)),   # PipelineVisualization
+# 39 secciones
 )
 
 
@@ -1091,20 +1147,33 @@ def _nonempty(v: Any) -> bool:
 
 
 def sections(payload: Any) -> list[tuple[str, str, str, Any]]:
-    """(id, title, the path it was found at, the subtree) for every section BioQL's own manifest would fire on.
+    """(id, title, the path it was shown from, the subtree) for every section BioQL's own manifest fires on.
 
-    The FIRST path that resolves wins, in the registry's own order, so a section is read where BioQL reads it and
-    `best_candidate.admet` does not become a second ADMET card beside `admet`.
+    The semantics are BioQL's, not a simplification of them: within one condition the paths are alternatives (its
+    `alsoPaths`), and ACROSS conditions every one must resolve (its `requiredKeys` are an AND). A card whose second
+    condition is missing does not render over there, and it must not render here either — that is the difference
+    between "this result has a macrocycle stage" and "this result has a `candidates` key like almost every result".
     """
     out: list[tuple[str, str, str, Any]] = []
     if not isinstance(payload, (dict, list)):
         return out
-    for sid, title, paths in SECTIONS:
-        for path in paths:
-            v = _at(payload, path)
-            if _nonempty(v):
-                out.append((sid, title, path, v))
+    for sid, title, specs in SECTIONS:
+        shown: tuple[str, Any] | None = None
+        ok = True
+        for alternatives in specs:
+            hit = None
+            for path in alternatives:
+                v = _at(payload, path)
+                if _nonempty(v):
+                    hit = (path, v)
+                    break
+            if hit is None:
+                ok = False
                 break
+            if shown is None:
+                shown = hit
+        if ok and shown is not None:
+            out.append((sid, title, shown[0], shown[1]))
     return out
 
 

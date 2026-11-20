@@ -58,13 +58,11 @@ STATIC = {"/": ("index.html", "text/html; charset=utf-8"),
           # and its sha256 (see vendor/PROCEDENCIA.txt). It is served from here, not from a CDN: the CSP says
           # `script-src 'self'` and an app whose whole design is 127.0.0.1 does not reach the internet to draw a
           # molecule. The map stays a closed list — a path is never built out of the request.
-          "/vendor/3Dmol-min.js": ("vendor/3Dmol-min.js", "text/javascript; charset=utf-8")}
-# NO se sirve Mol*. Se vendio, se cargo en WebKit con la configuracion de la app y se midio: su bundle necesita
-# `eval`, y la CSP de esta ventana dice `script-src 'self'` sin `'unsafe-eval'`. La violacion registrada fue
-# literalmente `script-src <- eval @ /vendor/molstar.js`, y el visor no llego a crear un canvas. Darle
-# `'unsafe-eval'` convierte cualquier cadena en codigo DENTRO de la ventana que lleva el token de esta
-# instalacion, asi que es una decision del dueno y no un retoque callado de la politica. Mientras tanto: 3Dmol
-# para girar la molecula (cero violaciones, medido) y PyMOL para la foto trazada.
+          "/vendor/3Dmol-min.js": ("vendor/3Dmol-min.js", "text/javascript; charset=utf-8"),
+          # Mol* 5.10.1, el mismo build que declara el package.json de BioQL: superficies, seleccion, panel de
+          # secuencia y medidas. Se carga SOLO cuando una tarjeta lo pide — son 4,7 MB y la ventana abre sin el.
+          "/vendor/molstar.js": ("vendor/molstar.js", "text/javascript; charset=utf-8"),
+          "/vendor/molstar.css": ("vendor/molstar.css", "text/css; charset=utf-8")}
 
 # Agtr's CSP (agtrcore/app.py:607-612) allows 'unsafe-inline' styles and frames from ANY localhost port, because its
 # window embeds VS Code and sandboxed canvases. Studio keeps the strict half — nothing inline, nothing loaded from
@@ -76,7 +74,16 @@ BIOQL_UI = os.environ.get("BIOQL_UI_URL", "http://127.0.0.1:3000").rstrip("/")
 # section for it used to list the thirteen routes the allowlist holds, which is not what the owner opens on 3000:
 # a list of endpoints is not an interface. The window frames the real one, as it frames BioQL's.
 RADAR_UI = os.environ.get("BIOQL_RADAR_URL", "http://127.0.0.1:4000").rstrip("/")
-CSP = ("default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; "
+# `'unsafe-eval'`: Mol* lo necesita. Medido en WebKit con esta misma configuracion ANTES de pedirlo — la
+# violacion era `script-src <- eval @ /vendor/molstar.js` y el visor no llegaba a crear un canvas. Lo que abre es
+# real: dentro de esta ventana, que lleva el token de la instalacion, una cadena puede volverse codigo. Por eso no
+# se puso solo; el dueno lo autorizo el 2026-11-19. Lo que NO se abre sigue cerrado: nada se carga de fuera
+# (`'self'`), no hay `'unsafe-inline'`, y `connect-src` sigue siendo solo este origen, asi que ni Mol* ni nada que
+# corra aqui puede mandar un byte a ningun sitio.
+CSP = ("default-src 'none'; script-src 'self' 'unsafe-eval'; style-src 'self'; img-src 'self' data: blob:; "
+       # `data:` en connect-src: Mol* lee asi sus propios recursos empotrados. Un `data:` se lleva su contenido
+       # dentro, asi que no alcanza ningun host — esto no abre la red, sigue cerrada a este origen.
+       "connect-src 'self' data:; worker-src 'self' blob:; "
        f"frame-src {BIOQL_UI} http://localhost:3000 {RADAR_UI} http://localhost:4000; "
        "base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'")
 

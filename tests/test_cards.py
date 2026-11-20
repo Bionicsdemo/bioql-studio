@@ -730,8 +730,9 @@ def test_a_result_becomes_the_sections_bioql_draws():
     g = cards_of(payload, tool="quantum_antibody_discovery")
     assert g["kind"] == "group"
     titles = [c["title"] for c in g["cards"]]
-    assert titles[:6] == ["Candidates", "ADMET", "Toxicology", "Pharmacology", "Clinical simulation",
-                          "Consistency audit"]
+    for esperada in ("Candidates", "ADMET", "Toxicology", "Pharmacology", "Clinical simulation",
+                     "Consistency audit"):
+        assert esperada in titles, (esperada, titles)
     # nada se pierde entre secciones
     rest = [c for c in g["cards"] if c["section"] == "rest"][0]
     assert any("algo_que_nadie_reclama" in str(r.get("label")) for b in rest["blocks"]
@@ -834,3 +835,43 @@ def test_bioqls_own_3dmol_embed_is_the_structure():
     b = blocks_of(spec, "molecule3d")[0]
     assert [(p["role"], p["format"]) for p in b["parts"]] == [("protein", "pdb")]
     check_schema(spec)
+
+
+# ------------------------------------------------------------------ las 39 secciones del manifiesto
+def test_every_section_of_the_manifest_is_here():
+    """39 claves de enriquecimiento distintas en `cardRegistry.ts`. La tabla se GENERA de ahi, no se escribe."""
+    from studio.cards import SECTIONS
+    assert len(SECTIONS) == 39
+    ids = [s[0] for s in SECTIONS]
+    assert len(set(ids)) == 39
+    for sid, title, specs in SECTIONS:
+        assert title and isinstance(specs, tuple) and specs
+        for alt in specs:
+            assert isinstance(alt, tuple) and alt and all(isinstance(p, str) and p for p in alt)
+
+
+def test_the_conditions_are_an_and_as_they_are_in_bioql():
+    """`evaluateCard` exige TODAS las requiredKeys. Una tarjeta a la que le falta la segunda no se dibuja alli, y
+    no puede dibujarse aqui: es la diferencia entre "esto tiene una etapa de macrociclo" y "esto tiene una clave
+    `candidates` como casi todos los resultados"."""
+    from studio.cards import sections
+    assert [s[0] for s in sections({"candidates": [{"id": 1}]})] != ["macrocycle"]
+    full = {"stages": {"1_build": {"rings": 2}}, "candidates": [{"id": 1}]}
+    assert "macrocycle" in [s[0] for s in sections(full)]
+
+
+def test_within_a_condition_the_paths_are_alternatives():
+    from studio.cards import sections
+    a = [s for s in sections({"trained_generator": {"n_train": 538}}) if s[0] == "generativeModel"]
+    b = [s for s in sections({"stages": {"iglm_proposer": {"n": 1}}}) if s[0] == "generativeModel"]
+    assert a and b
+    assert a[0][2] == "trained_generator" and b[0][2] == "stages.iglm_proposer"
+
+
+def test_an_alternative_that_would_match_everything_is_dropped():
+    """`pipeline` y `success` estaban como alternativas de QDiffVision y de la celula cuantica: cualquier
+    resultado las lleva, asi que esas tarjetas se encenderian en TODOS. El propio manifiesto dice que una entrada
+    rancia ahi es un fallo suyo, no del despachador."""
+    from studio.cards import sections
+    ids = [s[0] for s in sections({"pipeline": "ADMET_STANDALONE", "success": True, "results": [1]})]
+    assert "qdiffvision" not in ids and "quantumCell" not in ids

@@ -2,5 +2,10 @@
 Copiado de BioQL (src/frontend/node_modules/3dmol/build/3Dmol-min.js), la MISMA version que usa la
 ventana de :3000, para que la app dibuje la estructura igual y sin pedir nada a internet.
 
-Mol* (molstar) 5.10.1 se probo y NO se incluye: su bundle necesita `eval` y la CSP de la ventana
-es `script-src 'self'`. Medido en WebKit: `script-src <- eval @ /vendor/molstar.js`, sin canvas.
+Mol* (molstar) 5.10.1 — https://molstar.org/ — MIT.
+Copiado de BioQL (src/frontend/node_modules/molstar/build/viewer/), la MISMA version que declara su
+package.json. Es el visor grande: PDB/mmCIF/SDF, cartoon y superficies, seleccion, secuencia y medidas.
+
+AVISO: su bundle necesita `eval`. Para que corra, la CSP de la ventana lleva 'unsafe-eval' en script-src.
+Medido antes de pedirlo: sin ese permiso la violacion es `script-src <- eval @ /vendor/molstar.js` y el
+visor no llega a crear un canvas. El dueno lo autorizo expresamente el 2026-11-19 ("mete Mol*").

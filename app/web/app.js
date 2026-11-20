@@ -920,6 +920,25 @@ async function showFrame(s, mine) {
 // `style-src 'self'` — every attribute is a presentation attribute or a class, never an inline `style=`.
 
 let molLoading = null;
+let starLoading = null;
+
+/** Mol*: el visor grande. 4,7 MB, asi que se trae solo cuando alguien lo pide — la ventana abre sin el. */
+function loadMolstar() {
+  if (window.molstar) return Promise.resolve(window.molstar);
+  if (starLoading) return starLoading;
+  starLoading = new Promise((ok, bad) => {
+    const css = document.createElement("link");
+    css.rel = "stylesheet";
+    css.href = "/vendor/molstar.css";
+    document.head.appendChild(css);
+    const s = document.createElement("script");
+    s.src = "/vendor/molstar.js";
+    s.onload = () => (window.molstar ? ok(window.molstar) : bad(new Error("Mol* cargó y no se registró")));
+    s.onerror = () => bad(new Error("no se pudo cargar /vendor/molstar.js"));
+    document.head.appendChild(s);
+  });
+  return starLoading;
+}
 
 function load3Dmol() {
   if (window.$3Dmol) return Promise.resolve(window.$3Dmol);
@@ -957,6 +976,11 @@ function structureNode(b) {
 
   // PyMOL: la misma estructura, trazada. No vive dentro de la ventana —es un programa nativo de OpenGL— asi que
   // lo que da es la FOTO: 0,45 s de ray tracing sobre la proteina real, medido. Lo interactivo se queda aqui.
+  // Mol*: superficies, seleccion, secuencia y medidas. Sustituye la vista rapida en el mismo hueco.
+  const big = el("button", "tool", "Mol*");
+  big.type = "button";
+  big.title = "Abrir esta estructura en Mol* (superficies, selección, secuencia, medidas)";
+  head.appendChild(big);
   const ray = el("button", "tool mol3d-ray", "PyMOL");
   ray.type = "button";
   ray.title = "Trazar esta estructura con PyMOL (imagen fija, calidad de publicacion)";
@@ -965,6 +989,32 @@ function structureNode(b) {
   box.appendChild(stage);
   const note = el("p", "fine");
   box.appendChild(note);
+  big.addEventListener("click", async () => {
+    big.disabled = true;
+    const was = big.textContent;
+    big.textContent = "abriendo…";
+    try {
+      const star = await loadMolstar();
+      clear(stage);
+      stage.classList.add("mstar");
+      const v = await star.Viewer.create(stage, {
+        layoutIsExpanded: false, layoutShowControls: true, layoutShowSequence: true,
+        layoutShowLog: false, layoutShowLeftPanel: true,
+        viewportShowExpand: true, viewportShowSelectionMode: true, viewportShowAnimation: false,
+      });
+      for (const p of parts) {
+        // `format` sale de la clave del cuerpo, comprobado contra el texto antes de llegar aqui.
+        await v.loadStructureFromData(p.data, p.format === "cif" ? "mmcif" : p.format, false);
+      }
+      note.textContent = "Mol* · " + parts.map((p) => p.role + " " + p.format).join(" · ");
+      big.remove();
+    } catch (e) {
+      note.textContent = "Mol* no pudo abrir: " + String((e && e.message) || e);
+      big.disabled = false;
+      big.textContent = was;
+    }
+  });
+
   ray.addEventListener("click", async () => {
     const part = parts.find((p) => p.role !== "ligand") || parts[0];
     ray.disabled = true;

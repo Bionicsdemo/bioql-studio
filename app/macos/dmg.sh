@@ -64,6 +64,10 @@ hdiutil create -volname "BioQL Studio $VERSION" -srcfolder "$STAGE" -ov -format 
 
 # Verify the image, not the folder it was made from: mount it read-only and exercise the copy inside it. Nothing
 # is launched from the image.
+# La carpeta de montaje se borra en cuanto la imagen esta hecha: es una copia mas de la app, y Spotlight la
+# indexa igual que la de /Applications. Dos "BioQL Studio" en una busqueda son dos apps para quien busca.
+rm -rf "$STAGE"
+
 MNT="$(mktemp -d)"
 hdiutil attach "$DMG" -readonly -nobrowse -noautoopen -mountpoint "$MNT" -quiet
 trap 'hdiutil detach "$MNT" -quiet >/dev/null 2>&1 || true; rm -rf "$MNT"' EXIT

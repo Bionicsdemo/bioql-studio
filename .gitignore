@@ -3,3 +3,4 @@ __pycache__/
 .pytest_cache/
 .DS_Store
 app/macos/build/
+app/macos/build/.metadata_never_index
