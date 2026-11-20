@@ -28,6 +28,7 @@ from typing import Any, Callable
 from . import NAME, VERSION, bioql_url
 from . import allowlist as al
 from . import ledger
+from . import stages
 from . import verify
 from .resolution import Resolution, absent, resolved, unresolvable
 
@@ -250,22 +251,63 @@ class Adapter:
         url = f"{self.base}/api/pipeline/job/{quoted}"
         state = str(job.get("status") or job.get("state") or "").lower()
         cur = job
-        while True:
-            if state in DONE:
-                return self._result_of(cur, jid, quoted)
-            if state in FAILED:
-                return unresolvable(SOURCE, f"job {jid} {state}: {str(cur.get('error') or '')[:300]}", job_id=jid)
-            if state and state not in RUNNING:
-                # A state Studio does not know is not a result: it is reported, never read as success.
-                return unresolvable(SOURCE, f"job {jid} reports an unknown state {state!r}", job_id=jid)
-            if time.time() >= deadline:
-                return unresolvable(SOURCE, f"job {jid} still {state or 'running'} at the deadline", job_id=jid)
-            time.sleep(self.poll_every)
-            nxt, _ = self._http("GET", url, None, 60, absent_on_404=True)
-            if not nxt.resolved:
-                return Resolution(nxt.state, nxt.source, f"job {jid}: {nxt.detail}", None, {"job_id": jid})
-            cur = nxt.value if isinstance(nxt.value, dict) else {}
-            state = str(cur.get("status") or cur.get("state") or "").lower()
+        pid: str | None = None
+        try:
+            while True:
+                # Las etapas vivas, antes de cada decision: si la corrida acaba en esta vuelta, el
+                # ultimo parte ya se publico y la ventana no se queda con la penultima etapa.
+                pid = self._stages(jid, cur, pid)
+                if state in DONE:
+                    return self._result_of(cur, jid, quoted)
+                if state in FAILED:
+                    return unresolvable(SOURCE, f"job {jid} {state}: {str(cur.get('error') or '')[:300]}", job_id=jid)
+                if state and state not in RUNNING:
+                    # A state Studio does not know is not a result: it is reported, never read as success.
+                    return unresolvable(SOURCE, f"job {jid} reports an unknown state {state!r}", job_id=jid)
+                if time.time() >= deadline:
+                    return unresolvable(SOURCE, f"job {jid} still {state or 'running'} at the deadline", job_id=jid)
+                time.sleep(self.poll_every)
+                nxt, _ = self._http("GET", url, None, 60, absent_on_404=True)
+                if not nxt.resolved:
+                    return Resolution(nxt.state, nxt.source, f"job {jid}: {nxt.detail}", None, {"job_id": jid})
+                cur = nxt.value if isinstance(nxt.value, dict) else {}
+                state = str(cur.get("status") or cur.get("state") or "").lower()
+        finally:
+            # El parte es un adorno de una corrida EN CURSO. Terminada, la ciencia esta en el
+            # resultado y en el cuaderno; dejarlo aqui pintaria una barra a medias para siempre.
+            stages.publish(jid, None)
+
+    def _stages(self, jid: str, job: dict, pid: str | None) -> str | None:
+        """Publicar las etapas vivas de este trabajo, y devolver el `pipeline_id` ya emparejado.
+
+        El trabajo y el pipeline tienen ids distintos y nada los conecta, asi que el id se
+        empareja una vez (`stages.pipeline_of`) y luego se reusa. Ver `studio/stages.py`.
+
+        NADA de lo que pase aqui puede costar la llamada: el progreso es un adorno y la ciencia
+        no depende de el. Por eso todo fallo acaba en un parte sin etapas CON su causa, nunca en
+        una excepcion que suba ni en una etapa inventada.
+        """
+        try:
+            if pid is None:
+                act, _ = self._http("GET", f"{self.base}/api/pipeline/active", None, 20, absent_on_404=True)
+                if not act.resolved:
+                    stages.publish(jid, stages.unavailable(f"/api/pipeline/active: {act.detail}"))
+                    return None
+                pid, why = stages.pipeline_of(act.value, job.get("target"), job.get("created_at"))
+                if pid is None:
+                    stages.publish(jid, stages.unavailable(why))
+                    return None
+            quoted = urllib.parse.quote(pid, safe="")
+            got, _ = self._http("GET", f"{self.base}/api/pipeline/progress/{quoted}", None, 20, absent_on_404=True)
+            if not got.resolved:
+                # Un pipeline que se cae del registro al terminar es lo normal: se dice, no se finge.
+                stages.publish(jid, stages.unavailable(f"progress/{pid}: {got.detail}"))
+                return pid
+            stages.publish(jid, stages.snapshot(got.value, pid, "target + ventana de arranque"))
+            return pid
+        except Exception as why:                 # noqa: BLE001 - un adorno no tumba una corrida
+            stages.publish(jid, stages.unavailable(f"{type(why).__name__}: {why}"[:160]))
+            return pid
 
     def _result_of(self, job: dict, jid: str, quoted: str) -> Resolution:
         """A finished job's science. BioQL keeps a large result on the job's own result route and leaves `result`

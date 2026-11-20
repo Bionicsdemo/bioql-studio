@@ -327,3 +327,29 @@ body[data-ring=alarm] .ring{border-color:var(--red);animation:breathe 1.3s ease-
 .row.pair{display:flex;align-items:baseline;gap:14px}
 .pair-k{flex:none;min-width:168px;font-size:12.5px;color:var(--label-2)}
 .pair-v{flex:1;min-width:0;font:12px var(--mono);word-break:break-all;-webkit-user-select:text;user-select:text}
+
+/* Las etapas de un pipeline en curso (#prog), como las dibuja la UI de BioQL en :3000.
+   Vive dentro de .talk, encima del scroll del chat, y se oculta cuando no corre nada. */
+.prog{flex:none;display:flex;flex-direction:column;gap:8px;padding:10px 14px;
+      border-bottom:.5px solid var(--sep);background:var(--bg-grouped);max-height:46%;overflow:auto}
+.prog-card{display:flex;flex-direction:column;gap:5px;padding:10px 12px;border-radius:12px;
+           background:var(--cell);box-shadow:0 0 0 .5px var(--sep)}
+.prog-head{display:flex;align-items:center;gap:7px;font-size:13px}
+.prog-head .sub{color:var(--label-2);opacity:.68}
+.prog-id{margin-left:auto;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;opacity:.5}
+.prog-bar{height:5px;border-radius:3px;background:var(--side);overflow:hidden}
+.prog-fill{height:100%;border-radius:3px;background:var(--accent);transition:width .5s ease}
+.prog-count{font-size:11.5px;opacity:.62;text-align:right}
+.prog-row{display:flex;align-items:center;gap:7px;font-size:12.5px}
+.prog-row .ic{flex:none;width:15px;height:15px}
+.prog-row .ic.ok{color:var(--green)}
+.prog-row .ic.run{color:var(--accent)}
+.prog-row .ic.wait{color:var(--sep);opacity:.9}
+.prog-tag{margin-left:auto;font-size:11px}
+.prog-tag.ok{color:var(--green)}
+.prog-tag.run{color:var(--accent)}
+.prog-now{font-size:11.5px;color:var(--accent);opacity:.9}
+/* Sin etapas localizables NO es "sin etapas": se dice con su causa, no en gris de adorno. */
+.prog-none{margin:0;font-size:11.5px;color:var(--orange)}
+.prog-why{font-size:10.5px;opacity:.45}
+@media (prefers-reduced-motion:reduce){.prog-fill{transition:none}}

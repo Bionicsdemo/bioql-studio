@@ -231,6 +231,68 @@ let uiUrl = "http://127.0.0.1:3000";
 let radarUrl = "http://127.0.0.1:4000";
 let lastState = null;
 
+// Las etapas de los pipelines en curso. Lee `/api/progress`, que el adaptador llena desde
+// `_follow`; esta pagina NUNCA pregunta a BioQL (`connect-src 'self'`) ni toca una corrida.
+// Dibuja lo mismo que `PipelineProgressTracker.tsx` en :3000: barra hecho/total, la lista de
+// etapas, y la que corre girando. Lo que BioQL no diga queda sin dibujar, no en cero: una barra
+// al 0% y una barra sin dato se leen igual y no son lo mismo.
+async function drawProgress() {
+  const box = $("prog");
+  if (!box) return;
+  const { code, body } = await api("/api/progress");
+  const runs = code === 200 && body && typeof body === "object" ? Object.entries(body) : [];
+  if (!runs.length) { box.hidden = true; clear(box); return; }
+  clear(box);
+  box.hidden = false;
+  runs.forEach(([jid, r]) => {
+    const card = el("div", "prog-card");
+    const head = el("div", "prog-head");
+    head.appendChild(icon("flow", "ic"));
+    head.appendChild(el("b", null, String(r.pipeline_type || "pipeline").replace(/_/g, " ")));
+    if (r.target) head.appendChild(el("span", "sub", String(typeof r.target === "object" ? (r.target.name || "?") : r.target)));
+    head.appendChild(el("span", "prog-id", jid));
+    card.appendChild(head);
+
+    if (r.stages_unavailable) {
+      // La corrida sigue viva; lo que no se pudo localizar son sus etapas. Decirlo es el dato.
+      card.appendChild(el("p", "prog-none", "running — sin etapas localizables: " + r.stages_unavailable));
+      box.appendChild(card);
+      return;
+    }
+
+    const done = Number(r.completed_stages), total = Number(r.total_stages);
+    if (Number.isFinite(done) && Number.isFinite(total) && total > 0) {
+      const pct = Math.max(0, Math.min(100, Math.round((done / total) * 100)));
+      const bar = el("div", "prog-bar");
+      const fill = el("div", "prog-fill");
+      fill.style.width = pct + "%";
+      bar.appendChild(fill);
+      card.appendChild(bar);
+      card.appendChild(el("div", "prog-count", `${done}/${total} etapas (${pct}%)`));
+    }
+
+    (r.stages || []).forEach((s) => {
+      const row = el("div", "prog-row");
+      const st = String(s.status || "");
+      row.appendChild(icon(st === "completed" ? "check" : (st === "running" ? "pulse" : "orb"),
+                           "ic " + (st === "completed" ? "ok" : (st === "running" ? "run" : "wait"))));
+      row.appendChild(el("span", null, String(s.stage || "")));
+      if (st === "running") row.appendChild(el("span", "prog-tag run", "corriendo"));
+      else if (st === "completed") row.appendChild(el("span", "prog-tag ok", "hecho"));
+      card.appendChild(row);
+    });
+
+    if (r.current_stage && r.status === "running") {
+      card.appendChild(el("div", "prog-now", "ahora: " + String(r.current_stage)));
+    }
+    if (r.error) card.appendChild(el("p", "prog-none", String(r.error)));
+    // Como se supo que estas etapas son de ESTE trabajo. Los dos ids no estan conectados en
+    // BioQL, asi que el emparejamiento se ensena en vez de darse por hecho.
+    if (r.matched_by) card.appendChild(el("div", "prog-why", "emparejado por " + String(r.matched_by)));
+    box.appendChild(card);
+  });
+}
+
 async function drawState() {
   const { code, body } = await api("/api/state");
   if (code === 403) {
@@ -1277,6 +1339,11 @@ async function boot() {
     await drawFindings(document.createElement("div"));   // counts and lights the ring without opening anything
     await drawGuard(document.createElement("div"));
   }
+  // Las etapas, cada 3 s — el mismo paso que `PipelineProgressTracker.tsx` en :3000. Aparte del
+  // tick de 6 s: una etapa que dura 5 s se la salta un sondeo de 6, y la ventana se veria
+  // congelada justo en lo que el usuario esta mirando.
+  await drawProgress();
+  setInterval(drawProgress, 3000);
   setInterval(async () => {
     await drawState();
     // The engine line is asked again every tick. Read once at boot it went STALE: the backend could die and the

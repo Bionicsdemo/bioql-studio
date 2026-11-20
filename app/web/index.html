@@ -90,6 +90,10 @@
     </header>
     <div class="stage" id="stage">
       <div class="talk" id="talk">
+        <!-- Las etapas de un pipeline en curso, como las pinta la UI de BioQL en :3000. Dentro
+             de .talk (columna), NO de .stage (fila): ahi seria una columna al lado del chat.
+             Vacio y oculto cuando no corre nada: una barra sin corrida detras afirma algo falso. -->
+        <div class="prog" id="prog" hidden aria-live="polite"></div>
         <div class="scroll" id="scroll">
           <div class="hero" id="hero">
             <div class="orbwrap">
