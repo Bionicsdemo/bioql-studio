@@ -1043,7 +1043,14 @@ def test_a_missing_claude_is_absent_with_what_to_run_not_a_crash(svc, monkeypatc
     assert body["exe"] is None and body["version"] is None
 
 
-def test_the_probe_is_a_post_and_never_happens_on_a_page_load(svc, monkeypatch):
+def test_asking_where_the_brain_is_never_spends_the_persons_usage(svc, monkeypatch):
+    """Settings reports which brain this app has. Reporting it must not COST anything.
+
+    There used to be a Claude section with a "test the connection" button behind `POST /api/brain/probe`, which
+    spent one turn of the person's own Claude usage. The section is gone — Claude is not a place in this app, it
+    is the thing running it — and the route went with it rather than sitting there unreachable. Chat is the proof
+    that the brain answers, and Chat is what the person was going to do anyway.
+    """
     seen = {"probed": 0}
 
     def fake(probe=False, run=None):
@@ -1053,9 +1060,10 @@ def test_the_probe_is_a_post_and_never_happens_on_a_page_load(svc, monkeypatch):
     monkeypatch.setattr("studio.brain.status", fake)
     svc.j("/api/brain")
     svc.j("/api/brain")
-    assert seen["probed"] == 0, "opening the page must not spend the person's usage"
-    code, body, _ = svc.j("/api/brain/probe", {"probe": True})
-    assert code == 200 and body["state"] == "RESOLVED" and seen["probed"] == 1
+    assert seen["probed"] == 0, "asking where the brain is must not spend the person's usage"
+    code, _, _ = svc.j("/api/brain/probe", {"probe": True})
+    assert code in (400, 404, 405), "the probe route outlived the only button that reached it"
+    assert seen["probed"] == 0
 
 
 def test_the_version_has_one_source_and_the_update_channel_reads_that_one():

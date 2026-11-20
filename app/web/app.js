@@ -125,10 +125,11 @@ const SECTIONS = {
   chat:     { group: "Iris", label: "Chat", icon: "orb", kind: "chat" },
   chats:    { group: "Iris", label: "Chats", icon: "chats", kind: "chats",
               lead: "Every turn of this window, with the tools each one ran." },
-  brain:    { group: "Iris", label: "Claude", icon: "orb", kind: "brain",
-              lead: "This app has one brain and it is Claude Code, signed in with YOUR account. Studio holds no " +
-                    "Anthropic credential and never asks for one: Claude Code owns that login and keeps it where " +
-                    "it keeps it. This page only reports what it finds." },
+  // There is no "Claude" section, and there should not be. Claude is not a place in this app — it is the thing
+  // running it: Chat sends every turn to a warm `claude` process started with Studio's MCP config, so Claude is
+  // what decides which of BioQL's entries to call, through the allowlist and the approval gate. A tab for that
+  // reported on the orchestrator instead of being it. Whether it is there, and which clients BioQL is plugged
+  // into, are facts about this install, and they live with the rest of them in Settings.
 
   // --- the work
   jobs:     { group: "Work", label: "Jobs & Recovery", icon: "pulse", kind: "jobs",
@@ -899,76 +900,6 @@ function reportNode(host, body) {
 // There is no login of Studio's own here, and there must never be one. Claude Code signs in with the person's
 // account; this reports whether it is there, what version, and — only when a person presses the button — whether
 // it actually answers. The probe costs one small turn of their own usage, which is why it is not done on open.
-async function drawBrain(box) {
-  clear(box);
-  const { code, body } = await api("/api/brain");
-  if (code !== 200) return void empty(box, (body && body.error) || "could not ask");
-  const g = el("div", "group");
-  const row = el("div", "row");
-  const head = el("div", "row-head");
-  head.appendChild(el("span", "row-tool", "Claude Code"));
-  const st = String(body.state || "");
-  head.appendChild(chip(st === "RESOLVED" ? "connected" : (st === "INSTALLED" ? "installed" : st.toLowerCase()),
-                        st === "RESOLVED" ? "clean" : (st === "ABSENT" ? "bad" : "plain")));
-  if (body.version) head.appendChild(el("span", "hash", body.version));
-  row.appendChild(head);
-  if (body.exe) row.appendChild(el("code", "smi", body.exe));
-  row.appendChild(el("p", "row-why", body.detail || ""));
-  if (body.said) row.appendChild(el("p", "fine", "it said: " + body.said));
-
-  const acts = el("div", "row-head");
-  const b = el("button", "tool", "Test the connection");
-  b.type = "button";
-  b.title = "Asks Claude Code one tiny question. It spends a small amount of your own usage.";
-  b.addEventListener("click", async () => {
-    b.disabled = true;
-    const was = b.textContent;
-    b.textContent = "asking Claude…";
-    await api("/api/brain/probe", { probe: true });
-    b.textContent = was;
-    b.disabled = false;
-    await draw();
-  });
-  acts.appendChild(b);
-  row.appendChild(acts);
-  g.appendChild(row);
-  box.appendChild(g);
-
-  if (body.how) {
-    box.appendChild(el("h3", "sect", "To connect your account"));
-    box.appendChild(el("p", "cmd", body.how));
-    box.appendChild(el("p", "fine", "Run it in a terminal once. It signs in with your own Claude account, in " +
-      "Claude Code, where it belongs — nothing about it passes through this app, and nothing is stored here."));
-  }
-  // Where BioQL is plugged in. This page REPORTS; it does not register. Writing into a Claude client's MCP
-  // configuration changes that client for every session the person opens, which is their decision to make with
-  // their own hands — an app that rewires the agent on its own is the thing nobody should ship.
-  const { body: conn } = await api("/api/connect");
-  if (conn && conn.clients) {
-    box.appendChild(el("h3", "sect", "BioQL inside your other Claude clients"));
-    box.appendChild(el("p", "fine", "Studio is already an MCP server: " +
-      "BioQL's pipelines with the approval gate on them, plus the tools that read the record. Registered below, " +
-      "BioQL is there in whatever Claude you already have open — nothing new to launch."));
-    box.appendChild(tableNode(["client", "state", "what it says"],
-      conn.clients.map((c) => [c.client,
-        chip(String(c.state).toLowerCase().replace("_", " "),
-             c.state === "REGISTERED" ? "clean" : (c.state === "UNRESOLVABLE" ? "bad" : "plain")),
-        c.detail])));
-    box.appendChild(el("p", "fine", "To plug it in, run this yourself — it edits those clients' own configuration, " +
-      "so it is yours to run, and it copies each file aside first. `--remove` undoes it."));
-    box.appendChild(el("p", "cmd", conn.command || "python3 -m studio connect"));
-    box.appendChild(el("p", "fine", "What that widens: any Claude session running as you could then call BioQL's " +
-      "read-only entries without this window. What it does NOT widen: anything that spends compute or could reach " +
-      "real quantum hardware still refuses without a person's approval, which that door cannot give — and every " +
-      "call is still one line on the signed record."));
-  }
-
-  box.appendChild(el("p", "fine", "What this app does with that connection: every question you ask goes to Claude " +
-    "Code, which reaches BioQL only through Studio's closed list of 502 entries, with a person's approval required " +
-    "for anything that spends compute, and one line on the signed record for every call. Claude also sees the " +
-    "record itself — what has been run, what the verifier contradicted — which is how it can tell you a result " +
-    "disagrees with itself instead of reading it out."));
-}
 
 // ---- API Keys -------------------------------------------------------------
 // There is no key route to show, and that is the page's first sentence rather than its omission: the allowlist's
@@ -1540,9 +1471,23 @@ async function drawUpdate(box) {
     "Anything else is reported and nothing is installed. Set BIOQL_STUDIO_NO_UPDATES to never ask at all."));
 }
 
-function drawSettings(box) {
+async function drawSettings(box) {
   const st = lastState || {};
   clear(box);
+  // What the brain actually is, asked instead of asserted. This line used to read "Claude Code, and nothing else"
+  // as flat text, which is a claim the window was in no position to make: it said the same thing on a Mac with no
+  // Claude Code installed. Neither of these two calls touches BioQL — one looks for the `claude` binary, the other
+  // reads the MCP configs on this Mac — so neither spends anything and neither writes a line on the record.
+  const brain = (await api("/api/brain")).body || {};
+  const conn = (await api("/api/connect")).body || {};
+  // Three states and no fourth. There is deliberately no "answering" here: knowing that would mean spending a
+  // turn of the person's own usage to find out, and Chat already proves it the moment they use it.
+  const bst = String(brain.state || "");
+  // `claude --version` answers "2.1.329 (Claude Code)" — it names itself — so the name is not prefixed again. It
+  // read "Claude Code 2.1.329 (Claude Code)" for exactly as long as it took to look at it once.
+  const brainSays = bst === "ABSENT" ? "not on this Mac — Chat cannot run without it"
+    : (bst === "INSTALLED" || bst === "RESOLVED") ? (brain.version || "Claude Code")
+    : (brain.detail || "could not be told from here");
   const g = el("div", "group");
   // Label left, value right, one line each — the same grouped list the rest of the window uses, instead of two
   // grey captions side by side with nothing telling them apart.
@@ -1550,7 +1495,7 @@ function drawSettings(box) {
    ["BioQL's engine", st.bioql], ["BioQL's window", "not reached from here"],
    ["tools in the allowlist", TOOLS.length ? String(TOOLS.length) : "—"],
    ["tools that ask a person", String(TOOLS.filter((t) => t.approval).length)],
-   ["the brain", "Claude Code, and nothing else"]]
+   ["the brain", brainSays]]
     .forEach(([k, v]) => {
       const row = el("div", "row pair");
       row.appendChild(el("span", "pair-k", k));
@@ -1562,6 +1507,29 @@ function drawSettings(box) {
     "the allowlist, so nothing here can reach one."));
   box.appendChild(el("p", "fine", "Studio never writes inside BioQL's folders. The Guard section compares the " +
     "baseline this app took when it opened against a reading you take, and names every file that moved."));
+  box.appendChild(el("p", "fine", "Chat sends every turn to that brain, started with Studio's own MCP config, so " +
+    "Claude is what decides which of BioQL's entries to call — through the closed list, with a person's approval " +
+    "for anything that spends, and one line on the record per call. There is nothing to open and nothing to " +
+    "sign in to here: Claude Code owns that login and Studio holds no Anthropic credential."));
+
+  // The same brain, reachable from the Claude clients already open on this Mac. This REPORTS; it does not
+  // register — writing into a client's MCP config changes that client for every session its owner opens, which is
+  // theirs to do with their own hands. An app that rewires the agent on its own is the thing nobody should ship.
+  if (conn.clients && conn.clients.length) {
+    box.appendChild(el("h3", "sect", "BioQL inside your other Claude clients"));
+    box.appendChild(tableNode(["client", "state", "what it says"],
+      conn.clients.map((c) => [c.client,
+        chip(String(c.state).toLowerCase().replace("_", " "),
+             c.state === "REGISTERED" ? "clean" : (c.state === "UNRESOLVABLE" ? "bad" : "plain")),
+        c.detail])));
+    box.appendChild(el("p", "fine", "Registered, BioQL is there in whatever Claude you already have open. What " +
+      "that widens: any Claude session running as you can call BioQL's read-only entries without this window. " +
+      "What it does NOT widen: anything that spends compute or could reach real hardware still refuses without a " +
+      "person's approval, and every call is still one line on the signed record. To change it, run this yourself " +
+      "— it edits those clients' own files, and copies each aside first. `--remove` undoes it."));
+    box.appendChild(el("p", "cmd", conn.command || "python3 -m studio connect"));
+  }
+
   box.appendChild(el("h3", "sect", "Updates"));
   drawUpdate(box);
 }
@@ -2233,7 +2201,6 @@ async function draw() {
     case "sar": await drawSar(box); break;
     case "cands": await drawCands(box); break;
     case "report": await drawReport(box); break;
-    case "brain": await drawBrain(box); break;
     case "keys": await drawKeys(box); break;
     case "findings": await drawFindings(box); break;
     case "board": await drawBoard(box); break;
@@ -2241,7 +2208,7 @@ async function draw() {
     case "guard": await drawGuard(box); break;
     case "servers": await drawServers(box); break;
     case "usage": await drawUsage(box); break;
-    case "settings": drawSettings(box); break;
+    case "settings": await drawSettings(box); break;
     case "chats": drawChats(box); break;
   }
   if (mine !== seq) return;                       // a later click already took this page

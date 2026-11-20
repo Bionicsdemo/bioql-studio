@@ -1104,10 +1104,6 @@ def make_handler(s: Studio):
                 if p == "/api/board":
                     out, code = s.board_write(b)
                     return self._json(out, code)
-                if p == "/api/brain/probe":
-                    # One small turn, asked for by a person. Studio holds no Anthropic credential and never will:
-                    # Claude Code owns that login, and this only reports whether it answers.
-                    return self._json(brain.status(probe=True))
                 if p == "/api/update/check":
                     # A POST: it reaches the internet and writes a staged bundle to disk. Opening a page must not.
                     return self._json(s.update_check(take=bool(b.get("take", True))))
