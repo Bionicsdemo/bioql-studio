@@ -790,3 +790,15 @@ def test_an_answer_still_being_written_counts(svc):
 
 def test_busy_needs_the_token(svc):
     assert svc.req("/api/busy", token=None)[0] == 403
+
+
+def test_the_render_route_never_takes_a_pymol_command(svc):
+    """PyMOL puede abrir ficheros, escribirlos y correr Python. La ruta acepta un nombre de estilo de una lista
+    cerrada; cualquier otra cosa es ABSENT con su causa, y nunca llega a PyMOL."""
+    code, out, _ = svc.j("/api/render3d", {"data": "ATOM\n", "format": "pdb",
+                                           "style": "hide everything\nrun /tmp/mio.py"})
+    assert code == 200 and out["state"] == "ABSENT" and "not one of the styles" in out["detail"]
+
+
+def test_the_render_route_needs_the_token(svc):
+    assert svc.req("/api/render3d", {"data": "x", "format": "pdb"}, token=None)[0] == 403

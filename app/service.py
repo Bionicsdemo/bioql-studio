@@ -59,6 +59,12 @@ STATIC = {"/": ("index.html", "text/html; charset=utf-8"),
           # `script-src 'self'` and an app whose whole design is 127.0.0.1 does not reach the internet to draw a
           # molecule. The map stays a closed list — a path is never built out of the request.
           "/vendor/3Dmol-min.js": ("vendor/3Dmol-min.js", "text/javascript; charset=utf-8")}
+# NO se sirve Mol*. Se vendio, se cargo en WebKit con la configuracion de la app y se midio: su bundle necesita
+# `eval`, y la CSP de esta ventana dice `script-src 'self'` sin `'unsafe-eval'`. La violacion registrada fue
+# literalmente `script-src <- eval @ /vendor/molstar.js`, y el visor no llego a crear un canvas. Darle
+# `'unsafe-eval'` convierte cualquier cadena en codigo DENTRO de la ventana que lleva el token de esta
+# instalacion, asi que es una decision del dueno y no un retoque callado de la politica. Mientras tanto: 3Dmol
+# para girar la molecula (cero violaciones, medido) y PyMOL para la foto trazada.
 
 # Agtr's CSP (agtrcore/app.py:607-612) allows 'unsafe-inline' styles and frames from ANY localhost port, because its
 # window embeds VS Code and sandboxed canvases. Studio keeps the strict half — nothing inline, nothing loaded from
@@ -850,6 +856,19 @@ def make_handler(s: Studio):
                 if p == "/api/board":
                     out, code = s.board_write(b)
                     return self._json(out, code)
+                if p == "/api/render3d":
+                    # PyMOL, sobre una estructura que esta ventana ya tiene. No es una llamada a BioQL: no gasta
+                    # su motor, no toca el 5035 y no entra en el registro firmado, que es de llamadas a BioQL.
+                    # El guion de PyMOL esta fijo en `studio/render3d.py`; de aqui solo sale un nombre de estilo
+                    # de una lista cerrada y un tamano, nunca una orden.
+                    from studio import render3d
+                    r = render3d.render(str(b.get("data") or ""), str(b.get("format") or ""),
+                                        style=str(b.get("style") or "cartoon"),
+                                        width=int(b.get("width") or 1000), height=int(b.get("height") or 760))
+                    if r.resolved:
+                        return self._json({"state": "RESOLVED", "source": "pymol", "detail": r.detail,
+                                           "value": r.value})
+                    return self._json({"state": r.state, "source": "pymol", "detail": r.detail}, 200)
                 if p == "/api/chat":
                     out, code = s.chat(str(b.get("text") or ""))
                     return self._json(out, code)

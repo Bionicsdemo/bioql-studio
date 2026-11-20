@@ -955,10 +955,46 @@ function structureNode(b) {
   box.appendChild(head);
   if (!parts.length) return box;
 
+  // PyMOL: la misma estructura, trazada. No vive dentro de la ventana —es un programa nativo de OpenGL— asi que
+  // lo que da es la FOTO: 0,45 s de ray tracing sobre la proteina real, medido. Lo interactivo se queda aqui.
+  const ray = el("button", "tool mol3d-ray", "PyMOL");
+  ray.type = "button";
+  ray.title = "Trazar esta estructura con PyMOL (imagen fija, calidad de publicacion)";
+  head.appendChild(ray);
   const stage = el("div", "mol3d-stage");
   box.appendChild(stage);
   const note = el("p", "fine");
   box.appendChild(note);
+  ray.addEventListener("click", async () => {
+    const part = parts.find((p) => p.role !== "ligand") || parts[0];
+    ray.disabled = true;
+    const was = ray.textContent;
+    ray.textContent = "trazando…";
+    try {
+      const got = await api("/api/render3d", { data: part.data, format: part.format, style: "cartoon" });
+      const r = got.body;
+      if (r && r.state === "RESOLVED" && r.value && r.value.png_base64) {
+        const f = el("figure", "shot-fig");
+        const img = el("img", "shot");
+        img.src = "data:image/png;base64," + r.value.png_base64;
+        img.alt = "estructura trazada con PyMOL";
+        f.appendChild(img);
+        f.appendChild(el("figcaption", "fine",
+          `PyMOL ${r.value.pymol || "?"} · ${part.format} · ${r.value.seconds}s · ${r.value.width}x${r.value.height}`));
+        box.appendChild(f);
+        ray.remove();
+        return;
+      }
+      // ABSENT y UNRESOLVABLE son respuestas distintas y se dicen distintas: "no esta instalado" no es "fallo".
+      note.textContent = (r && r.state === "ABSENT" ? "PyMOL: " : "PyMOL no pudo: ")
+        + ((r && r.detail) || "sin respuesta");
+    } catch (e) {
+      note.textContent = "PyMOL no pudo: " + String((e && e.message) || e);
+    } finally {
+      ray.disabled = false;
+      ray.textContent = was;
+    }
+  });
 
   const fallback = (why) => {
     // A viewer that cannot run is said, and the structure is still shown as what it is: text BioQL wrote. Drawing
