@@ -87,18 +87,38 @@ def test_refusals(fake_bioql):
     assert all(r["state"] == "REFUSED" for r in rows) and len(rows) == 8
 
 
-def test_hardware_needs_a_person(fake_bioql):
+def test_hardware_runs_and_the_record_says_it_was_hardware(fake_bioql):
+    """Studio ya no pide aprobacion: ejecuta, como la ventana de BioQL en :3000.
+
+    La puerta estaba porque BioQL no dice de antemano si una corrida toca QPU real. Pero el dueño de la maquina,
+    del presupuesto de IBM y de la asignacion de Pasqal es una sola persona: preguntarle llamada por llamada no la
+    protegia de nadie, le impedia usar su propio sistema. Y desde el 2026-11-20 las puertas de gasto viven donde
+    deben, en el servidor de BioQL (BIOQL_ALLOW_PASQAL_QPU, BIOQL_REAL_QPU_PRIMARY, el ledger de trabajos reales).
+
+    Lo que sigue en pie, y es lo que de verdad protege: la linea del registro. Este test no comprueba que algo se
+    niegue; comprueba que lo que corre QUEDA ESCRITO, con su kind y con si toco hardware.
+    """
     a = ad(fake_bioql, q={"method": "POST", "path": "/api/mixed", "kind": "hardware"},
            sim={"method": "POST", "path": "/api/smiles-to-3d", "kind": "local", "required": ["smiles"],
                 "optional": ["backend", "use_real_hardware"]})
-    with pytest.raises(Refused):
-        a.call("q")
-    assert a.call("q", approved_by="Heinz").state == RESOLVED
-    with pytest.raises(Refused):
-        a.call("sim", {"smiles": "C", "backend": "ibm_fez"})
-    with pytest.raises(Refused):
-        a.call("sim", {"smiles": "C", "use_real_hardware": True})
+    assert a.call("q").state == RESOLVED
+    assert a.call("sim", {"smiles": "C", "backend": "ibm_fez"}).state == RESOLVED
+    assert a.call("sim", {"smiles": "C", "use_real_hardware": True}).state == RESOLVED
     assert a.call("sim", {"smiles": "C", "backend": "aer_simulator", "use_real_hardware": False}).state == RESOLVED
+
+    rows = [json.loads(l) for l in ledger.path_file().read_text().splitlines() if l.strip()]
+    mias = [r for r in rows if r.get("tool") in ("q", "sim")]
+    assert len(mias) == 4, "cuatro llamadas, cuatro lineas: ejecutar sin preguntar no es ejecutar sin registrar"
+    assert any(r.get("kind") == "hardware" for r in mias), "el registro no dice que una era de hardware"
+
+
+def test_the_route_is_still_never_the_callers(fake_bioql):
+    """Lo que NO se quito con la puerta. El llamante nunca elige a donde se postea."""
+    a = ad(fake_bioql, q={"method": "POST", "path": "/api/mixed", "kind": "hardware"})
+    with pytest.raises(Refused):
+        a.call("q", {"endpoint": "/api/ssh/execute"})
+    with pytest.raises(Refused):
+        a.call("q", {"url": "http://evil.example/"})
 
 
 def test_wants_hardware_matches_whole_keys():
@@ -180,10 +200,10 @@ def test_via_submit_uses_bioqls_async_door_with_the_allowlists_own_endpoint(fake
     assert res.state == RESOLVED and res.value["status"] == "completed"
     assert FakeBioQL.submits == [{"endpoint": "/api/quantum/peptide_design",
                                   "params": {"target": "GLP-1R", "which": "j1"}}]
-    with pytest.raises(Refused):                       # still needs a person, submit door or not
-        a.call("heavy", {"target": "GLP-1R"})
-    with pytest.raises(Refused):                       # and cannot be told to post somewhere else
-        a.call("heavy", {"target": "GLP-1R", "endpoint": "/api/ssh/execute"}, approved_by="a person")
+    # Sin aprobacion tambien corre: la puerta se quito, la ruta no.
+    assert a.call("heavy", {"target": "GLP-1R", "which": "j1"}).state == RESOLVED
+    with pytest.raises(Refused):                       # y no se le puede decir que postee a otro sitio
+        a.call("heavy", {"target": "GLP-1R", "endpoint": "/api/ssh/execute"})
 
 
 def test_via_must_be_known(fake_bioql, studio_home):

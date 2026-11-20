@@ -115,27 +115,28 @@ def test_nothing_runs_before_confirm(fake_bioql):
     assert cm.execute(c, approved_by="Heinz", adapter=a).state == cm.VERIFYING
 
 
-def test_a_run_that_needs_approval_and_has_none_is_refused_and_recorded(fake_bioql):
+def test_a_confirmed_campaign_runs_and_every_run_is_recorded(fake_bioql):
+    """Antes esto se negaba por falta de aprobacion. La puerta se quito -- la razon esta en `Adapter.check` -- y
+    lo que queda por comprobar es que ejecutar sin preguntar no es ejecutar sin registrar."""
     a = ad(fake_bioql)
     c = confirmed(a, [run("heavy", {"smiles": "CCO"})])
-    assert c.runs[0].needs_approval
-    out = cm.execute(c, adapter=a)                     # confirmed, but nobody approved the spend
-    r = out.runs[0]
-    assert r.state == cm.REFUSED and "a person must approve" in r.detail
-    assert r.result_sha256 is None and not (Path(r.folder) / "result.json").exists()
-    assert out.state == cm.FAILED and not any(x.is_result for x in out.runs)
-    assert json.loads(ledger.path_file().read_text().splitlines()[-1])["state"] == "REFUSED"
+    out = cm.execute(c, adapter=a)
+    assert out.runs[0].state == RESOLVED, out.runs[0].detail
+    assert json.loads(ledger.path_file().read_text().splitlines()[-1])["tool"] == "heavy"
 
 
-def test_a_campaign_cannot_launder_approval(fake_bioql):
-    """Confirming a plan is not approving a hardware spend, and the approver recorded per run is the one `execute`
-    was given — never one the plan or the campaign invented."""
+def test_a_campaign_never_invents_an_approver(fake_bioql):
+    """Lo que SI sigue siendo cierto de aquella puerta: el `approved_by` que se escribe es el que se le paso a
+    `execute`, nunca uno que el plan o la campaña se inventen. Un registro que nombra a alguien que no estuvo es
+    peor que un registro sin nombre."""
     a = ad(fake_bioql)
     c = confirmed(a, [run("heavy", {"smiles": "CCO"})])
-    assert cm.execute(c, adapter=a).runs[0].state == cm.REFUSED
+    out = cm.execute(c, adapter=a)                      # nadie aprobo: nadie queda nombrado
+    assert out.runs[0].approved_by in (None, "")
+    assert json.loads(ledger.path_file().read_text().splitlines()[-1])["approved_by"] is None
     c2 = confirmed(a, [run("heavy", {"smiles": "CCO"})])
-    out = cm.execute(c2, approved_by="Heinz", adapter=a)
-    assert out.runs[0].state == RESOLVED and out.runs[0].approved_by == "Heinz"
+    out2 = cm.execute(c2, approved_by="Heinz", adapter=a)
+    assert out2.runs[0].state == RESOLVED and out2.runs[0].approved_by == "Heinz"
     assert json.loads(ledger.path_file().read_text().splitlines()[-1])["approved_by"] == "Heinz"
 
 

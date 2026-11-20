@@ -8,9 +8,9 @@ What it serves
     GET  /                 the window (app/web), three fixed files, no path joining at all
     GET  /api/ping         who is listening. The ONE route that needs no token (Agtr: service.py:1291)
     GET  /api/tools        the allowlist entries Studio may call (studio.adapter.Adapter.tools)
-    POST /api/call         name + args -> Adapter.call(by="window", approved_by=None). A pipeline is refused here,
+    POST /api/call         name + args -> Adapter.call(by="window"). Lo que puede tardar (compute, hardware o
+                           la puerta asincrona de BioQL) arranca un Run en su propio hilo y devuelve 202 con su id,
                            exactly as it is for Claude Code through the MCP server
-    POST /api/approve      one explicit, single-use, call-bound approval for one pending call (see app/README.md for
                            what it does and does not prove — it is NOT a biometric claim)
     GET  /api/run          the state of a call that an approval started
     GET  /api/ledger       the recent ledger rows and the chain's verdict
@@ -170,34 +170,13 @@ def read_secret(home: Path, name: str = "ui.token") -> str:
 
 
 @dataclass
-class Pending:
-    """One call that was refused for want of a person, held server-side with its arguments.
-
-    The arguments are stored HERE, not handed back to the approver: /api/approve carries only an id and a code, so an
-    approval cannot be re-pointed at a different call or different arguments than the one that was shown.
-    """
-    id: str
-    code: str
-    tool: str
-    args: dict
-    why: str
-    created: float = field(default_factory=time.time)
-    used: bool = False
-    tries: int = 0              # wrong codes; the offer is void at PENDING_TRIES
-
-    def expired(self, now: float | None = None) -> bool:
-        return (now or time.time()) - self.created > PENDING_TTL
-
-    def public(self) -> dict:
-        return {"id": self.id, "tool": self.tool, "args": self.args, "why": self.why, "tries_left": max(0, PENDING_TRIES - self.tries),
-                "created": round(self.created, 3), "expires_in": round(PENDING_TTL - (time.time() - self.created), 1),
-                "used": self.used}
-
-
-@dataclass
 class Run:
     id: str
     tool: str
+    # `args` y `started` entran aqui porque ahora una corrida se lanza sin que nadie la apruebe: la ventana ya no
+    # tiene una pantalla de aprobacion donde leer QUE se va a correr, asi que la corrida tiene que decirlo ella.
+    args: dict = field(default_factory=dict)
+    started: float = field(default_factory=time.time)
     state: str = "RUNNING"
     detail: str = ""
     verdict: str | None = None
@@ -226,7 +205,6 @@ class Studio:
         self.adapter = adapter if adapter is not None else Adapter()
         self.log = log or self._print
         self.started = time.time()
-        self.pending: dict[str, Pending] = {}
         self.runs: dict[str, Run] = {}
         self.calls = 0
         self.refusals = 0
@@ -275,8 +253,6 @@ class Studio:
 
     # ------------------------------------------------------------------ what the window shows as its state line
     def state(self) -> dict:
-        with self._lock:
-            pend = [p.public() for p in self.pending.values() if not p.used and not p.expired()]
         return {"name": PING_NAME, "version": VERSION, "port": self.port, "home": str(self.home),
                 "bioql": self.adapter.base,
                 "up_seconds": round(time.time() - self.started, 1),
@@ -286,7 +262,7 @@ class Studio:
                 "advanced": advanced.is_on(self.home),
                 "update": {"state": self.update.get("state"), "latest": self.update.get("latest"),
                            "detail": self.update.get("detail")},
-                "pending": pend, "runs": [r.public() for r in list(self.runs.values())[-RUN_MAX:]]}
+                "runs": [r.public() for r in list(self.runs.values())[-RUN_MAX:]]}
 
     def busy(self) -> dict:
         """What would be lost by quitting right now. Read-only, and the ONE question the native shell asks before
@@ -302,16 +278,17 @@ class Studio:
         """
         with self._lock:
             running = [{"id": r.id, "tool": r.tool} for r in self.runs.values() if r.state == "RUNNING"]
-            pending = [{"id": p.id, "tool": p.tool} for p in self.pending.values()
-                       if not p.used and not p.expired()]
             chats = sum(1 for t in self.turns.values() if t.get("state") == "running")
-        return {"running": running, "pending": pending, "chats": chats,
-                "busy": bool(running or pending or chats)}
+        return {"running": running, "chats": chats, "busy": bool(running or chats)}
 
     # ------------------------------------------------------------------ calling BioQL
     def call(self, name: str, args: dict) -> tuple[dict, int]:
-        """/api/call. `by="window"`, `approved_by=None` — always. A pipeline is refused here exactly as it is for
-        Claude Code, and when a person COULD unlock it the refusal carries an offer (a pending), never the call."""
+        """/api/call. Ejecuta, como la ventana de BioQL en :3000.
+
+        Ya no hay puerta de aprobacion -- la razon esta escrita en `Adapter.check`. Lo que queda de aquella
+        maquinaria es lo util: una llamada que puede tardar se va a su propio hilo con un Run, y la ventana sigue
+        su estado en vez de quedarse colgada hasta el timeout de BioQL.
+        """
         if not isinstance(name, str) or not isinstance(args, dict):
             return {"state": "REFUSED", "detail": "a call is {name: str, args: object}"}, 400
         try:
@@ -320,18 +297,27 @@ class Studio:
             if bad:
                 raise Refused(bad)
         except Refused as why:
-            out = {"state": "REFUSED", "detail": str(why)}
-            offer = self._offer(name, args)         # would a person's approval change this answer?
-            if offer:
-                out["pending"] = offer
-                out["how"] = ("This call needs a person. The code for it was written to Studio's log and to "
-                              "HOME/pending/<id>; paste it into Approve. It is single-use and bound to this call.")
-            else:
-                # A refusal is a line of the record, as it is for Claude Code through the MCP server (where
-                # studio.adapter.call writes it). The adapter's `check` deliberately writes nothing, so the window
-                # writes its own — otherwise a refusal from the window would leave no trace at all.
-                self._refused(name, args, str(why), event="call")
-            return out, 403
+            # Una negativa es una linea del registro, igual que lo es para Claude Code a traves del servidor MCP.
+            # `check` no escribe nada a proposito, asi que la ventana escribe la suya: si no, una negativa desde
+            # la ventana no dejaria ningun rastro.
+            self._refused(name, args, str(why), event="call")
+            return {"state": "REFUSED", "detail": str(why)}, 403
+        # Lo que puede tardar NO se contesta en la misma peticion. Una corrida de peptido de esta maquina tardo
+        # 70 minutos; con la puerta de aprobacion, eso iba por `_run` en su propio hilo. Al quitar la puerta ese
+        # camino quedo huerfano y una llamada cara habria bloqueado la ventana hasta el timeout de BioQL, que son
+        # 12 horas. Asi que lo decide el allowlist, no el llamante: `compute`, `hardware` o la puerta asincrona de
+        # BioQL (`via: submit`) arrancan un Run y devuelven su id, como hace :3000.
+        if e["kind"] in ("compute", "hardware") or e["via"] == "submit":
+            # 24 hex, que es lo que exige `ID` en la ruta /api/run. Con 16 la corrida existia y no se podia
+            # consultar: arrancaba, corria y la ventana recibia un 404 por su propio id.
+            run = Run(id=secrets.token_hex(12), tool=name, args=dict(args))
+            with self._lock:
+                self.runs[run.id] = run
+            threading.Thread(target=self._run, args=(run, name, dict(args)),
+                             name=f"studio-run-{run.id}", daemon=True).start()
+            return {"state": "RUNNING", "run": run.public(),
+                    "detail": f"{name} corriendo en segundo plano; sigue su estado en /api/run"}, 202
+
         try:
             # `check` passes but `call` can still refuse: a `{job_id}` segment is filled only from an argument that
             # looks like an id, so `job_id: "../../api/scripts/execute"` is refused where the path is built, not here.
@@ -348,109 +334,21 @@ class Studio:
             out["card"] = self._card_of({"value": res.value, "meta": {**res.meta, "tool": name}})
         return out, 200
 
-    def _offer(self, name: str, args: dict) -> dict | None:
-        """A pending, when and only when the sole reason for the refusal was that nobody approved.
+    def _run(self, run: Run, name: str, args: dict) -> None:
+        """Una llamada cara, en su propio hilo, con su registro de Run.
 
-        Told apart by asking the adapter the same question twice — once without an approval, once with one — never by
-        reading the refusal's wording. And the window's approval does NOT reach real quantum hardware: a `hardware`
-        entry, or arguments naming a real device, stays with the command line and a named person
-        (`python3 -m studio call … --approve "<name>"`), because a code pasted into a window names no one.
+        Esto lo llamaba `approve`, y al quitar la puerta se quedo huerfano -- lo que habria dejado las corridas
+        largas bloqueando la peticion de la ventana hasta 12 horas. Ahora lo llama `call()` directamente para
+        todo lo que puede tardar, que es como la ventana de BioQL en :3000 se ha comportado siempre: lanzas, y
+        la interfaz sigue el trabajo.
         """
-        try:
-            e = self.adapter.check(name, args, approved_by="window")
-        except Refused:
-            return None                              # refused for some other reason: there is nothing to offer
-        if dotdot(e, args) or e["kind"] == "hardware" or wants_hardware(args):
-            return None
-        with self._lock:
-            for p in list(self.pending.values()):
-                if p.used or p.expired():
-                    del self.pending[p.id]
-            if len(self.pending) >= PENDING_MAX:
-                return None
-            # 128 bits of code, not 32: a guess has to be hopeless on its own, not merely rate-limited.
-            p = Pending(id=secrets.token_hex(12), code=secrets.token_hex(16), tool=name, args=dict(args),
-                        why=f"{e['kind']} entry {name!r} ({e['method']} {e['path']})")
-            self.pending[p.id] = p
-        # The code is NOT returned to the caller: it goes to this service's own log and to a 0600 file, so taking the
-        # offer needs a second, deliberate act by someone reading this Mac's log. What that does and does not prove is
-        # written out in app/README.md and in approve() below.
-        studio.write_private(self.home / "pending" / p.id, p.code + "\n")
-        self.log(f"approval needed for {name}: id {p.id} code {p.code} (expires in {int(PENDING_TTL)}s)")
-        ledger.append({"tool": name, "args": trim(args), "state": "PENDING", "by": "window",
-                       "window_event": "approval_offered", "pending_id": p.id, "detail": p.why[:300]})
-        return p.public()
-
-    def approve(self, pid: str, code: str) -> tuple[dict, int]:
-        """One explicit human approval for ONE pending call. Single-use, consumed under the lock BEFORE the call runs.
-
-        What this proves: that a second, separate request arrived naming this exact pending call and carrying a code
-        that was never sent to the window — so the call was not started by the page on its own, and an approval cannot
-        be replayed or re-pointed at other arguments.
-
-        What it does NOT prove: that a human was present, or which human. Any process running as this user can read
-        `ui.token` and the pending code, so this is an explicit, logged, call-bound act by someone with this user's
-        files — not a biometric fact. Agtr's `native.key` asserts `uv: true` from exactly the same kind of file
-        (service.py:98, 1234, 315); Studio does not make that claim anywhere.
-        """
-        if not isinstance(pid, str) or not isinstance(code, str):
-            return {"state": "REFUSED", "detail": "approve takes {id, code}"}, 400
-        now = time.time()
-        with self._lock:
-            p = self.pending.get(pid)
-            if p is None:
-                bad = "no such pending call"
-            elif p.used:
-                bad = "that approval was already used (it is single-use)"
-            elif p.expired(now):
-                bad = "that approval expired"
-            elif p.tries >= PENDING_TRIES:
-                bad = f"that approval was voided after {PENDING_TRIES} wrong codes"
-            elif not secrets.compare_digest(code.encode("utf-8", "replace"), p.code.encode()):
-                # A wrong code BURNS a try, under the same lock. The page already holds the token, so an offer that
-                # could be guessed at for ten minutes would weaken the one thing this mechanism does claim: that the
-                # call was not started by the page on its own.
-                p.tries += 1
-                bad = ("wrong code" if p.tries < PENDING_TRIES
-                       else f"wrong code; this approval is now void after {PENDING_TRIES} tries")
-            else:
-                bad = ""
-                p.used = True                        # consumed here, under the lock: a replay finds `used`
-        if bad:
-            self.refusals += 1
-            ledger.append({"tool": p.tool if p else None, "state": "REFUSED", "by": "window", "verdict": None,
-                           "window_event": "approval_denied", "pending_id": pid[:64], "detail": bad})
-            self.log(f"approval denied ({bad}) for {pid[:12]}")
-            return {"state": "REFUSED", "detail": bad}, 403
-        try:
-            (self.home / "pending" / p.id).unlink()
-        except OSError:
-            pass
-        self.approvals += 1
-        # `approved_by` names the MECHANISM, not a person and not a biometric: "window:<pending id>".
-        who = f"window:{p.id}"
-        ledger.append({"tool": p.tool, "args": trim(p.args), "state": "APPROVED", "by": "window",
-                       "window_event": "approval_granted", "pending_id": p.id, "approved_by": who,
-                       "detail": "explicit single-use code; not a proof of human presence"})
-        run = Run(id=p.id, tool=p.tool)
-        with self._lock:
-            self.runs[run.id] = run
-            for k in list(self.runs)[:-RUN_MAX]:
-                del self.runs[k]
-        # In the background: an approved pipeline can run for hours (Studio's timeouts are BioQL's, up to 12 h), and a
-        # held HTTP request would be dropped by any proxy or the webview long before it ended.
-        threading.Thread(target=self._run, args=(run, p, who), name=f"run-{run.id[:8]}", daemon=True).start()
-        return {"state": "APPROVED", "run": run.id, "tool": p.tool,
-                "note": "started; follow it on /api/run?id=…"}, 200
-
-    def _run(self, run: Run, p: Pending, who: str) -> None:
         # `run.state` is written LAST, every way out of this function. /api/run is read without a lock, so a state
         # published before the verdict and the hash would let a reader see a finished run whose verdict is still
         # missing — and read that absence as "nothing was found", which is the failure this whole layer exists to
         # prevent. While it is "RUNNING" nothing about it is claimed at all.
         try:
-            res = self.adapter.call(p.tool, p.args, approved_by=who, by="window",
-                                    note={"window_event": "approved_call", "pending_id": p.id})
+            res = self.adapter.call(name, args, approved_by=None, by="window",
+                                    note={"window_event": "background_call", "run_id": run.id})
         except Refused as why:                       # the allowlist changed under us, or the entry was disabled
             self.refusals += 1
             run.detail = str(why)[:300]
@@ -1103,9 +1001,6 @@ def make_handler(s: Studio):
                     # body is ignored here and refused by the adapter if it names an argument the entry does not
                     # declare: the window cannot approve itself, and cannot choose a route.
                     out, code = s.call(b.get("name"), b.get("args") if isinstance(b.get("args"), dict) else {})
-                    return self._json(out, code)
-                if p == "/api/approve":
-                    out, code = s.approve(str(b.get("id") or ""), str(b.get("code") or ""))
                     return self._json(out, code)
                 if p == "/api/board":
                     out, code = s.board_write(b)

@@ -254,40 +254,38 @@ def test_a_body_larger_than_the_cap_is_refused(svc):
 
 
 # ------------------------------------------------------------------ a pipeline is refused, with no approval
-def test_a_pipeline_is_refused_from_the_window(svc, fake_log):
+def test_a_pipeline_runs_in_the_background_instead_of_holding_the_window(svc, fake_log):
+    """Antes esto se negaba. Ahora corre -- pero NO en la misma peticion.
+
+    Una corrida de peptido de esta maquina tardo 70 minutos. Contestarla en linea habria dejado la ventana
+    colgada hasta el timeout de BioQL, que son 12 horas. Asi que la respuesta es 202 con un id de corrida, y la
+    ventana sigue su estado, que es como se comporta la ventana de BioQL en :3000.
+    """
     code, body, _ = svc.j("/api/call", {"name": "pipe", "args": {}})
-    assert code == 403 and body["state"] == "REFUSED" and "approve" in body["detail"]
-    assert fake_log.submits == []                             # nothing was submitted to BioQL
-    assert not any("/api/quantum" in u or "/api/pipeline/submit" in u for u in svc.rec.urls)
+    assert code == 202 and body["state"] == "RUNNING", body
+    assert body["run"]["tool"] == "pipe" and body["run"]["id"]
+    # y la corrida existe, con lo que se lanzo escrito en ella
+    assert svc.s.runs[body["run"]["id"]].args == {}
+    for _ in range(100):
+        if svc.s.runs[body["run"]["id"]].state != "RUNNING":
+            break
+        time.sleep(0.05)
+    assert svc.s.runs[body["run"]["id"]].state in ("RESOLVED", "ABSENT", "UNRESOLVABLE", "REFUSED")
 
 
-def test_the_body_cannot_approve_itself(svc, fake_log):
-    """/api/call reads `name` and `args` and nothing else: an approval in the body changes nothing."""
-    for extra in ({"approved_by": "Heinz"}, {"approve": True}, {"by": "owner"},
-                  {"args": {"approved_by": "Heinz"}}, {"args": {"endpoint": "/api/exec"}}):
-        payload = {"name": "pipe", "args": {}, **extra}
-        code, body, _ = svc.j("/api/call", payload)
+def test_the_body_still_cannot_choose_the_route(svc, fake_log):
+    """Lo que la puerta de aprobacion nunca fue: el control de A DONDE se postea.
+
+    Ese sigue entero. El llamante no elige endpoint, ni url, ni params -- la ruta es siempre la del allowlist.
+    Quitar la aprobacion no abrio esto, y este test existe para que nadie lo asuma.
+    """
+    for extra in ({"args": {"endpoint": "/api/exec"}}, {"args": {"url": "http://evil.example/"}},
+                  {"args": {"path": "/api/ssh/execute"}}):
+        code, body, _ = svc.j("/api/call", {"name": "pipe", **extra})
         assert code == 403 and body["state"] == "REFUSED", extra
     assert fake_log.submits == []
 
 
-def test_real_hardware_is_never_offered_an_approval_from_the_window(svc):
-    """A `hardware` entry, or an argument naming a real device, gets no pending at all: that stays with the command
-    line and a named person."""
-    code, body, _ = svc.j("/api/call", {"name": "hw", "args": {}})
-    assert code == 403 and "pending" not in body
-    ents = entries(sim={"method": "POST", "path": "/api/mixed", "kind": "local", "optional": ["backend"],
-                        "timeout": 30, "why": "cheap, unless it is pointed at a real device"})
-    s2 = Svc(svc.s.home, svc.s.adapter.base, ents)
-    try:
-        code, body, _ = s2.j("/api/call", {"name": "sim", "args": {"backend": "ibm_fez"}})
-        assert code == 403 and "pending" not in body        # wants_hardware: refused, and not offered
-        assert s2.j("/api/call", {"name": "sim", "args": {"backend": "aer_simulator"}})[1]["state"] == "RESOLVED"
-    finally:
-        s2.stop()
-
-
-# ------------------------------------------------------------------ a cheap local entry works
 def test_a_cheap_local_entry_works_against_the_fake(svc, fake_log):
     code, body, _ = svc.j("/api/call", {"name": "smiles_to_3d", "args": {"smiles": "CC(=O)Nc1ccc(O)cc1"}})
     assert code == 200 and body["state"] == "RESOLVED"
@@ -393,54 +391,12 @@ def test_no_unknown_api_route_answers(svc):
         assert code == 404, path
 
 
-# ------------------------------------------------------------------ the approval, done honestly
-def _pending(svc, name="pipe", args=None):
+# ------------------------------------------------- lo que puede tardar corre aparte, y su veredicto llega entero
+def _lanzar(svc, name="pipe", args=None):
+    """Lanza una entrada cara. Contesta 202 con el id de la corrida; no espera a que termine."""
     code, body, _ = svc.j("/api/call", {"name": name, "args": args or {}})
-    assert code == 403 and body["state"] == "REFUSED"
-    return body.get("pending")
-
-
-def test_an_approval_is_offered_but_its_code_is_never_sent_to_the_page(svc):
-    p = _pending(svc)
-    assert p and p["tool"] == "pipe" and not p["used"]
-    assert "code" not in p and "code" not in json.dumps(p)
-    code_file = svc.s.home / "pending" / p["id"]
-    assert code_file.exists() and (os.stat(code_file).st_mode & 0o077) == 0
-    assert any(p["id"] in line and code_file.read_text().strip() in line for line in svc.logs)
-
-
-def test_a_wrong_code_an_unknown_id_and_a_replay_are_all_refused(svc, fake_log):
-    p = _pending(svc)
-    real = (svc.s.home / "pending" / p["id"]).read_text().strip()
-    for pid, code_ in ((p["id"], "deadbeef"), (p["id"], ""), ("0" * 24, real), ("../x", real)):
-        st, body, _ = svc.j("/api/approve", {"id": pid, "code": code_})
-        assert st == 403 and body["state"] == "REFUSED", (pid, code_)
-    assert fake_log.submits == []
-    st, body, _ = svc.j("/api/approve", {"id": p["id"], "code": real})     # the right one, once
-    assert st == 200 and body["state"] == "APPROVED"
-    st, body, _ = svc.j("/api/approve", {"id": p["id"], "code": real})     # and only once
-    assert st == 403 and "single-use" in body["detail"]
-
-
-def test_an_expired_approval_is_refused(svc, fake_log):
-    p = _pending(svc)
-    real = (svc.s.home / "pending" / p["id"]).read_text().strip()
-    svc.s.pending[p["id"]].created -= 10_000
-    st, body, _ = svc.j("/api/approve", {"id": p["id"], "code": real})
-    assert st == 403 and "expired" in body["detail"]
-    assert fake_log.submits == []
-
-
-def test_an_approval_runs_the_stored_call_and_nothing_else(svc, fake_log):
-    p = _pending(svc, args={"which": "j1"})
-    real = (svc.s.home / "pending" / p["id"]).read_text().strip()
-    st, body, _ = svc.j("/api/approve", {"id": p["id"], "code": real})
-    assert st == 200 and body["run"] == p["id"] and body["tool"] == "pipe"
-    run = _wait(svc, p["id"])
-    assert run["state"] == "RESOLVED" and run["result_sha256"]
-    # the arguments BioQL saw are the ones that were shown, and the endpoint is the allowlist's, not the caller's
-    assert fake_log.submits == [{"endpoint": "/api/quantum/peptide_design", "params": {"which": "j1"}}]
-    assert svc.s.adapter.base + "/api/pipeline/submit" in svc.rec.urls
+    assert code == 202 and body["state"] == "RUNNING", body
+    return body["run"]["id"]
 
 
 def _wait(svc, rid, limit=10.0):
@@ -493,24 +449,6 @@ def test_one_row_per_call_carries_the_verdict_the_findings_and_their_detail(svc)
         assert row["method"] == "POST" and row["path"] == "/api/mixed"      # the adapter's own facts, same line
     finally:
         s2.stop()
-
-
-def test_the_refusal_and_both_sides_of_the_approval_are_on_the_record(svc):
-    _pending(svc)
-    p = _pending(svc)
-    real = (svc.s.home / "pending" / p["id"]).read_text().strip()
-    svc.j("/api/approve", {"id": p["id"], "code": "wrong"})
-    svc.j("/api/approve", {"id": p["id"], "code": real})
-    _wait(svc, p["id"])
-    rows = svc.j("/api/ledger?limit=200")[1]["rows"]
-    events = [r.get("window_event") for r in rows if r.get("window_event")]
-    assert "approval_offered" in events and "approval_denied" in events and "approval_granted" in events
-    granted = [r for r in rows if r.get("window_event") == "approval_granted"][-1]
-    # the mechanism, never a person and never a biometric claim
-    assert granted["approved_by"] == f"window:{p['id']}"
-    for word in ("verified", "touchid", "touch id", "biometric", "uv"):
-        assert word not in json.dumps(granted).lower().replace("value", "")
-    assert svc.j("/api/ledger")[1]["chain"]["ok"]
 
 
 def test_no_ledger_row_carries_a_payload_or_the_token(svc):
@@ -590,12 +528,11 @@ def test_the_app_never_imports_bioql_and_never_names_it_as_a_place_to_write():
 def test_a_refusal_from_the_window_is_on_the_record(svc):
     """For Claude Code a refusal is a REFUSED line (studio.adapter.call writes it). `Adapter.check` deliberately
     writes nothing, so without a row of its own a refusal from the window would leave no trace at all."""
-    svc.j("/api/call", {"name": "hw", "args": {}})                       # hardware: no offer, so a plain refusal
     svc.j("/api/call", {"name": "no_such_tool", "args": {}})
     svc.j("/api/call", {"name": "smiles_to_3d", "args": {"endpoint": "/api/exec"}})
     rows = [r for r in svc.j("/api/ledger?limit=200")[1]["rows"] if r.get("window_event") == "call"]
     refused = [r for r in rows if r["state"] == "REFUSED"]
-    assert [r["tool"] for r in refused] == ["hw", "no_such_tool", "smiles_to_3d"]
+    assert [r["tool"] for r in refused] == ["no_such_tool", "smiles_to_3d"]
     assert all(r["by"] == "window" and r["detail"] and r["verdict_recorded"] for r in refused)
     assert all(r["verdict"] is None for r in refused)                    # a refusal has no verdict, and says so
     assert svc.j("/api/ledger")[1]["chain"]["ok"]
@@ -658,28 +595,14 @@ def test_the_guard_route_does_not_go_through_guard_load(svc, monkeypatch):
         assert "ui.token" not in json.dumps(body)
 
 
-def test_an_approval_is_void_after_three_wrong_codes(svc, fake_log):
-    from app.service import PENDING_TRIES
-    p = _pending(svc)
-    real = (svc.s.home / "pending" / p["id"]).read_text().strip()
-    assert len(real) == 32                                # 128 bits: a guess is hopeless on its own, not just slow
-    for _ in range(PENDING_TRIES):
-        assert svc.j("/api/approve", {"id": p["id"], "code": "0" * 32})[0] == 403
-    st, body, _ = svc.j("/api/approve", {"id": p["id"], "code": real})    # even the RIGHT code now
-    assert st == 403 and "void" in body["detail"]
-    assert fake_log.submits == []
-
-
 def test_a_finished_run_never_appears_without_its_verdict(svc):
     """/api/run is read without a lock, so `state` is published last: a reader must never see a finished run whose
     verdict is still missing and read that absence as "nothing was found"."""
-    p = _pending(svc, args={"which": "j1"})
-    real = (svc.s.home / "pending" / p["id"]).read_text().strip()
-    assert svc.j("/api/approve", {"id": p["id"], "code": real})[0] == 200
+    rid = _lanzar(svc, args={"which": "j1"})
     seen = []
     end = time.time() + 10
     while time.time() < end:
-        body = svc.j("/api/run?id=" + p["id"])[1]
+        body = svc.j("/api/run?id=" + rid)[1]
         seen.append(body)
         if body["state"] != "RUNNING":
             break
@@ -764,7 +687,7 @@ def test_quitting_with_a_call_in_flight_does_not_hang_the_app(tmp_path):
 def test_an_idle_studio_is_not_busy(svc):
     """Si no hay nada en vuelo la app cierra sin preguntar: una pregunta que siempre sale deja de leerse."""
     out = svc.j("/api/busy")[1]
-    assert out == {"running": [], "pending": [], "chats": 0, "busy": False}
+    assert out == {"running": [], "chats": 0, "busy": False}
 
 
 def test_a_running_pipeline_is_what_would_be_lost(svc):
@@ -774,20 +697,6 @@ def test_a_running_pipeline_is_what_would_be_lost(svc):
     out = svc.j("/api/busy")[1]
     assert out["busy"] is True
     assert [r["tool"] for r in out["running"]] == ["peptide_discovery"]   # lo terminado no se cuenta
-
-
-def test_a_call_waiting_for_a_person_counts(svc):
-    from app.service import Pending
-    svc.s.pending["p1"] = Pending(id="p1", code="123456", tool="admet_standalone", args={}, why="pide persona")
-    out = svc.j("/api/busy")[1]
-    assert out["busy"] is True and [p["tool"] for p in out["pending"]] == ["admet_standalone"]
-
-
-def test_a_used_or_expired_offer_does_not_hold_the_window(svc):
-    from app.service import Pending
-    svc.s.pending["p1"] = Pending(id="p1", code="1", tool="t", args={}, why="w", used=True)
-    svc.s.pending["p2"] = Pending(id="p2", code="2", tool="t", args={}, why="w", created=0.0)
-    assert svc.j("/api/busy")[1]["busy"] is False
 
 
 def test_an_answer_still_being_written_counts(svc):
@@ -857,7 +766,7 @@ def test_a_window_call_comes_back_with_its_card(svc):
     card = body.get("card")
     assert isinstance(card, dict) and isinstance(card.get("kind"), str) and card["kind"]
     assert isinstance(card.get("blocks"), list) or isinstance(card.get("cards"), list)
-    code, refused, _ = svc.j("/api/call", {"name": "pipe", "args": {}})
+    code, refused, _ = svc.j("/api/call", {"name": "no_such_tool", "args": {}})
     assert code == 403 and "card" not in refused
 
 

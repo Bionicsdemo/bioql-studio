@@ -14,6 +14,7 @@ import pytest
 
 from studio import allowlist as al
 from studio import fanout, ledger, mcp_server
+from studio import ledger
 from studio.adapter import Adapter, Refused
 
 
@@ -24,8 +25,8 @@ def entries(**extra):
     return base
 
 
-def ad(url, **extra):
-    return Adapter(url, entries(**extra), poll_every=0.05, log=False)
+def ad(url, log=False, **extra):
+    return Adapter(url, entries(**extra), poll_every=0.05, log=log)
 
 
 SLOW = {"method": "POST", "path": "/api/slow", "kind": "local", "approval": False, "why": "two seconds"}
@@ -53,16 +54,23 @@ def test_the_order_given_is_the_order_returned(fake_bioql):
 
 
 # ------------------------------------------------------------------ the gate is per call, not per batch
-def test_a_batch_is_not_a_way_round_an_approval(fake_bioql):
-    """Hiding a compute entry among cheap ones must not get it past the door."""
-    a = ad(fake_bioql, heavy={"method": "POST", "path": "/api/pipeline/submit", "kind": "compute", "via": "submit",
-                              "why": "asks a person"}, slow=SLOW)
+def test_a_batch_records_every_call_including_the_expensive_one(fake_bioql):
+    """Antes esto comprobaba que un `compute` escondido entre llamadas baratas no pasaba la puerta. La puerta ya no
+    esta -- Studio ejecuta, como :3000 -- asi que lo que hay que comprobar es lo que si quedo: que un lote no es
+    una forma de que algo corra SIN QUEDAR ESCRITO. Tres llamadas, tres lineas, todas con el mismo grupo."""
+    a = ad(fake_bioql, log=True,
+           heavy={"method": "POST", "path": "/api/pipeline/submit", "kind": "compute", "via": "submit"},
+           slow=SLOW)
     out = fanout.run_many(a, [{"name": "backend_health", "args": {}},
                               {"name": "heavy", "args": {}},
                               {"name": "backend_health", "args": {}}])
-    assert [r["state"] for r in out["runs"]] == ["RESOLVED", "REFUSED", "RESOLVED"]
-    assert "approval" in out["runs"][1]["detail"].lower() or "person" in out["runs"][1]["detail"].lower()
-    assert out["counts"] == {"RESOLVED": 2, "REFUSED": 1}
+    assert [r["state"] for r in out["runs"]] == ["RESOLVED", "RESOLVED", "RESOLVED"]
+    assert out["counts"] == {"RESOLVED": 3}
+    rows = [json.loads(l) for l in ledger.path_file().read_text().splitlines() if l.strip()]
+    mias = [r for r in rows if r.get("group") == out["group"] and r.get("tool")]
+    assert len([r for r in mias if r["tool"] in ("backend_health", "heavy")]) == 3
+    caro = [r for r in mias if r["tool"] == "heavy"]
+    assert caro and caro[0]["kind"] == "compute", "la cara no quedo marcada como compute en el registro"
 
 
 def test_an_unknown_tool_is_refused_without_touching_the_others(fake_bioql):
@@ -145,15 +153,50 @@ def test_claude_is_offered_run_many_with_the_other_tools(fake_bioql):
 
 
 def test_the_server_runs_a_batch_and_reports_each_state(fake_bioql):
-    a = ad(fake_bioql, heavy={"method": "POST", "path": "/api/pipeline/submit", "kind": "compute", "via": "submit",
-                              "why": "asks a person"})
+    """Un lote mezcla lo que corre y lo que no, y cada uno lleva su propio estado.
+
+    Lo que falla aqui ya no es una aprobacion -- la puerta se quito -- sino un nombre que no existe, que es lo
+    unico que sigue siendo motivo para negarse.
+    """
+    a = ad(fake_bioql, heavy={"method": "POST", "path": "/api/pipeline/submit", "kind": "compute", "via": "submit"})
     out = mcp_server.handle(a, {"jsonrpc": "2.0", "id": 7, "method": "tools/call",
                                 "params": {"name": "run_many", "arguments": {"calls": [
-                                    {"name": "backend_health", "args": {}}, {"name": "heavy", "args": {}}]}}})
+                                    {"name": "backend_health", "args": {}},
+                                    {"name": "no_existe", "args": {}}]}}})
     body = json.loads(out["result"]["content"][0]["text"])
     assert [r["state"] for r in body["runs"]] == ["RESOLVED", "REFUSED"]
-    # one refusal inside a batch is not the batch failing: four answers out of five must not be hidden
+    # una negativa dentro de un lote no es el lote fallando: cuatro respuestas de cinco no se esconden
     assert out["result"]["isError"] is False
+
+
+def test_a_batch_accepts_the_names_the_client_actually_shows_the_model(fake_bioql):
+    """EL fallo que hacia inusable `run_many` desde Claude Desktop y Claude Code.
+
+    Un cliente MCP ensena estas herramientas bajo SU propio espacio de nombres: `backend_health` aparece como
+    `mcp__bioql__backend_health`. En una llamada normal el protocolo quita ese prefijo antes de llegar aqui, pero
+    `run_many` recibe los nombres como ARGUMENTOS, asi que el modelo escribe el unico nombre que se le enseno --
+    con prefijo -- y todo el lote volvia "not in Studio's allowlist". Parecia una herramienta que falta o un
+    backend caido. Era Studio negando sus propias herramientas con el nombre que sus propios clientes muestran.
+    """
+    a = ad(fake_bioql, log=True)
+    out = mcp_server.handle(a, {"jsonrpc": "2.0", "id": 9, "method": "tools/call",
+                                "params": {"name": "run_many", "arguments": {"calls": [
+                                    {"name": "mcp__bioql__backend_health", "args": {}},
+                                    {"name": "backend_health", "args": {}}]}}})
+    body = json.loads(out["result"]["content"][0]["text"])
+    assert [r["state"] for r in body["runs"]] == ["RESOLVED", "RESOLVED"], body["runs"]
+    # y el prefijo del cliente no crea una segunda herramienta en el registro
+    rows = [json.loads(l) for l in ledger.path_file().read_text().splitlines() if l.strip()]
+    nombres = {r["tool"] for r in rows if "backend_health" in str(r.get("tool"))}
+    assert nombres == {"backend_health"}, f"el registro guardo el nombre del cliente: {nombres}"
+
+
+def test_an_unknown_name_is_still_refused_prefix_or_not(fake_bioql):
+    """Quitar el prefijo nunca puede convertirse en adivinar otra herramienta."""
+    a = ad(fake_bioql)
+    for nombre in ("mcp__bioql__no_existe", "mcp__otro__backend_health_x", "no_existe"):
+        with pytest.raises(Refused):
+            a.call(nombre)
 
 
 def test_a_batch_where_nothing_resolved_is_an_error(fake_bioql):

@@ -303,9 +303,9 @@ async function drawState() {
     return null;
   }
   lastState = body;
-  const waiting = (body.pending || []).length;
-  $("hubDot").className = "dot " + (waiting ? "warn" : "on");
-  $("hubLine").textContent = waiting ? waiting + " waiting for a person" : "ready";
+  const corriendo = (body.runs || []).filter((r) => r.state === "RUNNING").length;
+  $("hubDot").className = "dot " + (corriendo ? "warn" : "on");
+  $("hubLine").textContent = corriendo ? corriendo + " corriendo" : "ready";
   $("ver").textContent = body.version + " · 127.0.0.1:" + body.port;
 
   // Whether Settings is in the menu, decided by the install and not by this page. When it changes under us — the
@@ -337,9 +337,8 @@ async function drawState() {
   syncChips();
   $("chatSub").textContent = `${body.calls} call(s) · ${body.refusals} refused · ${body.approvals} approved`;
   $("stateLine").textContent = `${body.calls} call(s) on the record · ${body.refusals} refused · ` +
-    `${body.approvals} approved` + (waiting ? ` · ${waiting} waiting for a person` : "");
-  drawPending(body.pending || []);
-  if (waiting) ring("waiting");
+    `${body.approvals} approved` + (corriendo ? ` · ${corriendo} corriendo` : "");
+  if (corriendo) ring("busy");
   return body;
 }
 
@@ -360,53 +359,14 @@ async function drawEngine() {
   $("chatName").textContent = v.service || "BioQL Studio";
 }
 
-// ------------------------------------------------------------------ waiting for a person
-function drawPending(pending) {
-  const modal = $("modal"), sheet = $("sheet");
-  if (!pending.length) {
-    if (modal.dataset.why === "pending") modal.hidden = true;
-    return;
-  }
-  if (!modal.hidden && modal.dataset.why !== "pending") return;
-  modal.dataset.why = "pending";
-  modal.hidden = false;
-  clear(sheet);
-  sheet.appendChild(el("h2", null, "Waiting for a person"));
-  sheet.appendChild(el("p", null, "The code for a pending call is in Studio's log and in HOME/pending/<id>. It was " +
-    "never sent to this page. Pasting it is an explicit, single-use, call-bound act — not a proof that a human is " +
-    "present."));
-  pending.forEach((p) => {
-    const row = el("div", "row");
-    const head = el("div", "row-head");
-    head.appendChild(el("span", "row-tool", p.tool));
-    head.appendChild(el("span", "hash", p.detail || ""));
-    row.appendChild(head);
-    const act = el("div", "row-head");
-    const input = el("input", "field-in");
-    input.placeholder = "code from the log";
-    input.setAttribute("aria-label", "approval code");
-    const go = el("button", "go", "Approve");
-    go.addEventListener("click", async () => {
-      go.disabled = true;
-      ring("busy");
-      const { body } = await api("/api/approve", { id: p.id, code: input.value.trim() });
-      go.disabled = false;
-      ring("idle");
-      toast(body.detail || body.error || body.state || "sent");
-      await drawState();
-      if (view === "findings") await draw();
-    });
-    act.appendChild(input);
-    act.appendChild(go);
-    row.appendChild(act);
-    sheet.appendChild(row);
-  });
-  const acts = el("div", "acts");
-  const shut = el("button", "btn", "Later");
-  shut.addEventListener("click", () => { modal.hidden = true; });
-  acts.appendChild(shut);
-  sheet.appendChild(acts);
-}
+// No hay pantalla de aprobacion, y no debe volver a haberla.
+//
+// Studio pedia una aprobacion por llamada y aqui se pegaba un codigo de un solo uso. Se quito -- la razon esta
+// escrita entera en `Adapter.check` -- y con ella esta pantalla: una ventana que sigue preguntando por algo que
+// ya nadie exige es peor que no preguntar, porque ensena una proteccion que no existe.
+//
+// Lo que la ventana tiene que mostrar ahora no es quien espera permiso, sino QUE ESTA CORRIENDO: una llamada cara
+// no se contesta en linea, se va a su propio hilo y devuelve un id. Eso va en la linea de estado, abajo.
 
 // ------------------------------------------------------------------ the sections
 let TOOLS = [];
@@ -492,6 +452,21 @@ async function callTool(name, args) {
 function stateLine(box, body, what) {
   const st = String(body.state || "");
   if (st === "RESOLVED") return true;
+  if (st === "RUNNING") {
+    // Lo que puede tardar ya no se contesta en linea: el servicio devuelve 202 con un id y la corrida sigue en su
+    // propio hilo. Sin esta rama, una corrida recien lanzada se dibujaba como un fallo -- la peor forma posible de
+    // decir "va bien, tarda".
+    const row = el("div", "row");
+    const head = el("div", "row-head");
+    head.appendChild(el("span", "row-tool", what));
+    head.appendChild(chip("corriendo", "busy"));
+    if (body.run && body.run.id) head.appendChild(el("span", "hash", body.run.id));
+    row.appendChild(head);
+    row.appendChild(el("p", "row-why", body.detail ||
+      "corriendo en segundo plano; esta ventana no se queda esperando, y el resultado aparece en Jobs & Recovery."));
+    box.appendChild(row);
+    return false;
+  }
   const row = el("div", "row");
   const head = el("div", "row-head");
   head.appendChild(el("span", "row-tool", what));
@@ -499,10 +474,6 @@ function stateLine(box, body, what) {
   row.appendChild(head);
   row.appendChild(el("p", "row-why", body.detail || body.error ||
     (st === "ABSENT" ? "BioQL answered and has nothing here." : "the call did not go through")));
-  if (body.pending) {
-    row.appendChild(el("p", "fine", "This one needs a person: the code is in Studio's log and in " +
-      "HOME/pending/" + body.pending.id + "."));
-  }
   box.appendChild(row);
   return false;
 }

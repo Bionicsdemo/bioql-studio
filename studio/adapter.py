@@ -123,8 +123,29 @@ class Adapter:
     def tools(self) -> list[dict]:
         return [e for e in self.entries.values() if e["enabled"] and not al.problems(e)]
 
+    # An MCP client shows these tools to the model under ITS OWN namespace: Claude Desktop and Claude Code list
+    # `backend_health` as `mcp__bioql__backend_health`. That prefix is the client's, invented at registration, and
+    # it never reaches the server on a normal call — the protocol strips it. But `run_many` takes tool names as
+    # ARGUMENTS, so the model writes down the only name it was ever shown, prefix and all, and every entry in the
+    # batch came back "not in Studio's allowlist". That read like a missing tool or a dead backend. It was neither:
+    # it was Studio refusing its own tools under the name its own clients display.
+    #
+    # The server part of the prefix is whatever the person called it when registering, so it is matched loosely and
+    # only STRIPPED — never rewritten into something else. If the bare name is not in the allowlist either, the
+    # refusal names the original, because a refusal that quietly renames what was asked for is worse than the bug.
+    MCP_PREFIX = re.compile(r"^mcp__[A-Za-z0-9][A-Za-z0-9_.-]*__(?P<tool>.+)$")
+
+    def _resolve(self, name: str) -> str:
+        """The allowlist key for what the caller asked for, taking the client's namespace off if it is there."""
+        if name in self.entries:
+            return name
+        m = self.MCP_PREFIX.match(name or "")
+        if m and m.group("tool") in self.entries:
+            return m.group("tool")
+        return name
+
     def _entry(self, name: str) -> dict:
-        e = self.entries.get(name)
+        e = self.entries.get(self._resolve(name))
         if e is None:
             raise Refused(f"{name!r} is not in Studio's allowlist")
         if not e["enabled"]:
@@ -165,8 +186,26 @@ class Adapter:
         missing = [k for k in e["required"] if args.get(k) in (None, "")]
         if missing:
             raise Refused(f"{name!r} needs {missing}")
-        if (e["approval"] or e["kind"] == "hardware" or wants_hardware(args)) and not (approved_by or "").strip():
-            raise Refused(f"{name!r} can spend real quantum hardware or was marked for approval: a person must approve this call")
+        # NO HAY PUERTA DE APROBACION. Studio ejecuta, como hace la ventana de BioQL en :3000.
+        #
+        # La habia, y la razon por la que se quito importa mas que la razon por la que estaba. Estaba porque BioQL
+        # no dice de antemano si una corrida va a tocar QPU real, asi que Studio no podia saberlo antes de llamar
+        # y preguntaba. Pero preguntar no era un control: el dueño de esta maquina, de su presupuesto de IBM y de
+        # su asignacion de Pasqal es una sola persona trabajando sola. Lo unico que producia la pregunta era que
+        # su propio Claude no pudiera usar su propio sistema -- `pipeline_mrna_therapeutic` y `replicon_pipeline`
+        # se negaban en su cara, en su maquina, con su presupuesto.
+        #
+        # Y el 2026-11-20 dejo de ser siquiera necesaria: hasta esa manana la puerta de Studio era lo unico entre
+        # una peticion y el QPU real, porque `pasqal_submit_neutral_atom` no comprobaba nada mas que presupuesto y
+        # `route_workload` dejaba que el cuerpo de la peticion se autoaprobara. Las dos estan cerradas ahora, en el
+        # servidor de BioQL, que es donde tiene que vivir la decision de gastar una asignacion escasa:
+        # BIOQL_ALLOW_PASQAL_QPU, BIOQL_REAL_QPU_PRIMARY, el tope por llamada y el ledger de trabajos reales.
+        # Una segunda puerta en el cliente, por encima de esas, solo estorbaba a su dueño.
+        #
+        # Lo que NO se quito, y es lo que de verdad protege: cada llamada sigue siendo una linea del registro
+        # encadenado y firmado, con su tool, su kind, sus argumentos, su veredicto y si toco hardware real. El
+        # control pasa de "pedir permiso antes" a "no poder negar despues", que es el control que esta app siempre
+        # tuvo de verdad.
         return e
 
     # ------------------------------------------------------------------ calling
@@ -183,6 +222,10 @@ class Adapter:
         and anything counting the record counted each call twice.
         """
         args = dict(args or {})
+        # One name on the record, whatever the caller typed. A client's namespace prefix is the client's label for
+        # the same entry, so `mcp__bioql__admet_standalone` and `admet_standalone` must not become two tools in the
+        # notebook or in anything that counts it.
+        name = self._resolve(name)
         began = time.time()
         try:
             e = self.check(name, args, approved_by)
@@ -349,6 +392,13 @@ class Adapter:
         if not self.log:
             return
         self._record({"tool": name, "method": e and e["method"], "path": e and e["path"], "args": args,
+                       # `kind` y `wanted_hardware` no estaban en la linea, y hasta hoy casi no hacian falta: una
+                       # llamada de hardware no llegaba aqui sin que una persona la hubiera aprobado, asi que la
+                       # aprobacion era la marca. Quitada la puerta, el registro es el unico control que queda, y
+                       # un registro que no distingue un simulador de un chip real no sirve para la pregunta que
+                       # se le va a hacer: que se gasto. `wanted_hardware` es lo que PEDIAN los argumentos; lo que
+                       # de verdad corrio lo dice `provenance`, y los dos juntos es como se ve una discrepancia.
+                       "kind": e and e["kind"], "wanted_hardware": wants_hardware(args) or None,
                        "state": state, "detail": (detail or "")[:300], "http": http,
                        "result_sha256": ledger.digest(res.value) if res is not None and res.resolved else None,
                        "provenance": res.meta.get("provenance") if res is not None else None,

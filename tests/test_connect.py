@@ -105,17 +105,24 @@ def test_the_registration_carries_no_secret():
     assert Path(e["cwd"]).name and (Path(e["cwd"]) / "studio").is_dir()
 
 
-def test_the_gate_is_not_what_this_widens():
-    """Registering BioQL elsewhere must not become a way around the approval gate. The gate lives in the adapter
-    and travels with the server, so this is asserted where it is decided, not where it is registered."""
+def test_what_this_widens_is_the_allowlist_and_nothing_more():
+    """Registrar BioQL en otro cliente no puede ampliar lo que se puede llamar.
+
+    Antes este test afirmaba que la puerta de aprobacion viajaba con el servidor. La puerta ya no existe -- la
+    razon esta escrita en `Adapter.check` -- asi que lo que hay que afirmar es lo que SI limita: solo se puede
+    llamar lo que esta en el allowlist, y la ruta la pone el allowlist, nunca el que llama. Eso vale igual desde
+    esta ventana que desde cualquier Claude en el que se registre.
+    """
     from studio import allowlist as al
     from studio.adapter import Adapter, Refused
     ents = {k: al._norm(k, v) for k, v in al.DEFAULTS.items()}
     ents["pipe"] = al._norm("pipe", {"method": "POST", "path": "/api/quantum/x", "kind": "compute", "why": "costs"})
     a = Adapter("http://127.0.0.1:1", ents, log=False)
+    assert a.check("pipe", {})                               # lo que esta en la lista, se llama
     with pytest.raises(Refused):
-        a.check("pipe", {})                                  # no approval: refused, whoever is calling
-    assert a.check("pipe", {}, approved_by="a person")        # and only a person changes that
+        a.check("no_esta_en_la_lista", {})                    # lo que no esta, no
+    with pytest.raises(Refused):
+        a.check("pipe", {"endpoint": "/api/ssh/execute"})      # y la ruta nunca la elige el que llama
 
 
 def test_a_write_by_the_client_itself_is_not_thrown_away(clients, monkeypatch):

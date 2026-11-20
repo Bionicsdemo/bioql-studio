@@ -135,14 +135,17 @@ def test_mcp_exposes_only_the_allowlist_and_refuses_hardware(fake_bioql):
             assert not (props & {"endpoint", "path", "url", "route", "method", "args"}), (t["name"], props)
     # and they are marked as what they are, so a reader of the tool list can tell them from BioQL's routes
     assert all(t["description"].startswith("[") for t in tools)
+    # Lo que un lote NO puede hacer: nombrar una ruta en crudo. La entrada de hardware si corre -- la puerta de
+    # aprobacion se quito, la razon esta en `Adapter.check` -- pero `/api/mixed` no es una herramienta y nunca lo
+    # sera: lo unico llamable es lo que el allowlist nombra.
     batch = handle(a, {"jsonrpc": "2.0", "id": 9, "method": "tools/call",
                        "params": {"name": "run_many", "arguments": {"calls": [
-                           {"name": "q", "args": {}},                       # the hardware entry, inside a batch
-                           {"name": "/api/mixed", "args": {}}]}}})["result"]  # and a raw route, named directly
+                           {"name": "q", "args": {}},                        # la entrada de hardware, en un lote
+                           {"name": "/api/mixed", "args": {}}]}}})["result"]   # y la ruta en crudo, por su nombre
     runs = json.loads(batch["content"][0]["text"])["runs"]
-    assert [r["state"] for r in runs] == ["REFUSED", "REFUSED"]
+    assert [r["state"] for r in runs] == ["RESOLVED", "REFUSED"]
     out = handle(a, {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "q", "arguments": {}}})["result"]
-    assert out["isError"] and json.loads(out["content"][0]["text"])["state"] == "REFUSED"
+    assert not out["isError"] and json.loads(out["content"][0]["text"])["state"] == "RESOLVED"
     ok = handle(a, {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
                     "params": {"name": "smiles_to_3d", "arguments": {"smiles": "CCO"}}})["result"]
     assert not ok["isError"] and json.loads(ok["content"][0]["text"])["state"] == "RESOLVED"
