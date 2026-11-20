@@ -215,6 +215,37 @@ final class Service {
         DispatchQueue.main.async { [weak self] in self?.onExit?(0) }
     }
 
+    /// What would be lost by quitting now, asked of this app's own service. Blocking; call off the main thread.
+    ///
+    /// `nil` means the question could not be ASKED — the service is gone, the token is missing, the body would not
+    /// parse. That is not "nothing is running", and the caller must not read it as one: a quit that threw away a
+    /// twelve-hour pipeline because the shell could not reach its own service would be the third state degrading
+    /// into the second, in the one place where it costs the person the run.
+    struct Busy { let running: Int; let pending: Int; let chats: Int; let names: [String] }
+
+    func busy(timeout: TimeInterval = 2.5) -> Busy? {
+        let t = token
+        guard !t.isEmpty, let url = URL(string: Service.base + "/api/busy") else { return nil }
+        var req = URLRequest(url: url)
+        req.timeoutInterval = timeout
+        req.cachePolicy = .reloadIgnoringLocalCacheData
+        req.setValue(t, forHTTPHeaderField: "X-Studio-Token")
+        let sem = DispatchSemaphore(value: 0)
+        var out: Busy?
+        session.dataTask(with: req) { data, resp, _ in
+            defer { sem.signal() }
+            guard (resp as? HTTPURLResponse)?.statusCode == 200, let data = data,
+                  let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+            let running = (j["running"] as? [[String: Any]]) ?? []
+            let pending = (j["pending"] as? [[String: Any]]) ?? []
+            let names = (running + pending).compactMap { $0["tool"] as? String }
+            out = Busy(running: running.count, pending: pending.count,
+                       chats: (j["chats"] as? Int) ?? 0, names: names)
+        }.resume()
+        _ = sem.wait(timeout: .now() + timeout + 0.5)
+        return out
+    }
+
     /// POST to this app's own service, on a path this app chose.
     ///
     /// FIX 4 — Agtr's equivalent takes the path from the web page (AppDelegate.swift:190, 257-259: the page sends

@@ -13,6 +13,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     private var web: WKWebView!
     private var restarts = 0
     private var restarting = false
+    private var askingToQuit = false
     private let maxRestarts = 5
 
     // ------------------------------------------------------------------ launch
@@ -39,6 +40,66 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 
     func applicationWillTerminate(_ note: Notification) {
         service.stop()
+    }
+
+    /// Ask before throwing away work in flight.
+    ///
+    /// Quitting does not stop a pipeline: it runs inside BioQL and keeps running there. What it stops is Studio
+    /// FOLLOWING it — the result is never fetched, the verifier never reads it, and no line for it reaches the
+    /// record. A person who approved a twelve-hour run deserves to be told that before it happens, and `⌘Q` is
+    /// one keystroke away from `⌘W`.
+    ///
+    /// The question is one read-only GET to this app's own service, and it is asked OFF the main thread: a
+    /// `applicationShouldTerminate` that blocks is an app that beachballs while quitting, which is the defect
+    /// this session already fixed once on the Python side. Hence `.terminateLater` and `reply(toApplicationShould
+    /// Terminate:)`. The policy — what counts as work in flight — lives in `Studio.busy`, under test, not here.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if askingToQuit { return .terminateCancel }     // a sheet is already up: one question, not a pile
+        guard service.isMine else { return .terminateNow }
+        askingToQuit = true
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let busy = self?.service.busy()
+            DispatchQueue.main.async { self?.answerQuit(busy) }
+        }
+        return .terminateLater
+    }
+
+    private func answerQuit(_ busy: Service.Busy?) {
+        let reply: (Bool) -> Void = { ok in
+            self.askingToQuit = false
+            NSApp.reply(toApplicationShouldTerminate: ok)
+        }
+        guard let busy = busy else {
+            // The question could not be ASKED. That is not "nothing is running", and quitting on it could throw
+            // away a run in silence — so the person decides, told plainly which of the two they are deciding.
+            let a = NSAlert()
+            a.messageText = "BioQL Studio cannot tell what is running"
+            a.informativeText = "Its own service did not answer, so whether a pipeline is in flight is unknown — "
+                              + "not “nothing”. Quitting now would stop Studio following anything that is: BioQL "
+                              + "would keep running it, and the result would never be fetched or recorded."
+            a.addButton(withTitle: "Quit anyway")
+            a.addButton(withTitle: "Stay open")
+            a.beginSheetModal(for: window) { r in reply(r == .alertFirstButtonReturn) }
+            return
+        }
+        guard busy.running > 0 || busy.pending > 0 || busy.chats > 0 else { return reply(true) }
+
+        let a = NSAlert()
+        a.messageText = busy.running > 0 ? "A pipeline is running" : "Something is still in flight"
+        var says: [String] = []
+        if busy.running > 0 { says.append("\(busy.running) run(s) Studio is following") }
+        if busy.pending > 0 { says.append("\(busy.pending) call(s) waiting for your approval") }
+        if busy.chats > 0 { says.append("\(busy.chats) question(s) still being answered") }
+        let which = Set(busy.names).sorted().prefix(4).joined(separator: ", ")
+        a.informativeText = says.joined(separator: ", ")
+            + (which.isEmpty ? "" : " (\(which))") + ".\n\n"
+            + "Quitting does not stop a pipeline — BioQL keeps running it — but Studio stops following it, so its "
+            + "result is never fetched, never verified and never written to the record. A call waiting for your "
+            + "approval is lost with the window."
+        a.addButton(withTitle: "Stay open")
+        a.addButton(withTitle: "Quit anyway")
+        a.buttons.first?.keyEquivalent = "\r"           // the safe one is what Return does
+        a.beginSheetModal(for: window) { r in reply(r != .alertFirstButtonReturn) }
     }
 
     private func bringUp() {

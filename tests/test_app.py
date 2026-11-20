@@ -731,3 +731,44 @@ def test_quitting_with_a_call_in_flight_does_not_hang_the_app(tmp_path):
         if p.poll() is None:
             p.kill()
             p.wait(timeout=5)
+
+
+# ------------------------------------------------------------------ lo que se perderia al cerrar
+def test_an_idle_studio_is_not_busy(svc):
+    """Si no hay nada en vuelo la app cierra sin preguntar: una pregunta que siempre sale deja de leerse."""
+    out = svc.j("/api/busy")[1]
+    assert out == {"running": [], "pending": [], "chats": 0, "busy": False}
+
+
+def test_a_running_pipeline_is_what_would_be_lost(svc):
+    from app.service import Run
+    svc.s.runs["r1"] = Run(id="r1", tool="peptide_discovery")           # RUNNING por defecto
+    svc.s.runs["r2"] = Run(id="r2", tool="admet_standalone", state="RESOLVED")
+    out = svc.j("/api/busy")[1]
+    assert out["busy"] is True
+    assert [r["tool"] for r in out["running"]] == ["peptide_discovery"]   # lo terminado no se cuenta
+
+
+def test_a_call_waiting_for_a_person_counts(svc):
+    from app.service import Pending
+    svc.s.pending["p1"] = Pending(id="p1", code="123456", tool="admet_standalone", args={}, why="pide persona")
+    out = svc.j("/api/busy")[1]
+    assert out["busy"] is True and [p["tool"] for p in out["pending"]] == ["admet_standalone"]
+
+
+def test_a_used_or_expired_offer_does_not_hold_the_window(svc):
+    from app.service import Pending
+    svc.s.pending["p1"] = Pending(id="p1", code="1", tool="t", args={}, why="w", used=True)
+    svc.s.pending["p2"] = Pending(id="p2", code="2", tool="t", args={}, why="w", created=0.0)
+    assert svc.j("/api/busy")[1]["busy"] is False
+
+
+def test_an_answer_still_being_written_counts(svc):
+    svc.s.turns["t1"] = {"id": "t1", "state": "running", "events": []}
+    svc.s.turns["t2"] = {"id": "t2", "state": "done", "events": []}
+    out = svc.j("/api/busy")[1]
+    assert out["chats"] == 1 and out["busy"] is True
+
+
+def test_busy_needs_the_token(svc):
+    assert svc.req("/api/busy", token=None)[0] == 403

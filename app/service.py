@@ -247,6 +247,26 @@ class Studio:
                 "calls": self.calls, "refusals": self.refusals, "approvals": self.approvals,
                 "pending": pend, "runs": [r.public() for r in list(self.runs.values())[-RUN_MAX:]]}
 
+    def busy(self) -> dict:
+        """What would be lost by quitting right now. Read-only, and the ONE question the native shell asks before
+        it closes the app.
+
+        The policy lives here rather than in the shell: what counts as work in flight is Studio's business, it
+        changes when Studio changes, and here it is under test. The shell gets counts and names, and decides only
+        whether to put a sheet on the screen.
+
+        A run is BioQL's, not Studio's. Quitting does not stop a pipeline — BioQL keeps running it — but Studio
+        stops following it, so the result is never fetched, the verifier never reads it and no line for it reaches
+        the record. That is what the person is being told before they lose it.
+        """
+        with self._lock:
+            running = [{"id": r.id, "tool": r.tool} for r in self.runs.values() if r.state == "RUNNING"]
+            pending = [{"id": p.id, "tool": p.tool} for p in self.pending.values()
+                       if not p.used and not p.expired()]
+            chats = sum(1 for t in self.turns.values() if t.get("state") == "running")
+        return {"running": running, "pending": pending, "chats": chats,
+                "busy": bool(running or pending or chats)}
+
     # ------------------------------------------------------------------ calling BioQL
     def call(self, name: str, args: dict) -> tuple[dict, int]:
         """/api/call. `by="window"`, `approved_by=None` — always. A pipeline is refused here exactly as it is for
@@ -751,6 +771,10 @@ def make_handler(s: Studio):
                     except ValueError:
                         limit = 50
                     return self._json(s.ledger_rows(limit))
+                if p == "/api/busy":
+                    # Lo que se perderia al cerrar. Solo lectura, y la unica pregunta que la app hace antes de
+                    # cerrarse: la politica de que cuenta como trabajo en vuelo vive en Python, no en el Swift.
+                    return self._json(s.busy())
                 if p == "/api/guard":
                     return self._json(s.guard_report())
                 if p == "/api/progress":
