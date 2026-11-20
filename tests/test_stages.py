@@ -6,6 +6,7 @@ caso que el modulo existe para resolver.
 """
 from __future__ import annotations
 
+import os
 import time
 
 import pytest
@@ -131,3 +132,30 @@ def test_el_fichero_es_privado(tmp_path, monkeypatch):
     monkeypatch.setenv("BIOQL_STUDIO_HOME", str(tmp_path))
     stages.publish("j", stages.unavailable("x"))
     assert oct(stages.path_file().stat().st_mode & 0o777) == "0o600"
+
+
+def test_el_parte_de_un_escritor_muerto_no_se_sirve(tmp_path, monkeypatch):
+    """`_follow` borra su parte en el `finally`, y un `finally` no corre con os._exit, con SIGKILL ni con un
+    cuelgue. Al reabrir la app, la ventana dibujaba "6/11 - corriendo" de una corrida que ya nadie sigue."""
+    monkeypatch.setenv("BIOQL_STUDIO_HOME", str(tmp_path))
+    snap = stages.snapshot(ACTIVE["active_pipelines"]["deade7a0-509"], "deade7a0-509", "prueba")
+    assert snap["pid"] == os.getpid()
+    snap["pid"] = 999999                                   # nadie en ese pid
+    stages.publish("j", snap)
+    assert stages.read("j") == {}
+    assert stages.read() == {}
+
+
+def test_un_parte_sin_pid_se_sigue_sirviendo(tmp_path, monkeypatch):
+    """Un parte escrito antes de que existiera el sello no se declara muerto: no inventamos lo que no dice."""
+    monkeypatch.setenv("BIOQL_STUDIO_HOME", str(tmp_path))
+    snap = stages.snapshot(ACTIVE["active_pipelines"]["deade7a0-509"], "deade7a0-509", "prueba")
+    del snap["pid"]
+    stages.publish("j", snap)
+    assert stages.read("j")["pipeline_id"] == "deade7a0-509"
+
+
+def test_el_parte_de_este_proceso_se_sirve(tmp_path, monkeypatch):
+    monkeypatch.setenv("BIOQL_STUDIO_HOME", str(tmp_path))
+    stages.publish("j", stages.snapshot(ACTIVE["active_pipelines"]["deade7a0-509"], "deade7a0-509", "prueba"))
+    assert stages.read("j")["pipeline_id"] == "deade7a0-509"

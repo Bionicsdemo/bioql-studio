@@ -28,10 +28,10 @@ macOS resolves it for the bundle (checked by dumping `NSWorkspace.icon(forFile:)
 | Step | Expected |
 |---|---|
 | `swiftc` from the Command Line Tools, no Xcode project | **works.** swiftc 6.4.2, `-swift-version 5`, `arm64-apple-macos13.0`: no errors and no warnings |
-| `sips` + `iconutil` for the icon | **skipped**, as designed: there is no `icon-1024.png`, so the build printed its note and the app has the generic icon |
+| `sips` + `iconutil` for the icon | **works.** From `icon-1024.png` it makes all ten members, `ic04` (16) through `ic10` (1024), and macOS resolves the result for the bundle |
 | `codesign --force --deep --sign -` (ad-hoc) | **works**, and `--verify --deep --strict` passes — before the first run and again after the app had run |
 | Opening the app from `/Applications` on this Mac | **works.** `ditto` to `/Applications`, `open -a`, and the service answered `/api/ping` in 3 s. Never quarantined, so Gatekeeper did not ask |
-| `hdiutil create -format UDZO` | still only expected: **nothing was packed in this work** |
+| `hdiutil create -format UDZO` | **works.** `app/macos/dmg.sh` packs a 1.8 MB image, mounts it read-only and verifies the copy inside it before printing the image's sha256 |
 | The service inside the bundle | **works.** It runs as a child of the app (service ppid = app pid), with `cwd` inside the bundle, on `/opt/homebrew/opt/python@3.14/bin/python3.14` (3.14.7) — the first of `Service.python()`'s candidates that exists here. No Python is bundled, so the app still needs a 3.10+ on the Mac |
 
 ### What the build and the first run found
@@ -45,6 +45,9 @@ macOS resolves it for the bundle (checked by dumping `NSWorkspace.icon(forFile:)
 
 - **Quitting with a call in flight hung the app.** `ThreadPoolExecutor`'s threads are not daemons and Python joins every one of them at interpreter shutdown, so a single `fanout` or `campaign` call in flight kept the service alive long after `run()` had returned — measured: a 30-second task, 30 seconds. The shell quits with `terminate()` and then `waitUntilExit()` **on its main thread**, so that is the app beachballed for the length of the call, and BioQL's calls are allowed twelve hours. `python3 -m app serve` now ends the process itself once its own cleanup is done. Measured: 25 s before, 1 s after.
 - **The guard read a root it could not open as "nothing changed".** `os.walk` swallows every error unless it is given `onerror`, so a root macOS refuses — `~/Documents` sits behind a TCC permission — walked as if it held no files, and two such snapshots compared with nothing added, removed or changed: **clean, because it could not look.** That is the third state degrading into the second. A snapshot now records what it could not list, `compare` keeps that apart from added/removed/changed and refuses to call the report clean, and `Changed` says "could not be read" rather than "BioQL changed" — a refused permission must not send the owner hunting for an edit that never happened.
+- **And the guard was still blind one level up.** `os.path.isdir` answers False for *every* stat error, so a root whose **parent** macOS refuses looked exactly like a root that had been deleted — nothing unreadable recorded. Two such snapshots compared clean again, and a good snapshot against a denied one reported every file as removed: "BioQL changed", about a permission. The root is now `os.stat`ed on its own, only `FileNotFoundError` counts as absent, and a root either side could not read has its added/removed/changed dropped rather than reported, because a side that could not be read contributes phantom additions and removals. `/api/guard` answers UNRESOLVABLE in that case instead of RESOLVED with `clean: false`.
+- **A hard exit left the stage panel lying.** `_follow` clears its stage report in a `finally`, and a `finally` does not run under `os._exit`, SIGKILL or a crash — while `read()` served anything younger than six hours. Reopened after a force-quit, the window would draw a frozen "6/11 · ADMET (candidate 1)" for a run nobody is following. Each report now carries the pid that wrote it and is not served once that process is gone; a report with no pid is still served, because inventing a death is the same defect in the other direction.
+
 - **The Documents permission, narrowed.** `/api/guard` takes no snapshot at all; it compares the two newest saved ones. So the app itself never needs the permission to serve that route — only an explicit `python3 -m studio guard snapshot` or `tools/e2e_live.py` does, and that is still untested from inside the app. An ad-hoc signature changes identity on every rebuild, so a prompt, once raised, can come back.
 
 ## What blocks distribution, concretely
@@ -82,8 +85,9 @@ macOS resolves it for the bundle (checked by dumping `NSWorkspace.icon(forFile:)
    shipped source can be matched against the tree the tests ran on (`shasum -a 256 -c`, from the repo root).
 2. **Done.** The check in the spirit of `dmgcheck70.py`: `app` and `studio` imported **from inside the bundle**, with
    `HOME` on an empty directory and `PATH=/usr/bin:/bin:/usr/sbin:/sbin`, on the interpreter the app itself picks —
-   identity, home, token mode, the window's three files, and that no BioQL source travels inside. The whole suite
-   was also run against the shipped bytes: 552 pass. No app opened, no service started on 7810.
+   identity, home, token mode, the window's three files, and that no BioQL source travels inside — and the same
+   check run again against the copy **inside the mounted image**. The whole suite was run on the shipped bytes
+   themselves, not on the repo: 557 pass. No app opened, no service started on 7810.
 3. **Done.** `app/macos/dmg.sh`: a stage folder with the app, a link to `/Applications` and a `Read me first.txt`
    that states plainly that the copy is not notarized, what the person will see, and what the app needs to be
    useful (Python ≥ 3.10, Claude Code signed in, BioQL on :5035, Apple Silicon, macOS 13+). Then

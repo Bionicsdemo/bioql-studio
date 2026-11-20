@@ -186,3 +186,42 @@ def test_a_readable_root_still_compares_clean(tmp_path):
     (base / "algo.py").write_text("x = 1\n")
     rep = sguard.compare(sguard.snapshot(_root(base)), sguard.snapshot(_root(base)))
     assert rep["clean"] is True and rep["readable"] is True
+
+
+def test_a_denied_parent_is_not_read_as_a_deleted_root(tmp_path):
+    """`os.path.isdir` contesta False ante CUALQUIER error de stat, no solo ante "no esta": una raiz cuyo padre
+    niega macOS se leia igual que una raiz borrada — sin nada ilegible — y dos fotos asi comparaban LIMPIO,
+    mientras una foto buena contra una negada declaraba todos los ficheros quitados, o sea "BioQL cambio"."""
+    padre = tmp_path / "padre"
+    raiz = padre / "raiz"
+    raiz.mkdir(parents=True)
+    (raiz / "a.py").write_text("x = 1\n")
+    roots = [{"name": "p", "path": str(raiz)}]
+    libre = sguard.snapshot(roots)
+    padre.chmod(0o000)
+    try:
+        negada = sguard.snapshot(roots)
+        assert negada["roots"]["p"]["unreadable_total"] >= 1
+        assert sguard.compare(negada, sguard.snapshot(roots))["clean"] is False
+        rep = sguard.compare(libre, negada)
+        assert rep["clean"] is False
+        # y no acusa de un borrado que no hubo
+        assert rep["roots"]["p"]["removed"] == [] and rep["roots"]["p"]["compared"] is False
+    finally:
+        padre.chmod(0o700)
+
+
+def test_a_root_that_really_is_gone_is_still_a_change(tmp_path):
+    """Lo contrario tambien: una raiz que de verdad no esta es informacion, no ceguera."""
+    raiz = tmp_path / "raiz"
+    raiz.mkdir()
+    (raiz / "a.py").write_text("x = 1\n")
+    roots = [{"name": "p", "path": str(raiz)}]
+    antes = sguard.snapshot(roots)
+    (raiz / "a.py").unlink()
+    raiz.rmdir()
+    despues = sguard.snapshot(roots)
+    assert despues["roots"]["p"]["unreadable_total"] == 0
+    rep = sguard.compare(antes, despues)
+    assert rep["clean"] is False and rep["readable"] is True
+    assert rep["roots"]["p"]["removed"] == ["a.py"]

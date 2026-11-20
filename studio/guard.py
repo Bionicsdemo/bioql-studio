@@ -73,7 +73,18 @@ def snapshot(roots: list[dict] | None = None) -> dict:
         def blocked(err: OSError, _into: list[str] = unreadable) -> None:
             _into.append(f"{getattr(err, 'filename', None) or base}: {err.strerror or type(err).__name__}")
 
-        if os.path.isdir(base):
+        # `os.path.isdir` answers False for EVERY stat error, not only for "it is not there", so a root whose parent
+        # macOS refuses looked exactly like a root that had been deleted: `exists: False` and nothing unreadable.
+        # Measured 2026-11-19 with the parent at mode 000 — two such snapshots compared CLEAN, and a readable
+        # snapshot against a denied one reported every file as removed, i.e. "BioQL changed". Both are false.
+        try:
+            exists = stat.S_ISDIR(os.stat(base).st_mode)
+        except FileNotFoundError:
+            exists = False                          # it is genuinely not there, and that IS information
+        except OSError as e:
+            exists = False
+            unreadable.append(f"{base}: {e.strerror or type(e).__name__}")
+        if exists:
             for d, ds, fs in os.walk(base, onerror=blocked):
                 ds[:] = sorted(x for x in ds if x not in SKIP_DIRS)
                 for f in fs:
@@ -95,10 +106,10 @@ def snapshot(roots: list[dict] | None = None) -> dict:
                     except OSError:
                         h = "unreadable"
                     files[os.path.relpath(p, base)] = [s.st_size, s.st_mtime_ns, s.st_ino, h]
-        out["roots"][r["name"]] = {"path": base, "exists": os.path.isdir(base), "files": files,
+        out["roots"][r["name"]] = {"path": base, "exists": exists, "files": files,
                                     "dataless": skipped_dataless,
                                     "unreadable": unreadable[:20], "unreadable_total": len(unreadable),
-                                    **({"git": _git(base)} if r.get("git") and os.path.isdir(base) else {})}
+                                    **({"git": _git(base)} if r.get("git") and exists else {})}
     return out
 
 
@@ -125,12 +136,17 @@ def compare(before: dict, after: dict) -> dict:
             if b["git"]["tracked_changes"] != a.get("git", {}).get("tracked_changes"):
                 git["tracked_changes"] = [b["git"]["tracked_changes"], a.get("git", {}).get("tracked_changes")]
         dirty = bool(added or removed or changed or git or b["exists"] != a["exists"])
-        # A root either side could not list is not a verdict about BioQL. It is kept apart from `added/removed/
-        # changed` — saying "changed" would be as false as saying "clean" — and it stops the report being clean.
+        # A root either side could not list is not a verdict about BioQL: it is "we could not look", and it must not
+        # be told as either "clean" or "changed". The lists are dropped rather than reported, because a side that
+        # could not be read contributes files that look removed and files that look added without one byte of BioQL
+        # having moved. What is left is the cause, and a report that refuses to be clean.
         blind = sorted(set(b.get("unreadable") or []) | set(a.get("unreadable") or []))
+        if blind:
+            added = removed = changed = []
+            git = {}
         report["roots"][name] = {"added": added, "removed": removed, "changed": changed, "git": git,
                                  "clean": not dirty and not blind, "files": len(af),
-                                 "unreadable": blind, "readable": not blind}
+                                 "unreadable": blind, "readable": not blind, "compared": not blind}
         report["clean"] = report["clean"] and not dirty and not blind
     report["unreadable"] = sorted({u for r in report["roots"].values() for u in r["unreadable"]})
     report["readable"] = not report["unreadable"]

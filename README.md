@@ -26,7 +26,7 @@ another person working in the repository at the same time, show up too — so it
 ## Try it (BioQL's backend must already be running; Studio never starts it)
 
 ```sh
-python3 -m pytest -q                      # 552 tests
+python3 -m pytest -q                      # 557 tests
 python3 tools/e2e_live.py                 # real calls to 127.0.0.1:5035, wrapped in the guard
 python3 tools/discover_routes.py          # every pipeline's route, verified live without running one
 python3 -m studio tools                   # the 68 entries Studio may call

@@ -131,6 +131,11 @@ def snapshot(progress: object, pipeline_id: str, matched_by: str) -> dict:
         "pipeline_id": pipeline_id,
         "matched_by": matched_by,
         "at": time.time(),
+        # Quien escribe el parte. `_follow` lo borra en su `finally`, pero un `finally` no corre con os._exit,
+        # con SIGKILL ni con un cuelgue: al cerrar la app a lo bruto el parte se quedaba, y al volver a abrirla la
+        # ventana dibujaba "6/11 - corriendo" de una corrida que ya nadie sigue, hasta seis horas. Medido
+        # 2026-11-19. Un parte cuyo escritor ya no existe no se sirve.
+        "pid": os.getpid(),
         "stages": stages,
     }
     for k in ("pipeline_type", "target", "status", "current_stage", "current_details",
@@ -192,13 +197,28 @@ def publish(job_id: str, snap: dict | None) -> None:
         os.close(lock)
 
 
+def _writing(snap: dict) -> bool:
+    """Si el proceso que publico este parte sigue vivo. Sin `pid` (un parte viejo) se sirve: no inventamos que
+    murio. Un pid que existe pero no es nuestro para senalar cuenta como vivo, por la misma razon."""
+    pid = snap.get("pid")
+    if not isinstance(pid, int) or pid <= 0:
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
 def read(job_id: str | None = None) -> dict:
     """Los partes vivos. Con `job_id`, solo ese (o `{}`). Lo caducado no se sirve: un parte de
     hace horas dibujaria una barra a medias de algo que ya murio."""
     cur = _load(path_file())
     now = time.time()
     live = {k: v for k, v in cur.items()
-            if isinstance(v, dict) and now - float(v.get("at") or 0) < STALE_S}
+            if isinstance(v, dict) and now - float(v.get("at") or 0) < STALE_S and _writing(v)}
     if job_id is not None:
         return live.get(job_id, {})
     return live

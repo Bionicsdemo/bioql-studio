@@ -614,10 +614,16 @@ class Studio:
             # Unreadable is "we could not ask", never "nothing changed". The default is never clean.
             return {"state": "UNRESOLVABLE", "source": "studio guard",
                     "detail": f"{older.name} vs {newer.name}: {type(e).__name__}: {e}"}
-        return {"state": "RESOLVED", "source": "studio guard",
-                "detail": f"{older.name} ({time.strftime('%Y-%m-%d %H:%M', time.localtime(older.stat().st_mtime))})"
-                          f" vs {newer.name} ({time.strftime('%Y-%m-%d %H:%M', time.localtime(newer.stat().st_mtime))})",
-                "value": report}
+        when = (f"{older.name} ({time.strftime('%Y-%m-%d %H:%M', time.localtime(older.stat().st_mtime))})"
+                f" vs {newer.name} ({time.strftime('%Y-%m-%d %H:%M', time.localtime(newer.stat().st_mtime))})")
+        if not report.get("readable", True):
+            # One of the roots could not be read when its snapshot was taken — a permission macOS refused, most
+            # likely. That is not a verdict about BioQL, and RESOLVED here would hand the window a report whose
+            # `clean: false` reads as "BioQL changed". The third state does not degrade into the second.
+            return {"state": "UNRESOLVABLE", "source": "studio guard",
+                    "detail": f"{when}: part of BioQL could not be read — " + "; ".join(report["unreadable"][:3]),
+                    "meta": {"report": report}}
+        return {"state": "RESOLVED", "source": "studio guard", "detail": when, "value": report}
 
 
 # ---------------------------------------------------------------------------------------------- HTTP
