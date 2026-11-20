@@ -153,8 +153,9 @@ const SECTIONS = {
   ledger:   { group: "Record", label: "Notebook", icon: "book", kind: "ledger",
               lead: "The hash-chained, Ed25519-signed record: one line per call to BioQL." },
   guard:    { group: "Record", label: "Guard", icon: "shield", kind: "guard",
-              lead: "The two most recent saved snapshots of BioQL's source trees, compared. Opening this takes no " +
-                    "new snapshot." },
+              lead: "Has BioQL changed since Studio opened? The app fingerprints BioQL's source trees when it " +
+                    "starts; this compares that baseline against a reading you take here. Opening the page takes " +
+                    "no reading of its own, and the guard never says WHO changed a file — only that it changed." },
   servers:  { group: "Record", label: "Server Health", icon: "server", kind: "servers",
               lead: "BioQL's own health routes, asked now." },
   usage:    { group: "Record", label: "Usage", icon: "pulse", kind: "usage",
@@ -1044,12 +1045,46 @@ async function drawLedger(box) {
   box.appendChild(g);
 }
 
+// The button that makes this page about NOW. A snapshot writes a file, so it is a POST and never something a
+// page does by being opened: a guard that changed what it watches as you looked at it would be worth nothing.
+function guardCheckButton(box) {
+  const b = el("button", "tool", "Take a reading now");
+  b.type = "button";
+  b.title = "Fingerprint BioQL again and compare it against the baseline this app took when it opened";
+  const note = el("p", "fine");
+  b.addEventListener("click", async () => {
+    b.disabled = true;
+    const was = b.textContent;
+    b.textContent = "reading ~47 000 files…";
+    const { body } = await api("/api/guard/snapshot", { take: true });
+    b.textContent = was;
+    b.disabled = false;
+    if (body && body.state === "RESOLVED") {
+      note.textContent = `${body.files} file(s) in ${body.seconds}s`;
+      await draw();
+      return;
+    }
+    note.textContent = (body && body.detail) || "the snapshot did not happen";
+  });
+  box.appendChild(b);
+  box.appendChild(note);
+}
+
 async function drawGuard(box) {
   const { code, body } = await api("/api/guard");
   if (code !== 200) return empty(box, body.error || "the guard did not answer");
   if (body.state && body.state !== "RESOLVED") {
-    $("stGuard").querySelector("span").textContent = "no snapshot pair";
-    return empty(box, (body.detail || "") + "  Take one with: python3 -m studio guard snapshot <name>");
+    // ABSENT is not a fault and is not drawn as one: it means the baseline is there and nothing has been compared
+    // against it yet. The nav badge and the status line stay quiet, because quiet is the honest reading.
+    const waiting = body.state === "ABSENT";
+    $("stGuard").querySelector("span").textContent = waiting ? "baseline taken" : "guard unreadable";
+    $("stGuard").className = "st" + (waiting ? "" : " warn");
+    const em0 = document.querySelector('nav button[data-v=guard] em');
+    if (em0) { em0.textContent = waiting ? "" : "!"; em0.className = waiting ? "" : "hot"; }
+    clear(box);
+    box.appendChild(el("p", waiting ? "fine" : "alarm-strip", body.detail || ""));
+    guardCheckButton(box);
+    return;
   }
   // `value`, which is what /api/guard sends. It used to read `body.report`, which that route has never set, so
   // `rep.roots` was undefined and the page drew the alarm line over an EMPTY list: a red strip saying BioQL had
@@ -1060,6 +1095,7 @@ async function drawGuard(box) {
 
   // How old the two snapshots are. A comparison of yesterday's files is not a reading of this minute, and saying
   // so is the difference between "BioQL changed" and "BioQL had changed by 11:25 yesterday".
+  guardCheckButton(box);
   const taken = body.taken;
   if (taken) {
     const age = Math.max(0, (Date.now() / 1000) - Number(taken.newer.t));
@@ -1068,7 +1104,7 @@ async function drawGuard(box) {
       : age < 172800 ? Math.round(age / 3600) + " h ago"
       : Math.round(age / 86400) + " days ago";
     box.appendChild(el("p", "fine", `${taken.older.name} → ${taken.newer.name} · the newer one was taken ${old_}` +
-      ". Opening this page takes no snapshot: run `python3 -m studio guard snapshot <name>` for a fresh one."));
+      ". Opening this page takes no reading of its own — press the button above for one about this minute."));
   }
 
   // The alarm is for SOURCE. A finished pipeline writes its result and its report, and that used to turn this red

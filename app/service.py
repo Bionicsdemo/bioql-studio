@@ -232,6 +232,13 @@ class Studio:
         self.approvals = 0
         self.turns: dict[str, dict] = {}            # the chat: one entry per turn, read back by polling
         self._lock = threading.Lock()
+        # The guard's baseline for THIS run of the app. Its whole purpose is "did BioQL change while Studio was
+        # open?", and that question needs a mark at the moment Studio opened. Without one the page compared the two
+        # newest files in the folder, which on this Mac were both from the day before: it reported, in red and
+        # permanently, a change that had happened 23 hours earlier and that somebody had already lived through.
+        self._guard_lock = threading.Lock()
+        self.guard_base: dict | None = None         # {"name", "t"} once taken; None while it is being taken
+        self.guard_base_error: str | None = None
         # Agtr holds a SECOND secret, native.key (service.py:98), and any request carrying it is treated as having
         # passed Touch ID (service.py:1234, and `uv: bool(native)` in the signed proofs at :315, :338, :949, :969).
         # That file is an ordinary 0600 file: every process running as this user can read it, so `uv: true` is a claim
@@ -579,6 +586,45 @@ class Studio:
             return {"id": tid, "since": since, "events": evs, "next": since + len(evs), "state": t["state"],
                     "asked": t["asked"]}, 200
 
+    GUARD_BASE = "app-start"
+
+    def guard_snapshot(self, name: str | None = None) -> dict:
+        """Take ONE snapshot and save it. `name` is never the caller's: it is this method's own, so no request
+        string ever reaches a path (`studio.guard.save` joins a name into one).
+
+        It takes about ten seconds over the ~47 000 files BioQL is made of, measured on this Mac, so it runs under
+        a lock: two at once would double that for both and prove nothing extra.
+        """
+        picked = self.GUARD_BASE if name == self.GUARD_BASE else time.strftime("reading-%Y%m%d-%H%M%S")
+        if not self._guard_lock.acquire(blocking=False):
+            return {"state": "UNRESOLVABLE", "source": "studio guard",
+                    "detail": "a snapshot is already being taken; it reads about 47 000 files and takes ~10s"}
+        try:
+            began = time.time()
+            snap = sguard.snapshot()
+            path = sguard.save(picked, snap)
+            took = round(time.time() - began, 1)
+            self.log(f"guard snapshot {picked}: {sum(len(r['files']) for r in snap['roots'].values())} files in {took}s")
+            return {"state": "RESOLVED", "source": "studio guard", "name": picked, "seconds": took,
+                    "files": sum(len(r["files"]) for r in snap["roots"].values()), "path": str(path)}
+        except Exception as e:                       # noqa: BLE001 - the cause, never a plausible empty snapshot
+            return {"state": "UNRESOLVABLE", "source": "studio guard", "detail": f"{type(e).__name__}: {e}"[:200]}
+        finally:
+            self._guard_lock.release()
+
+    def guard_baseline(self) -> None:
+        """The mark this run of the app leaves when it opens. Runs in a thread: ten seconds is ten seconds, and the
+        window must not wait on it to appear."""
+        out = self.guard_snapshot(self.GUARD_BASE)
+        if out["state"] == "RESOLVED":
+            try:
+                self.guard_base = {"name": self.GUARD_BASE + ".json",
+                                   "t": (self.home / "guard" / (self.GUARD_BASE + ".json")).stat().st_mtime}
+            except OSError as e:
+                self.guard_base_error = f"saved, then could not be stat'ed: {e}"
+        else:
+            self.guard_base_error = out.get("detail")
+
     def secrets_report(self) -> dict:
         """Where Studio's own secrets are and how they are protected — never a byte of what is in them.
 
@@ -655,11 +701,31 @@ class Studio:
             snaps = sorted((p for p in d.glob("*.json") if p.is_file()), key=lambda p: p.stat().st_mtime)
         except OSError as e:
             return {"state": "UNRESOLVABLE", "source": "studio guard", "detail": f"cannot read {d}: {e}"}
-        if len(snaps) < 2:
+        # The pair is chosen to answer the question the guard exists for: has BioQL changed SINCE STUDIO OPENED?
+        # The baseline is the mark this run of the app made when it started; the other side is the most recent
+        # snapshot taken after it. Falling back to "the two newest files in the folder" is what made this page
+        # report, for a whole day, a change from the day before.
+        base = self.guard_base
+        if base is not None:
+            later = [p for p in snaps if p.name != base["name"] and p.stat().st_mtime > base["t"]]
+            if not later:
+                return {"state": "ABSENT", "source": "studio guard",
+                        "detail": f"Studio took its baseline when it opened, at "
+                                  f"{time.strftime('%H:%M', time.localtime(base['t']))}. Nothing has been compared "
+                                  f"against it yet — take a reading and this fills.",
+                        "baseline": base}
+            older, newer = self.home / "guard" / base["name"], later[-1]
+        elif self.guard_base_error:
+            return {"state": "UNRESOLVABLE", "source": "studio guard",
+                    "detail": f"Studio could not take its baseline when it opened, so there is nothing to compare "
+                              f"against: {self.guard_base_error}"}
+        elif len(snaps) < 2:
             return {"state": "ABSENT", "source": "studio guard",
                     "detail": f"{len(snaps)} saved snapshot(s) in {d}: a comparison needs two. "
                               f"Take them with: python3 -m studio guard snapshot <name>"}
-        older, newer = snaps[-2], snaps[-1]
+        else:
+            # No baseline (the command line, or a baseline still being taken): the two newest, said as what they are.
+            older, newer = snaps[-2], snaps[-1]
         try:
             report = sguard.compare(json.loads(older.read_text()), json.loads(newer.read_text()))
         except (OSError, ValueError, KeyError, TypeError) as e:
@@ -878,6 +944,11 @@ def make_handler(s: Studio):
                 if p == "/api/board":
                     out, code = s.board_write(b)
                     return self._json(out, code)
+                if p == "/api/guard/snapshot":
+                    # A snapshot WRITES (one file in Studio's own folder), so it is a POST and never a GET: opening
+                    # the Guard page must not change what the Guard page is about to report. The name is the
+                    # service's own; nothing from this body reaches a path.
+                    return self._json(s.guard_snapshot())
                 if p == "/api/render3d":
                     # PyMOL, sobre una estructura que esta ventana ya tiene. No es una llamada a BioQL: no gasta
                     # su motor, no toca el 5035 y no entra en el registro firmado, que es de llamadas a BioQL.
@@ -986,6 +1057,11 @@ def run(home: Path | None = None, port: int = PORT, block: bool = True, adapter:
             signal.signal(sig, _bye)
         except ValueError:
             pass                        # not the main thread: the caller owns the signals
+
+    # The guard's baseline for this run, in a thread: ~10s over ~47 000 files, and the window must not wait on it.
+    # Without it the Guard page has no mark of its own to compare against and falls back to whatever two files are
+    # newest in the folder — which is how it spent a day reporting a change from the day before.
+    threading.Thread(target=s.guard_baseline, name="studio-guard-baseline", daemon=True).start()
 
     _follow_parent(srv)
     try:

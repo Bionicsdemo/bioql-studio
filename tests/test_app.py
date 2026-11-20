@@ -901,3 +901,80 @@ def test_the_window_keeps_no_call_to_anything_that_was_removed(svc):
     for dead in ("AREA_OF", "showFrame", "drawToolsSection", "drawPipes", "BIOQL_PANELS",
                  "halves(", "const half", "drawResults", "uiUrl", "radarUrl", "/api/ui"):
         assert dead not in text, f"app.js still mentions {dead}"
+
+
+# ------------------------------------------------------------------ the guard answers about THIS session (2026-11-20)
+def _snap(d, name, files, t=None):
+    p = d / f"{name}.json"
+    p.write_text(json.dumps({"t": 1.0, "roots": {"r": {"path": "/x", "exists": True, "files": files}}}))
+    if t is not None:
+        os.utime(p, (t, t))
+    return p
+
+
+def test_the_guard_compares_against_this_sessions_baseline_not_the_two_newest_files(svc):
+    """The question the guard exists for is "did BioQL change while Studio was open?", and it needs a mark at the
+    moment Studio opened to answer it.
+
+    Without one it compared the two newest files in the folder. On this Mac those were both from the previous day,
+    so the page reported — in red, and for a whole day — a change that had happened 23 hours earlier.
+    """
+    d = svc.s.home / "guard"
+    d.mkdir(parents=True, exist_ok=True)
+    old_a = {"a.py": [1, 1, 1, "a" * 64]}
+    old_b = {"a.py": [9, 9, 1, "z" * 64]}            # yesterday's pair: a change, and it is NOT this session's
+    _snap(d, "yesterday-1", old_a, t=time.time() - 90000)
+    _snap(d, "yesterday-2", old_b, t=time.time() - 86400)
+
+    # no baseline yet: the old behaviour, and it is still said plainly
+    code, body, _ = svc.j("/api/guard")
+    assert code == 200 and body["state"] == "RESOLVED" and body["value"]["clean"] is False
+
+    # the app opens and marks where BioQL stood
+    base = _snap(d, "app-start", old_b, t=time.time() - 60)
+    svc.s.guard_base = {"name": "app-start.json", "t": base.stat().st_mtime}
+
+    # nothing taken since: ABSENT, with the baseline's time — never a verdict, and never yesterday's verdict
+    code, body, _ = svc.j("/api/guard")
+    assert code == 200 and body["state"] == "ABSENT"
+    assert "baseline" in body and "opened" in body["detail"]
+    assert "value" not in body
+
+    # a reading taken after it: THAT is the comparison, and it is clean because nothing moved since the baseline
+    _snap(d, "reading-1", old_b, t=time.time())
+    code, body, _ = svc.j("/api/guard")
+    assert code == 200 and body["state"] == "RESOLVED" and body["value"]["clean"] is True
+    assert body["taken"]["older"]["name"] == "app-start.json"
+    assert body["taken"]["newer"]["name"] == "reading-1.json"
+
+
+def test_a_snapshot_is_a_post_and_its_name_is_never_the_callers(svc, monkeypatch):
+    """Opening the Guard page must not change what the Guard page is about to report, so taking a reading is a POST.
+    And the name is the service's own: `studio.guard.save` joins a name into a path."""
+    assert svc.j("/api/guard/snapshot")[0] == 404                  # not a GET
+
+    seen = {}
+    monkeypatch.setattr("studio.guard.snapshot", lambda *a, **k: {"t": 1.0, "roots": {"r": {"path": "/x", "exists": True, "files": {}}}})
+    monkeypatch.setattr("studio.guard.save", lambda name, snap: seen.setdefault("name", name) or (svc.s.home / "guard" / f"{name}.json"))
+    code, body, _ = svc.j("/api/guard/snapshot", {"name": "../../ui.token", "take": True})
+    assert code == 200 and body["state"] == "RESOLVED"
+    assert seen["name"].startswith("reading-") and "/" not in seen["name"] and ".." not in seen["name"]
+
+
+def test_two_snapshots_at_once_are_refused_rather_than_run_twice(svc):
+    """~10s over ~47 000 files, measured. Two at once would double it for both and prove nothing extra — and the
+    refusal is UNRESOLVABLE with its cause, never a snapshot that quietly did not happen."""
+    svc.s._guard_lock.acquire()
+    try:
+        code, body, _ = svc.j("/api/guard/snapshot", {"take": True})
+        assert code == 200 and body["state"] == "UNRESOLVABLE" and "already being taken" in body["detail"]
+    finally:
+        svc.s._guard_lock.release()
+
+
+def test_a_baseline_that_failed_is_said_and_never_read_as_clean(svc):
+    svc.s.guard_base = None
+    svc.s.guard_base_error = "PermissionError: /opt/bioql"
+    code, body, _ = svc.j("/api/guard")
+    assert code == 200 and body["state"] == "UNRESOLVABLE" and "baseline" in body["detail"]
+    assert "value" not in body
