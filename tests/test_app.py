@@ -978,3 +978,40 @@ def test_a_baseline_that_failed_is_said_and_never_read_as_clean(svc):
     code, body, _ = svc.j("/api/guard")
     assert code == 200 and body["state"] == "UNRESOLVABLE" and "baseline" in body["detail"]
     assert "value" not in body
+
+
+def test_while_the_baseline_is_being_taken_the_guard_says_so_and_never_shows_the_old_pair(svc):
+    """The race this closes, measured on 2026-11-20: the app took its baseline at 11:11:09 (11.7s over 46 866
+    files) and the Guard tab, drawn while that ran, found no baseline and fell back to the two newest files in the
+    folder — yesterday's pair. It then sat there in red for the whole session, because this page does not redraw
+    itself. "It is being taken" is an answer; a comparison of two files from the day before is not.
+    """
+    d = svc.s.home / "guard"
+    d.mkdir(parents=True, exist_ok=True)
+    _snap(d, "yesterday-1", {"a.py": [1, 1, 1, "a" * 64]}, t=time.time() - 90000)
+    _snap(d, "yesterday-2", {"a.py": [9, 9, 1, "z" * 64]}, t=time.time() - 86400)
+
+    svc.s.guard_base = None
+    svc.s.guard_base_pending = True
+    code, body, _ = svc.j("/api/guard")
+    assert code == 200 and body["state"] == "ABSENT" and body["pending"] is True
+    assert "value" not in body                       # above all: not yesterday's verdict
+    assert "fingerprinting" in body["detail"]
+
+    # and when it lands, the pending flag is down and the baseline is what gets compared
+    base = _snap(d, "app-start", {"a.py": [9, 9, 1, "z" * 64]}, t=time.time() - 1)
+    svc.s.guard_base = {"name": "app-start.json", "t": base.stat().st_mtime}
+    svc.s.guard_base_pending = False
+    _snap(d, "reading-1", {"a.py": [9, 9, 1, "z" * 64]}, t=time.time())
+    code, body, _ = svc.j("/api/guard")
+    assert code == 200 and body["state"] == "RESOLVED" and body["value"]["clean"] is True
+    assert body["taken"]["older"]["name"] == "app-start.json"
+
+
+def test_the_baseline_is_marked_pending_before_the_thread_starts(svc):
+    """`guard_base_pending` is set in `run()` BEFORE the thread is spawned. Set inside the thread instead, there is
+    a gap — however short — in which the window asks, sees no baseline and no pending, and gets the old pair."""
+    src = (studio.Path(__file__).resolve().parents[1] / "app" / "service.py").read_text()
+    i_flag = src.index("s.guard_base_pending = True")
+    i_thread = src.index("target=s.guard_baseline")
+    assert i_flag < i_thread, "the flag must be set before the thread exists"

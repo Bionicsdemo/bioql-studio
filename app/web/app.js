@@ -1077,15 +1077,25 @@ async function drawGuard(box) {
     // ABSENT is not a fault and is not drawn as one: it means the baseline is there and nothing has been compared
     // against it yet. The nav badge and the status line stay quiet, because quiet is the honest reading.
     const waiting = body.state === "ABSENT";
-    $("stGuard").querySelector("span").textContent = waiting ? "baseline taken" : "guard unreadable";
+    $("stGuard").querySelector("span").textContent = body.pending ? "taking the baseline…"
+      : (waiting ? "baseline taken" : "guard unreadable");
     $("stGuard").className = "st" + (waiting ? "" : " warn");
     const em0 = document.querySelector('nav button[data-v=guard] em');
     if (em0) { em0.textContent = waiting ? "" : "!"; em0.className = waiting ? "" : "hot"; }
     clear(box);
     box.appendChild(el("p", waiting ? "fine" : "alarm-strip", body.detail || ""));
+    if (body.pending) {
+      // The baseline takes about ten seconds, and this page does not redraw itself on the tick (it would re-parse
+      // two 8 MB snapshots every six seconds for nothing). So it asks again, ONLY while it is waiting, and only
+      // while this is still the open section — a timer that outlives its page is a page that writes into another.
+      clearTimeout(drawGuard._again);
+      drawGuard._again = setTimeout(() => { if (view === "guard") draw(); }, 4000);
+      return;
+    }
     guardCheckButton(box);
     return;
   }
+  clearTimeout(drawGuard._again);
   // `value`, which is what /api/guard sends. It used to read `body.report`, which that route has never set, so
   // `rep.roots` was undefined and the page drew the alarm line over an EMPTY list: a red strip saying BioQL had
   // changed, naming not one file. An alarm a person cannot act on is worse than no alarm.

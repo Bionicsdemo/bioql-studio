@@ -237,8 +237,14 @@ class Studio:
         # newest files in the folder, which on this Mac were both from the day before: it reported, in red and
         # permanently, a change that had happened 23 hours earlier and that somebody had already lived through.
         self._guard_lock = threading.Lock()
-        self.guard_base: dict | None = None         # {"name", "t"} once taken; None while it is being taken
+        self.guard_base: dict | None = None         # {"name", "t"} once taken
         self.guard_base_error: str | None = None
+        # True from the moment the app decides to take a baseline until that baseline exists. Without this flag the
+        # window could ask during those ~10 seconds, find no baseline, and fall back to "the two newest files in the
+        # folder" — which on this Mac is yesterday's pair. Measured on 2026-11-20: the app took its baseline at
+        # 11:11:09 and the Guard tab, drawn while it ran, showed yesterday's comparison in red for the rest of the
+        # session, because this page does not redraw itself. "It is being taken" is an answer; the old pair is not.
+        self.guard_base_pending = False
         # Agtr holds a SECOND secret, native.key (service.py:98), and any request carrying it is treated as having
         # passed Touch ID (service.py:1234, and `uv: bool(native)` in the signed proofs at :315, :338, :949, :969).
         # That file is an ordinary 0600 file: every process running as this user can read it, so `uv: true` is a claim
@@ -615,6 +621,7 @@ class Studio:
     def guard_baseline(self) -> None:
         """The mark this run of the app leaves when it opens. Runs in a thread: ten seconds is ten seconds, and the
         window must not wait on it to appear."""
+        self.guard_base_pending = True
         out = self.guard_snapshot(self.GUARD_BASE)
         if out["state"] == "RESOLVED":
             try:
@@ -624,6 +631,7 @@ class Studio:
                 self.guard_base_error = f"saved, then could not be stat'ed: {e}"
         else:
             self.guard_base_error = out.get("detail")
+        self.guard_base_pending = False
 
     def secrets_report(self) -> dict:
         """Where Studio's own secrets are and how they are protected — never a byte of what is in them.
@@ -706,6 +714,10 @@ class Studio:
         # snapshot taken after it. Falling back to "the two newest files in the folder" is what made this page
         # report, for a whole day, a change from the day before.
         base = self.guard_base
+        if base is None and self.guard_base_pending and not self.guard_base_error:
+            return {"state": "ABSENT", "source": "studio guard", "pending": True,
+                    "detail": "Studio is fingerprinting BioQL to mark where it stood when this window opened "
+                              "(about 47 000 files, ten seconds). This fills by itself when it is done."}
         if base is not None:
             later = [p for p in snaps if p.name != base["name"] and p.stat().st_mtime > base["t"]]
             if not later:
@@ -1061,6 +1073,7 @@ def run(home: Path | None = None, port: int = PORT, block: bool = True, adapter:
     # The guard's baseline for this run, in a thread: ~10s over ~47 000 files, and the window must not wait on it.
     # Without it the Guard page has no mark of its own to compare against and falls back to whatever two files are
     # newest in the folder — which is how it spent a day reporting a change from the day before.
+    s.guard_base_pending = True     # set HERE, before the thread exists, so there is no gap where the window
     threading.Thread(target=s.guard_baseline, name="studio-guard-baseline", daemon=True).start()
 
     _follow_parent(srv)
