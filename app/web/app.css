@@ -417,3 +417,25 @@ body[data-ring=alarm] .ring{border-color:var(--red);animation:breathe 1.3s ease-
 .ch-area { fill: var(--accent); fill-opacity: .18; stroke: var(--accent); stroke-width: 2; opacity: 0; }
 .ch-area.drawn { opacity: 1; transition: opacity 500ms ease-out; }
 @media (prefers-reduced-motion: reduce) { .ch-area.drawn { transition: none; } }
+
+/* ------------------------------------------------------------------ veredicto, puertas y graficos del motor */
+.shot-fig{margin:10px 0;display:flex;flex-direction:column;gap:5px}
+.shot-fig .shot{width:100%;height:auto;border-radius:9px;border:1px solid var(--sep);background:#fff}
+.stat{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:8px 0;padding:8px 10px;border-radius:9px;
+  background:var(--fill-3);box-shadow:inset 2.5px 0 0 var(--label-3)}
+.stat.good{box-shadow:inset 2.5px 0 0 var(--green)}
+.stat.bad{box-shadow:inset 2.5px 0 0 var(--red)}
+.stat-w{font-size:13px;text-transform:uppercase;letter-spacing:.04em}
+.stat.good .stat-w{color:var(--green)}
+.stat.bad .stat-w{color:var(--red)}
+.stat .fine{margin-left:auto}
+.stat-i{margin:2px 0 0 10px;font-size:12px;color:var(--label-2)}
+.gates{display:flex;flex-direction:column;gap:1px;margin:8px 0}
+/* Dos lineas siempre, no tres columnas: con la razon al lado, una tarjeta estrecha hace chocar el nombre de la
+   puerta con su explicacion (visto en WebKit a 360 px). Apilado se lee igual a cualquier ancho. */
+.gate{display:grid;grid-template-columns:16px 1fr;gap:2px 8px;padding:6px 8px;border-radius:7px}
+.gate:nth-child(odd){background:var(--fill-3)}
+.gate-i{color:var(--label-3);grid-row:1 / span 2;align-self:start;margin-top:2px}
+.gate.on .gate-i{color:var(--green)}
+.gate-k{font-size:12.5px;color:var(--label);font-weight:540}
+.gate-w{font-size:12px;color:var(--label-2);min-width:0}

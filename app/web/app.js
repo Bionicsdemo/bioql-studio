@@ -1226,6 +1226,40 @@ function cardNode(card) {
       body.appendChild(seriesNode(b));
     } else if (b.type === "radar") {
       body.appendChild(radarNode(b));
+    } else if (b.type === "chart_image") {
+      // El grafico que BioQL YA dibujo. Se muestra como lo hizo el motor: redibujarlo peor desde los numeros
+      // seria la tarjeta prefiriendose a si misma antes que al motor.
+      const f = el("figure", "shot-fig");
+      const img = el("img", "shot");
+      img.src = "data:image/png;base64," + b.png_base64;
+      img.alt = b.title || "grafico";
+      img.loading = "lazy";
+      f.appendChild(img);
+      if (b.title) f.appendChild(el("figcaption", "fine", b.title));
+      body.appendChild(f);
+    } else if (b.type === "status") {
+      const s = el("div", "stat " + (b.tone || "plain"));
+      s.appendChild(el("b", "stat-w", b.word));
+      Object.keys(b.counts || {}).forEach((k) => {
+        s.appendChild(chip(k.replace(/^n_/, "") + " " + b.counts[k], b.counts[k] ? "warn" : "neutral"));
+      });
+      s.appendChild(el("span", "fine", b.where));
+      body.appendChild(s);
+      (b.issues || []).forEach((i) => body.appendChild(el("p", "stat-i", i)));
+      if (b.issues_total > (b.issues || []).length) {
+        body.appendChild(el("p", "fine", (b.issues_total - b.issues.length) + " mas no mostradas"));
+      }
+    } else if (b.type === "gates") {
+      // Una puerta sin su razon pierde justo la mitad que dice lo que vale la afirmacion.
+      const g = el("div", "gates");
+      (b.rows || []).forEach((r) => {
+        const row = el("div", "gate" + (r.open ? " on" : ""));
+        row.appendChild(icon(r.open ? "check" : "tabx", "ic gate-i"));
+        row.appendChild(el("div", "gate-k", r.label));
+        row.appendChild(el("div", "gate-w", r.why || (r.open ? "sin razon declarada" : "sin razon declarada")));
+        g.appendChild(row);
+      });
+      body.appendChild(g);
     } else if (b.type === "absent") {
       body.appendChild(el("p", "absent-block", (b.what || "this") + " — " + (b.why || "not computed")));
     } else if (b.type === "links") {

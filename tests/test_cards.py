@@ -94,7 +94,10 @@ def leaves(o, path=""):
 
 ALLOWED = {"facts": {"rows"}, "table": {"columns", "rows"}, "molecule2d": {"png_base64", "smiles"},
            "molecule3d": {"sdf", "parts", "label"}, "radar": {"axes", "source", "max"}, "series": {"x_label", "y_label", "points"}, "text": {"text"},
-           "links": {"items"}, "absent": {"what", "why"}}
+           "links": {"items"}, "absent": {"what", "why"},
+           "chart_image": {"png_base64", "title", "url"},
+           "status": {"word", "tone", "where", "counts", "issues", "issues_total"},
+           "gates": {"rows", "where"}}
 
 
 def check_schema(spec):
@@ -315,13 +318,13 @@ def test_render_2d_becomes_a_molecule2d_block_only_while_the_format_says_png():
 
 
 def test_a_chart_image_is_not_passed_off_as_the_molecule():
-    """`visualization.charts[].image_base64` is a ranking plot. There is no image block for a chart, so the card
-    says so rather than drawing the plot where the compound belongs."""
+    """`visualization.charts[].image_base64` is a ranking plot. It gets its own block and `molecule2d` stays what
+    it says it is: drawing the plot where the compound belongs would label a bar chart a structure."""
     spec = card({"smiles": "CCO",
                  "visualization": {"charts": [{"title": "ranking", "image_base64": "iVBORw0KGgo"}]}})
     two_d = blocks_of(spec, "molecule2d")
     assert two_d and "png_base64" not in two_d[0] and two_d[0]["smiles"] == "CCO"
-    assert "no block type" in absent_about(spec, "chart image")[0]["why"]
+    assert blocks_of(spec, "chart_image")[0]["title"] == "ranking"
     check_schema(spec)
 
 
@@ -759,3 +762,75 @@ def test_a_zero_is_a_section_and_an_empty_dict_is_not():
     from studio.cards import sections
     assert [s[0] for s in sections({"docking": 0})] == ["docking"]
     assert sections({"docking": {}}) == []
+
+
+# ------------------------------------------------- lo que BioQL ya dibujo, su veredicto y sus puertas
+def test_the_chart_bioql_already_drew_is_shown_not_refused():
+    """`visualization.charts[]` es `{title, image_base64, png_url}` — dos en el resultado real 10620ccd-07b. Antes
+    se rechazaban por no haber tipo de bloque; tirar el dibujo del motor para rehacerlo peor desde los numeros
+    seria la tarjeta prefiriendose a si misma antes que al motor."""
+    spec = card({"visualization": {"charts": [{"title": "Candidate Ranking", "image_base64": "iVBORw0KGgo=",
+                                               "png_url": "/api/artifacts/antibody/chart_ranking.png"}]}})
+    b = blocks_of(spec, "chart_image")[0]
+    assert b["title"] == "Candidate Ranking" and b["png_base64"] == "iVBORw0KGgo="
+    assert b["url"] == "/api/artifacts/antibody/chart_ranking.png"
+    assert not blocks_of(spec, "molecule2d"), "un grafico no es una depiccion de la molecula"
+    check_schema(spec)
+
+
+def test_a_chart_url_to_another_origin_is_not_carried():
+    spec = card({"visualization": {"charts": [{"title": "x", "image_base64": "aa", "png_url": "//otro/host.png"}]}})
+    assert "url" not in blocks_of(spec, "chart_image")[0]
+    check_schema(spec)
+
+
+def test_the_audit_verdict_is_a_verdict_not_a_row():
+    """`consistency_audit` contesta `{status:"pass", n_issues:0, n_critical:0}`: una frase sobre la corrida
+    entera, que se perdia como una fila mas entre doscientas."""
+    spec = card({"consistency_audit": {"status": "pass", "n_issues": 0, "n_critical": 0, "issues": []}})
+    s = blocks_of(spec, "status")[0]
+    assert s["word"] == "pass" and s["tone"] == "good"
+    assert s["counts"] == {"n_issues": 0, "n_critical": 0}
+    check_schema(spec)
+
+
+def test_a_word_this_module_cannot_read_is_not_coloured_in():
+    spec = card({"audit": {"status": "parcialmente revisado"}})
+    assert blocks_of(spec, "status")[0]["tone"] == "plain"
+    check_schema(spec)
+
+
+def test_a_failed_audit_reads_as_failed_and_carries_its_issues():
+    spec = card({"consistency_audit": {"status": "FAIL", "n_critical": 2,
+                                       "issues": ["etiqueta cuantica sobre salida clasica", "sin brazo clasico"]}})
+    s = blocks_of(spec, "status")[0]
+    assert s["tone"] == "bad" and s["issues_total"] == 2
+    assert "sin brazo clasico" in s["issues"]
+    check_schema(spec)
+
+
+def test_a_gate_carries_the_reason_bioql_gave():
+    """`qdiffvision.capability_gates` empareja cada bandera con su `reason_<bandera>`. Dibujada como un true/false
+    pelado se pierde justo la mitad que dice lo que vale la afirmacion."""
+    spec = card({"qdiffvision": {"capability_gates": {
+        "learned_se3_diffusion": True,
+        "reason_learned_se3_diffusion": "validated graph-specific checkpoint; fixed topology only",
+        "quantum_force_guidance": False,
+        "reason_quantum_force_guidance": "not requested"}}})
+    rows = {r["label"]: r for r in blocks_of(spec, "gates")[0]["rows"]}
+    assert rows["learned_se3_diffusion"]["open"] is True
+    assert "fixed topology only" in rows["learned_se3_diffusion"]["why"]
+    assert rows["quantum_force_guidance"]["open"] is False
+    assert rows["quantum_force_guidance"]["why"] == "not requested"
+    check_schema(spec)
+
+
+def test_bioqls_own_3dmol_embed_is_the_structure():
+    """`visualization.molecular.embed_3dmol` es `{data, format:"pdb", style:"cartoon"}`: BioQL le da el formato al
+    lado del texto, y es el unico sitio donde se lee de un hermano y no de la clave."""
+    spec = card({"visualization": {"molecular": {"embed_3dmol": {
+        "data": "ATOM      1  N   GLU A   1       4.714 -18.708 -12.472\n" * 20,
+        "format": "pdb", "style": "cartoon"}}}})
+    b = blocks_of(spec, "molecule3d")[0]
+    assert [(p["role"], p["format"]) for p in b["parts"]] == [("protein", "pdb")]
+    check_schema(spec)

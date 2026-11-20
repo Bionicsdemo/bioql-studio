@@ -63,7 +63,8 @@ import re
 from typing import Any
 
 KINDS = ("molecule", "admet", "docking", "structure", "screening", "pipeline", "job", "catalogue", "table", "text")
-BLOCK_TYPES = ("facts", "table", "molecule2d", "molecule3d", "radar", "series", "text", "links", "absent")
+BLOCK_TYPES = ("facts", "table", "molecule2d", "molecule3d", "chart_image", "status", "gates", "radar",
+               "series", "text", "links", "absent")
 
 MAX_TABLE_ROWS = 200
 MAX_SERIES_POINTS = 2000
@@ -625,11 +626,10 @@ def _molecule_blocks(payload: Any, consumed: set[str]) -> list[dict]:
         fmt = parent.get("format") or parent.get("image_format") if isinstance(parent, dict) else None
         name = str(fmt).strip().lower() if isinstance(fmt, str) else ""
         if "chart" in (b64_path or "").lower():
-            # `visualization.charts[].image_base64` is a plot, not a depiction of the molecule, and there is no
-            # image block for a chart: the card says so rather than passing a ranking bar chart off as the compound.
-            out.append({"type": "absent", "what": "chart image",
-                        "why": f"{b64_path} holds a chart image, and the card has no block type for one "
-                               f"(molecule2d is a depiction of the molecule)"})
+            # `visualization.charts[].image_base64` is a plot, not a depiction of the molecule. It used to be
+            # refused for want of a block type — but BioQL has ALREADY drawn this chart, and throwing away the
+            # engine's own picture to redraw a worse one from the numbers would be the card preferring itself to
+            # the engine. It gets its own block, and `molecule2d` stays what it says it is.
             consumed.add(b64_path)
         elif name in ("png", "image/png") or b64.startswith("data:image/png"):
             block: dict = {"type": "molecule2d", "png_base64": b64}
@@ -662,6 +662,19 @@ def _struct_parts(payload: Any) -> list[tuple[str, str, str, str]]:
     """
     found: list[tuple[int, str, str, str, str]] = []
     seen: set[str] = set()
+    # BioQL sometimes hands the viewer its own embed: `visualization.molecular.embed_3dmol` is
+    # `{data: "<pdb text>", format: "pdb", style: "cartoon"}` — measured on job 10620ccd-07b. There the format is
+    # a SIBLING and not the key, which is the one place this module reads it from anywhere but the key, because
+    # BioQL stated it right there.
+    for path, value in _walk(payload):
+        if not isinstance(value, dict):
+            continue
+        data, fmt = value.get("data"), value.get("format")
+        if isinstance(data, str) and data.strip() and isinstance(fmt, str) \
+                and fmt.strip().lower() in STRUCT_MARK:
+            role = "protein" if fmt.strip().lower() in ("pdb", "cif") else "molecule"
+            found.append((path.count(".") + path.count("["), f"{path}.data", role, fmt.strip().lower(), data))
+            seen.add(f"{path}.data")
     for path, value in _walk(payload):
         if not isinstance(value, str) or not value.strip() or path in seen:
             continue
@@ -675,6 +688,100 @@ def _struct_parts(payload: Any) -> list[tuple[str, str, str, str]]:
     found.sort(key=lambda r: r[0])
     return [(p, role, fmt, text) for _, p, role, fmt, text in found]
 
+
+
+def _chart_blocks(payload: Any, consumed: set[str]) -> list[dict]:
+    """The charts BioQL drew itself. `visualization.charts[]` is `{title, image_base64, png_url}` — measured on a
+    real result (job 10620ccd-07b: "Candidate Ranking" and one more) — and this carries them as the engine made
+    them. The title is BioQL's; nothing here renames a plot."""
+    out: list[dict] = []
+    for path, value in _walk(payload):
+        if not isinstance(value, dict):
+            continue
+        b64 = value.get("image_base64") or value.get("png_base64")
+        if not isinstance(b64, str) or not b64.strip():
+            continue
+        if "chart" not in path.lower() and "chart" not in str(value.get("title", "")).lower():
+            continue
+        block = {"type": "chart_image", "png_base64": b64}
+        if isinstance(value.get("title"), str):
+            block["title"] = value["title"]
+        url = value.get("png_url") or value.get("url")
+        if isinstance(url, str) and SAME_ORIGIN_PATH.match(url):
+            block["url"] = url
+        out.append(block)
+        consumed.add(path)
+        for k in ("image_base64", "png_base64", "png_url", "url", "title"):
+            consumed.add(f"{path}.{k}")
+        if len(out) >= 8:
+            break
+    return out
+
+
+# A word that states how something came out. Only these: a status this module cannot read is left as a fact, not
+# coloured in by guessing which way it leans.
+STATUS_GOOD = ("pass", "passed", "ok", "success", "go", "clean", "complete", "completed")
+STATUS_BAD = ("fail", "failed", "error", "no-go", "no_go", "blocked", "contradicted", "rejected")
+
+
+def _status_blocks(payload: Any, consumed: set[str]) -> list[dict]:
+    """A verdict BioQL wrote, with its counters. `consistency_audit` answers
+    `{status: "pass", n_issues: 0, n_critical: 0, issues: []}` and `visualization.card` answers `{verdict: "GO"}`;
+    both are a sentence about the whole run, and both read as a line of facts among two hundred others."""
+    out: list[dict] = []
+    for path, value in _walk(payload):
+        if not isinstance(value, dict):
+            continue
+        word = value.get("status") if isinstance(value.get("status"), str) else value.get("verdict")
+        if not isinstance(word, str) or not word.strip():
+            continue
+        low = word.strip().lower()
+        tone = "good" if low in STATUS_GOOD else "bad" if low in STATUS_BAD else "plain"
+        counts = {k: v for k, v in value.items()
+                  if k.startswith("n_") and isinstance(v, int) and not isinstance(v, bool)}
+        issues = value.get("issues")
+        block: dict = {"type": "status", "word": word.strip(), "tone": tone, "where": path or "result"}
+        if counts:
+            block["counts"] = counts
+        if isinstance(issues, list):
+            block["issues"] = [str(i)[:200] for i in issues[:12]]
+            block["issues_total"] = len(issues)
+        out.append(block)
+        consumed.add(f"{path}.status" if "status" in value else f"{path}.verdict")
+        for k in counts:
+            consumed.add(f"{path}.{k}")
+        if len(out) >= 4:
+            break
+    return out
+
+
+def _gates_blocks(payload: Any, consumed: set[str]) -> list[dict]:
+    """A gate and the reason BioQL gave for it. `qdiffvision.capability_gates` pairs every flag with its own
+    `reason_<flag>` — `learned_se3_diffusion: true` next to "validated graph-specific checkpoint; fixed topology
+    only". Drawn as a bare true/false it loses exactly the half that says what the claim is worth."""
+    out: list[dict] = []
+    for path, value in _walk(payload):
+        if not isinstance(value, dict):
+            continue
+        flags = {k: v for k, v in value.items() if isinstance(v, bool)}
+        reasons = {k[len("reason_"):]: v for k, v in value.items()
+                   if k.startswith("reason_") and isinstance(v, str)}
+        paired = [k for k in flags if k in reasons]
+        if len(flags) < 2 or not paired:
+            continue
+        rows = []
+        for k, v in flags.items():
+            row = {"label": k, "open": bool(v)}
+            why = reasons.get(k)
+            if isinstance(why, str) and why.strip():
+                row["why"] = why.strip()[:300]
+            rows.append(row)
+            consumed.add(f"{path}.{k}")
+            consumed.add(f"{path}.reason_{k}")
+        out.append({"type": "gates", "rows": rows, "where": path})
+        if len(out) >= 3:
+            break
+    return out
 
 def _structure_blocks(payload: Any, consumed: set[str]) -> list[dict]:
     """The 3D structure, whole. One block, carrying every part of the SAME structure — a ligand and the protein it
@@ -891,6 +998,9 @@ def card(payload: Any, tool: str | None = None, meta: dict | None = None) -> dic
     if isinstance(payload, (dict, list)):
         # Every detector runs, whatever the kind says. They are guarded by the shapes they read, and gating them on
         # one kind is what let a pipeline carrying `mol_3d` be drawn as an ADMET card with no structure in it.
+        blocks += _status_blocks(payload, consumed)
+        blocks += _chart_blocks(payload, consumed)
+        blocks += _gates_blocks(payload, consumed)
         blocks += _radar_blocks(payload, consumed)
         blocks += _admet_blocks(payload, consumed)
         blocks += _catalogue_blocks(payload, consumed)
