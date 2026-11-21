@@ -100,6 +100,7 @@ ALLOWED = {"facts": {"rows"}, "table": {"columns", "rows"}, "molecule2d": {"png_
            # cualquier clave hasta que una tarjeta real lo produjera.
            "converge": {"points", "running", "boundaries", "mean", "std", "unit", "x_label", "y_label",
                         "frame_interval_ps", "source"},
+           "gallery": {"items", "count"},
            "status": {"word", "tone", "where", "counts", "issues", "issues_total"},
            "gates": {"rows", "where"}}
 

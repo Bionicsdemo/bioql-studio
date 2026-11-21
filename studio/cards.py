@@ -62,11 +62,11 @@ import math
 import re
 from typing import Any
 
-from . import cards_admet, cards_viz
+from . import cards_admet, cards_candidates, cards_gaps, cards_viz
 
 KINDS = ("molecule", "admet", "docking", "structure", "screening", "pipeline", "job", "catalogue", "table", "text")
 BLOCK_TYPES = ("facts", "table", "molecule2d", "molecule3d", "chart_image", "status", "gates", "radar",
-               "converge",
+               "converge", "gallery",
                "series", "text", "links", "absent")
 
 MAX_TABLE_ROWS = 200
@@ -509,8 +509,30 @@ class _Draw:
     replaces silently lost the third.
     """
 
+    # Un subarbol repetido se dibuja UNA vez.
+    #
+    # BioQL devuelve el mismo bloque bajo varios nombres a la vez: en la corrida PD-L1 real, el ensayo clinico
+    # vive en `clinical_trial`, `clinical_trials`, `best_candidate.clinical_trial`,
+    # `best_candidate.analyses.clinical_trial` y `best_candidate_full`, identico en los cinco. La tarjeta salia
+    # con 36 tablas de las que la mayoria eran la misma. Se recuerda la huella del contenido; la segunda vez se
+    # dice de que es copia y se para. No se oculta nada: se dice donde esta.
+    DUP_MIN = 3            # objetos de menos de tres claves no valen la huella
+    BARE_ONE_BY_ONE = 12   # hasta aqui, cada hueco con su nombre; pasado, se agrupa por rama
+
+    def _fingerprint(self, v: Any) -> str | None:
+        try:
+            if isinstance(v, dict) and len(v) >= self.DUP_MIN:
+                return json.dumps(v, sort_keys=True, default=str)[:20000]
+            if isinstance(v, list) and len(v) >= self.DUP_MIN:
+                return json.dumps(v, sort_keys=True, default=str)[:20000]
+        except (TypeError, ValueError):
+            return None
+        return None
+
     def __init__(self, consumed: set[str]) -> None:
         self.consumed = consumed
+        self.seen: dict[str, str] = {}
+        self.copies: list[tuple[str, str]] = []
         self.rows: list[dict] = []
         self.gone: list[dict] = []
         self.blocks: list[dict] = []
@@ -535,6 +557,16 @@ class _Draw:
             self.deeper += 1
             self.blocks.append(_text_block(_short_json(value), label))
             return
+        fp = self._fingerprint(value) if depth else None
+        if fp is not None:
+            first = self.seen.get(fp)
+            if first is not None and first != label:
+                # Se anotan y se dicen JUNTAS al final: treinta y siete avisos de copia intercalados son el
+                # mismo ruido que se acaba de quitar, con otra forma.
+                self.copies.append((label or "esta rama", first))
+                return
+            self.seen[fp] = label or "la raiz"
+
         if isinstance(value, dict):
             for k, v in value.items():
                 if k.endswith("_units") or k.endswith("_unit"):
@@ -597,17 +629,88 @@ class _Draw:
             row["note"] = note
         self.rows.append(row)
 
+    # Las frases que escribe `_honest_absent` cuando NADIE dio una razon. Son un conjunto cerrado, y distinguen
+    # las dos ausencias que no se leen igual: la que BioQL explica ("no validated per-molecule dose model") y la
+    # que solo constata un hueco ("null in the payload").
+    _MUDAS = ("with no reason given", "the payload holds an empty list", "the payload holds an empty object",
+              "not a number in the payload")
+
+    @classmethod
+    def _muda(cls, why: str) -> bool:
+        w = str(why or "")
+        return any(m in w for m in cls._MUDAS)
+
+    def _absences(self) -> list[dict]:
+        """Las ausencias, legibles.
+
+        Una corrida real de peptido (PD-L1, 47507341-379) daba **147 bloques de ausencia** en una sola tarjeta,
+        casi todos "null in the payload, with no reason given". Eso no son 147 hechos: es un hecho sobre el
+        resultado, repetido 147 veces, y entierra los cuatro que si dicen algo.
+
+        Asi que se separan. Lo que BioQL EXPLICA sale entero, una linea cada uno -- son las frases que un
+        cientifico necesita leer antes que el numero de al lado. Lo que solo constata un hueco se agrupa por su
+        rama y se cuenta, con los nombres de las hojas dentro. Nada se pierde: cambia el nivel de agregacion,
+        no el contenido.
+        """
+        dichas = [g for g in self.gone if not self._muda(g.get("why", ""))]
+        mudas = [g for g in self.gone if self._muda(g.get("why", ""))]
+        out: list[dict] = []
+
+        # Por RAZON, no por campo. BioQL repite el mismo bloque bajo seis nombres -- `clinical_trial`,
+        # `clinical_trials`, `best_candidate.clinical_trial`, `best_candidate.analyses.clinical_trial`,
+        # `best_candidate_full`... -- asi que "clinical probability-of-success not predicted here (no validated
+        # per-molecule dose model)" salia TREINTA veces en una sola tarjeta. Es un hecho sobre la corrida, no
+        # treinta. Se dice una vez, con cuantos campos cayeron por el y unos cuantos nombres.
+        porque: dict[str, list[str]] = {}
+        for g in dichas:
+            porque.setdefault(str(g.get("why", "")), []).append(str(g.get("what") or "payload"))
+        for why, campos in list(porque.items())[:MAX_FACTS]:
+            if len(campos) == 1:
+                out.append({"type": "absent", "what": campos[0], "why": why})
+            else:
+                out.append({"type": "absent",
+                            "what": f"{len(campos)} campo(s): " + ", ".join(campos[:3])
+                                    + (" …" if len(campos) > 3 else ""),
+                            "why": why})
+        if len(porque) > MAX_FACTS:
+            out.append(_cut("the absent fields", len(porque) - MAX_FACTS, len(porque), MAX_FACTS, "reasons"))
+
+        # Agrupar sólo cuando son muchas. En un ADMET de doce endpoints cada hueco importa POR SU NOMBRE: quien
+        # lee quiere saber que `ld50_zhu` salió nulo, no que "1 campo vacío en algún sitio". El muro aparece en
+        # los pipelines grandes, y es ahí y sólo ahí donde se resume.
+        if len(mudas) <= self.BARE_ONE_BY_ONE:
+            return out + mudas
+
+        grupos: dict[str, list[str]] = {}
+        for g in mudas:
+            what = str(g.get("what") or "payload")
+            rama, _, hoja = what.rpartition(".")
+            grupos.setdefault(rama or "el resultado", []).append(hoja or what)
+        for rama, hojas in list(grupos.items())[:8]:
+            out.append({"type": "absent", "what": f"{len(hojas)} campo(s) vacio(s) en {rama}",
+                        "why": "sin valor y sin razon en el resultado: " + ", ".join(hojas[:10])
+                               + (f" y {len(hojas) - 10} mas" if len(hojas) > 10 else "")})
+        if len(grupos) > 8:
+            otras = sum(len(v) for v in list(grupos.values())[8:])
+            out.append({"type": "text",
+                        "text": f"{otras} campo(s) vacio(s) mas, en {len(grupos) - 8} rama(s) no listadas"})
+        return out
+
     def out(self) -> list[dict]:
         out: list[dict] = []
         if self.rows:
             out.append({"type": "facts", "rows": self.rows})
         out += self.blocks
-        out += self.gone[:MAX_FACTS]
+        out += self._absences()
+        if self.copies:
+            muestra = "; ".join(f"{a} = {b}" for a, b in self.copies[:6])
+            out.append({"type": "text",
+                        "text": f"{len(self.copies)} rama(s) del resultado son copia literal de otra y se "
+                                f"dibujan una vez: {muestra}"
+                                + (f"; y {len(self.copies) - 6} mas" if len(self.copies) > 6 else "")})
         if self.dropped_rows:
             out.append(_cut("this payload", self.dropped_rows, self.dropped_rows + len(self.rows), MAX_FACTS,
                             "facts"))
-        if len(self.gone) > MAX_FACTS:
-            out.append(_cut("the absent fields", len(self.gone) - MAX_FACTS, len(self.gone), MAX_FACTS, "entries"))
         if self.deeper:
             out.append({"type": "text", "text": f"{self.deeper} branch(es) deeper than {MAX_DEPTH} levels are shown "
                                                 f"as JSON rather than drawn field by field."})
@@ -1083,6 +1186,8 @@ def card(payload: Any, tool: str | None = None, meta: dict | None = None) -> dic
         # y trae la estructura y los graficos dentro. Lo demas de esta cadena rellena lo que el sobre no cubre.
         blocks += cards_viz.viz_blocks(payload, consumed)
         blocks += cards_admet.admet_blocks(payload, consumed)
+        blocks += cards_candidates.candidate_blocks(payload, consumed)
+        blocks += cards_gaps.gap_blocks(payload, consumed)
         blocks += _status_blocks(payload, consumed)
         blocks += _chart_blocks(payload, consumed)
         blocks += _gates_blocks(payload, consumed)

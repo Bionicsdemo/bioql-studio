@@ -504,3 +504,20 @@ body[data-ring=alarm] .ring{border-color:var(--red);animation:breathe 1.3s ease-
 .depict-img { width: 100%; height: auto; display: block; border-radius: 10px; }
 .depict-smiles { font-size: 10.5px; color: var(--label-2); max-width: 420px; overflow: hidden;
   text-overflow: ellipsis; white-space: nowrap; }
+
+/* La galería de candidatos. La estructura manda: ocupa el ancho de su baldosa y los números van debajo en
+   pares compactos. Un hueco declarado va pegado a SU molécula, no al pie de la tarjeta. */
+.gal { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; margin: 10px 0; }
+.gal-t { border: 1px solid var(--sep); border-radius: 12px; overflow: hidden; background: #fff;
+  display: flex; flex-direction: column; }
+.gal-pic { background: #fff; display: flex; align-items: center; justify-content: center; min-height: 160px;
+  border-bottom: 1px solid var(--sep); padding: 6px; }
+.gal-img { width: 100%; height: auto; max-height: 220px; object-fit: contain; display: block; }
+.gal-pic .depict { margin: 0; align-items: center; width: 100%; }
+.gal-pic .depict-slot { border: 0; min-height: 120px; }
+.gal-n { font-size: 12.5px; font-weight: 650; color: var(--label); padding: 8px 10px 2px; }
+.gal-k { display: grid; grid-template-columns: 1fr auto; gap: 1px 8px; padding: 4px 10px 8px; }
+.gal-kv { display: contents; }
+.gal-kk { font-size: 10.5px; color: var(--label-2); }
+.gal-kn { font-size: 10.5px; color: var(--label); font-variant-numeric: tabular-nums; text-align: right; }
+.gal-gap { font-size: 10px; color: var(--orange); margin: 0; padding: 0 10px 8px; line-height: 1.35; }

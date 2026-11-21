@@ -1991,6 +1991,61 @@ function seriesNode(b) {
   return box;
 }
 
+/** La galería: cada molécula que la corrida generó, dibujada, con los números que deciden si sirve.
+ *
+ * Es la tarjeta central de esta app. BioQL manda el dibujo DENTRO del candidato (`structure_svg`, 95 KB en la
+ * corrida PD-L1 real), así que no hace falta pedirle nada: se enseña el suyo. El que no trae dibujo se queda con
+ * su SMILES y se le pide a BioQL aparte — nunca se inventa una estructura.
+ *
+ * Los huecos van DEBAJO de su molécula y no en una nota al pie, porque pertenecen a ella: "ΔG unión: need
+ * receptor sequence to fold the peptide:receptor complex" es lo que hay que leer antes que el 0,752 de al lado.
+ */
+function galleryNode(b) {
+  const box = el("div", "gal");
+  const items = b.items || [];
+  if (b.count && b.count !== items.length) {
+    box.appendChild(el("p", "fine", items.length + " de " + b.count + " dibujados"));
+  }
+  items.forEach((it) => {
+    const t = el("div", "gal-t");
+    const slot = el("div", "gal-pic");
+    if (it.svg) {
+      // `data:` en un <img>: el SVG es una imagen y no puede ejecutar nada. Nunca innerHTML.
+      const img = el("img", "gal-img");
+      img.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(it.svg);
+      img.alt = "estructura de " + (it.label || "la molécula");
+      img.loading = "lazy";
+      slot.appendChild(img);
+    } else if (it.png_base64) {
+      const img = el("img", "gal-img");
+      img.src = "data:image/png;base64," + it.png_base64;
+      img.alt = "estructura de " + (it.label || "la molécula");
+      img.loading = "lazy";
+      slot.appendChild(img);
+    } else if (it.smiles) {
+      // Sin dibujo en el resultado: se le pide a BioQL desde el SMILES, igual que en cualquier otro sitio.
+      slot.appendChild(depictionNode(it.smiles));
+    } else {
+      slot.appendChild(el("span", "fine", "sin estructura"));
+    }
+    t.appendChild(slot);
+    t.appendChild(el("div", "gal-n", it.label || "—"));
+    if (it.rows && it.rows.length) {
+      const g = el("div", "gal-k");
+      it.rows.forEach((r) => {
+        const k = el("div", "gal-kv");
+        k.appendChild(el("span", "gal-kk", r.label));
+        k.appendChild(el("span", "gal-kn", String(r.value)));
+        g.appendChild(k);
+      });
+      t.appendChild(g);
+    }
+    (it.gaps || []).forEach((w) => t.appendChild(el("p", "gal-gap", w)));
+    box.appendChild(t);
+  });
+  return box;
+}
+
 // ------------------------------------------------------------------ dibujar una molécula
 //
 // BioQL dibuja con RDKit en esta Mac (`render_2d` -> /api/render/2d, kind `local`) y devuelve **SVG**, que escala
@@ -2274,6 +2329,8 @@ function cardNode(card) {
         // inventar una estructura: si BioQL no la dibuja, queda la cadena y el motivo.
         body.appendChild(depictionNode(b.smiles));
       }
+    } else if (b.type === "gallery") {
+      body.appendChild(galleryNode(b));
     } else if (b.type === "molecule3d") {
       body.appendChild(structureNode(b));
     } else if (b.type === "series") {
