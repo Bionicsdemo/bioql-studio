@@ -165,7 +165,21 @@ class Adapter:
             if not al.ID.match(v):
                 raise Refused(f"{k!r} must look like an id (letters, digits, . _ -)")
             return urllib.parse.quote(v, safe="")
-        return self.base + al.PARAM.sub(fill, e["path"]), rest
+        url = self.base + al.PARAM.sub(fill, e["path"])
+        if e["method"] == "GET" and rest and e["via"] != "submit":
+            # A GET carries its arguments in the query string, and `call` sends no body on a GET -- so until
+            # 2026-11-20 these were built here and then DROPPED on the floor. 117 of the 144 GET entries were
+            # affected: a caller could pass q="PD-L1" to a search route, get no refusal from Studio, and read
+            # BioQL's own "q parameter required" as BioQL being broken. Six were measurably unusable this way
+            # (pubmed_search, pubmed_drug_search, biorxiv_search, biorxiv_detail, targetradar_compound_image,
+            # unmet_need_search). Silently discarding an argument is the same defect as a plausible empty result:
+            # the call looks like it asked something it never asked.
+            q = {k: v if isinstance(v, str) else ("" if v is None else
+                 json.dumps(v, separators=(",", ":")) if isinstance(v, (dict, list)) else str(v))
+                 for k, v in sorted(rest.items())}
+            url += ("&" if "?" in url else "?") + urllib.parse.urlencode(q)
+            rest = {}
+        return url, rest
 
     def check(self, name: str, args: dict, approved_by: str | None = None) -> dict:
         """The entry, if this call may be made. Raises Refused otherwise."""

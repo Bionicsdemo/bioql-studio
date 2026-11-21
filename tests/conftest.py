@@ -34,6 +34,12 @@ class FakeBioQL(BaseHTTPRequestHandler):
 
     def do_GET(self):
         p = self.path
+        if p.startswith("/api/echo"):
+            # Hands back the query string exactly as it arrived, so a test can see what the adapter SENT rather
+            # than what it meant to send. A GET's arguments used to be built and dropped, and no test noticed.
+            from urllib.parse import parse_qsl, urlsplit
+            return self._send(200, {"query": dict(parse_qsl(urlsplit(p).query, keep_blank_values=True)),
+                                    "raw": urlsplit(p).query, "path": urlsplit(p).path})
         if p == "/health":
             return self._send(200, {"status": "healthy"})
         if p == "/api/tools/registry":

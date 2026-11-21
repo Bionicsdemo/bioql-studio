@@ -380,3 +380,53 @@ def test_the_real_list_has_no_route_with_two_gates(monkeypatch):
         by_route.setdefault((e["method"], e["path"]), set()).add(e["approval"])
     split = {k: v for k, v in by_route.items() if len(v) > 1}
     assert not split, f"routes whose gate depends on the name used: {split}"
+
+
+# ------------------------------------------------------------------ a GET's arguments must actually be sent
+ECHO = {"method": "GET", "path": "/api/echo", "kind": "status", "approval": False, "why": "echoes the query"}
+# `optional` is declared here on purpose: a path with `{run_id}` in it counts as a known schema, so an undeclared
+# `fields` is refused — correctly. The guard against smuggled parameters is not what this test is about.
+ECHO_ID = {"method": "GET", "path": "/api/echo/{run_id}", "kind": "status", "approval": False,
+           "optional": ["fields"], "why": "and the path"}
+
+
+def test_a_get_carries_its_arguments_in_the_query_string(fake_bioql):
+    """They used to be built and DROPPED. 117 of the 144 GET entries were affected: a caller could pass
+    q="PD-L1" to a search route, get no refusal from Studio, and read BioQL's own "q parameter required" as
+    BioQL being broken. Silently discarding an argument is the same defect as a plausible empty result — the
+    call looks like it asked something it never asked."""
+    r = ad(fake_bioql, echo=ECHO).call("echo", {"q": "PD-L1 peptide", "limit": 5})
+    assert r.state == RESOLVED
+    assert r.value["query"] == {"q": "PD-L1 peptide", "limit": "5"}, r.value
+
+
+def test_a_path_parameter_stays_in_the_path_and_the_rest_goes_to_the_query(fake_bioql):
+    r = ad(fake_bioql, echo_id=ECHO_ID).call("echo_id", {"run_id": "abc-123", "fields": "all"})
+    assert r.value["path"] == "/api/echo/abc-123", r.value
+    assert r.value["query"] == {"fields": "all"}, r.value
+
+
+def test_the_query_is_ordered_so_the_same_call_builds_the_same_url(fake_bioql):
+    a = ad(fake_bioql, echo=ECHO)
+    one = a.call("echo", {"z": "1", "a": "2", "m": "3"}).value["raw"]
+    two = a.call("echo", {"m": "3", "z": "1", "a": "2"}).value["raw"]
+    assert one == two == "a=2&m=3&z=1"
+
+
+def test_structures_and_none_survive_the_query_rather_than_becoming_python(fake_bioql):
+    """`str({"a": 1})` would send `{'a': 1}` with single quotes — not JSON, and not what BioQL parses."""
+    r = ad(fake_bioql, echo=ECHO).call("echo", {"d": {"a": 1}, "l": [1, 2], "n": None, "b": True})
+    q = r.value["query"]
+    assert q["d"] == '{"a":1}' and q["l"] == "[1,2]", q
+    assert q["n"] == "" and q["b"] == "True", q
+
+
+def test_a_post_still_sends_a_body_and_no_query_string(fake_bioql):
+    """The fix must not turn a pipeline's parameters into a URL."""
+    post = {"method": "POST", "path": "/api/echo", "kind": "compute", "approval": False,
+            "required": ["smiles"], "why": "a pipeline"}
+    a = ad(fake_bioql, post_thing=post)
+    e = a.check("post_thing", {"smiles": "CCO"})
+    url, body = a._url(e, {"smiles": "CCO"})
+    assert "?" not in url, url
+    assert body == {"smiles": "CCO"}
