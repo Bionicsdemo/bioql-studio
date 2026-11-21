@@ -116,6 +116,43 @@ final class Service {
         return h
     }
 
+    /// Bytecode found INSIDE the bundle, removed before the service starts.
+    ///
+    /// 2026-11-21, measured: the app stopped opening. `codesign --verify --strict` said
+    ///
+    ///     /Applications/BioQL Studio.app: a sealed resource is missing or invalid
+    ///     file added: …/Resources/bioql-studio/studio/__pycache__/mcp_server.cpython-314.pyc
+    ///
+    /// Thirteen `.pyc` files, none of them written by this app: the MCP server runs with its `cwd` and
+    /// `PYTHONPATH` inside the installed bundle (that is how Claude Desktop and Claude Code are configured), and
+    /// Python writes its bytecode next to the source — which here means inside a signed bundle. A macOS signature
+    /// seals the LIST of files, so a file ADDED breaks it exactly as a file modified does. Deleting them returned
+    /// the seal to "valid on disk" with nothing re-signed, and the app opened.
+    ///
+    /// So the app sweeps its own Resources. `studio/__init__.py` also sets `sys.dont_write_bytecode` when it sees
+    /// itself inside a `.app`, and the MCP configuration carries `PYTHONDONTWRITEBYTECODE` — but those two depend
+    /// on a config file staying right and on a module being reached before anything writes its own `.pyc`. This
+    /// one depends on nothing: whatever put bytecode there, the next launch has a valid seal again.
+    func sweepBytecode(in root: URL) {
+        let fm = FileManager.default
+        var gone = 0
+        for sub in ["studio", "app"] {
+            let d = root.appendingPathComponent(sub, isDirectory: true)
+            guard let walk = fm.enumerator(at: d, includingPropertiesForKeys: nil) else { continue }
+            var kill: [URL] = []
+            for case let u as URL in walk {
+                if u.lastPathComponent == "__pycache__" || u.pathExtension == "pyc" { kill.append(u) }
+            }
+            for u in kill where (try? fm.removeItem(at: u)) != nil { gone += 1 }
+        }
+        if gone > 0, let h = logHandle() {
+            let line = "sweep: removed \(gone) stray bytecode item(s) from the bundle — they invalidate its "
+                     + "signature and stop the app from opening\n"
+            h.write(Data(line.utf8))
+            try? h.close()
+        }
+    }
+
     /// Blocking; call off the main thread. Returns nil when the service is up, else what is wrong.
     ///
     /// A failed `start()` can leave a child that is running but not yet answering ("did not answer in time"), and
@@ -137,8 +174,11 @@ final class Service {
         }
         guard let root = Bundle.main.resourceURL?.appendingPathComponent("bioql-studio", isDirectory: true),
               FileManager.default.fileExists(atPath: root.appendingPathComponent("app").path) else {
-            return "This copy of BioQL Studio is incomplete (its service is missing)."
+            return "This copy of BioQL Studio is incomplete (its service is missing). Reinstall it with "
+                 + "app/macos/install.sh: a bundle whose Resources were replaced in place can be left without "
+                 + "its service, or with files added that invalidate its signature."
         }
+        sweepBytecode(in: root)
         guard let py = python() else {
             return "BioQL Studio needs Python 3.10 or later."
         }

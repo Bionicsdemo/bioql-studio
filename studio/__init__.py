@@ -7,7 +7,41 @@ BioQL's own services.
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
+
+# ---------------------------------------------------------------------------------------------------------------
+# Esta capa NO escribe bytecode dentro del paquete de la app. El 2026-11-21 la app dejó de abrirse por esto.
+#
+# El servidor MCP corre con `cwd` y `PYTHONPATH` dentro del paquete instalado
+# (`/Applications/BioQL Studio.app/Contents/Resources/bioql-studio`, así está en la configuración de Claude
+# Desktop y de Claude Code). Python, al importar, escribe `studio/__pycache__/*.pyc` AL LADO del fuente — es
+# decir, dentro del paquete firmado. Y una firma de macOS sella la lista de ficheros: un fichero AÑADIDO la
+# invalida igual que uno modificado. `codesign --verify --strict` lo dijo exactamente así:
+#
+#     /Applications/BioQL Studio.app: a sealed resource is missing or invalid
+#     file added: .../Resources/bioql-studio/studio/__pycache__/mcp_server.cpython-314.pyc
+#
+# Trece ficheros .pyc, ninguno escrito por la app: los escribió el servidor MCP al arrancar. Borrarlos devolvió
+# el sello a «valid on disk» sin volver a firmar nada, y la app abrió.
+#
+# Tres cierres independientes, porque el que depende de que alguien configure algo se cae solo:
+#   1. este, que apaga la escritura en cuanto el paquete está dentro de un `.app`;
+#   2. `PYTHONDONTWRITEBYTECODE` en la configuración MCP, que cubre el `__init__` de este mismo fichero (su .pyc
+#      se escribe ANTES de que esta línea corra, así que esto solo no basta);
+#   3. la app barre el bytecode que encuentre en sus Recursos al arrancar (Service.swift), que repara el sello
+#      para el arranque siguiente aunque los otros dos fallen.
+if ".app/Contents/" in str(Path(__file__).resolve()):
+    sys.dont_write_bytecode = True
+    # Y se limpia el que ya está escrito, incluido el de ESTE fichero: su `.pyc` se guarda al compilarlo, antes
+    # de que la línea de arriba corra, así que apagar la bandera llega tarde para él. Borrarlo es lo que
+    # devolvió el sello a «valid on disk» cuando pasó de verdad. Python recompila del fuente si falta, y si el
+    # árbol está de sólo lectura (así lo deja `install.sh`) aquí no había nada que borrar.
+    try:
+        import shutil
+        shutil.rmtree(Path(__file__).resolve().parent / "__pycache__", ignore_errors=True)
+    except Exception:                    # noqa: BLE001 — un fallo limpiando no puede impedir que la app arranque
+        pass
 
 # The version has ONE source, `app/__init__.py`, which `build.sh` and `dmg.sh` also read with sed and which the
 # update channel compares against what GitHub publishes. `studio` used to keep a second copy, and the two had
