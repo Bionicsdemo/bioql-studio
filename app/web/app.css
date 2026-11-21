@@ -486,3 +486,10 @@ body[data-ring=alarm] .ring{border-color:var(--red);animation:breathe 1.3s ease-
 .film-play { flex: 0 0 auto; min-width: 38px; font-variant-numeric: tabular-nums; }
 .film-time { flex: 1 1 auto; accent-color: var(--accent); height: 20px; }
 .film-count { flex: 0 0 auto; font-size: 11px; color: var(--label-2); font-variant-numeric: tabular-nums; }
+
+/* Convergencia de una MD corta: los puntos son fotogramas, la línea es la media corriente, la banda es
+   media ± desviación, y las verticales de puntos separan réplicas que NO son una trayectoria seguida. */
+.ch-band { fill: var(--accent); opacity: .10; }
+.ch-mean { stroke: var(--accent); stroke-width: 1; stroke-dasharray: 5 4; opacity: .55; }
+.ch-split { stroke: var(--label-2); stroke-width: 1; stroke-dasharray: 2 4; opacity: .7; }
+.ch-dot.frame { fill: var(--label-2); opacity: .55; }

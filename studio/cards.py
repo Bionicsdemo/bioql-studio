@@ -64,6 +64,7 @@ from typing import Any
 
 KINDS = ("molecule", "admet", "docking", "structure", "screening", "pipeline", "job", "catalogue", "table", "text")
 BLOCK_TYPES = ("facts", "table", "molecule2d", "molecule3d", "chart_image", "status", "gates", "radar",
+               "converge",
                "series", "text", "links", "absent")
 
 MAX_TABLE_ROWS = 200
@@ -869,6 +870,84 @@ def _radar_blocks(payload: Any, consumed: set[str]) -> list[dict]:
     return out
 
 
+def _md_ensemble_blocks(payload: Any, consumed: set[str]) -> list[dict]:
+    """La MD corta de BioQL (`openmm_md_engine.run_short_md_trajectory`): NO devuelve coordenadas.
+
+    Se busco una trayectoria que reproducir y no la hay. Lo que la funcion devuelve es `per_frame_dg_kcal` — una
+    MM-GBSA por fotograma — con su media, su desviacion y el reparto por replicas. Asi que no se dibuja una
+    pelicula: se dibuja lo unico que esos numeros pueden contestar, que es **si convergio**.
+
+    Y una cosa que no se puede dibujar mal. Los fotogramas vienen de REPLICAS INDEPENDIENTES (`replica_detail`),
+    no de una trayectoria seguida: unirlos en una sola linea de tiempo diria que la simulacion avanzo 30 ps cuando
+    fueron tres de 10 ps que ni se conocen. El eje es el numero de fotograma, las fronteras entre replicas van
+    marcadas, y la media corriente — que es la señal de convergencia de verdad — va encima.
+
+    El descargo de responsabilidad del motor viaja con el bloque, visible. Dice que esto NO es un resultado de
+    energia libre convergido y que la desviacion es una cota inferior honesta, no una barra de error completa.
+    Eso es exactamente lo que alguien que mira una media bonita necesita leer en el mismo sitio.
+    """
+    holders = _dicts_with(payload, "per_frame_dg_kcal")
+    out: list[dict] = []
+    for path, holder in holders:
+        raw = holder.get("per_frame_dg_kcal")
+        if not isinstance(raw, list) or not raw:
+            continue
+        here = f"{path}.per_frame_dg_kcal" if path else "per_frame_dg_kcal"
+        dgs = [float(v) for v in raw if _numeric(v) and not _bad_number(v)]
+        dropped = len(raw) - len(dgs)
+        if len(dgs) < 2:
+            out.append({"type": "absent", "what": here,
+                        "why": f"{len(dgs)} fotograma(s) utilizable(s) de {len(raw)}: hacen falta dos para "
+                               f"decir nada sobre convergencia"})
+            consumed.add(here)
+            continue
+        run, acc = [], 0.0
+        for i, v in enumerate(dgs):
+            acc += v
+            run.append(round(acc / (i + 1), 3))
+        reps = holder.get("replica_detail")
+        bounds, seen = [], 0
+        if isinstance(reps, list):
+            for r in reps[:-1]:
+                n = r.get("n_frames") if isinstance(r, dict) else None
+                if isinstance(n, int) and n > 0:
+                    seen += n
+                    if 0 < seen < len(dgs):
+                        bounds.append(seen)
+        block = {
+            "type": "converge", "source": here, "unit": "kcal/mol",
+            "points": [[i, round(v, 3)] for i, v in enumerate(dgs)],
+            "running": [[i, v] for i, v in enumerate(run)],
+            "boundaries": bounds,
+            "x_label": "fotograma",
+            "y_label": holder.get("method") or "MM-GBSA ΔG",
+        }
+        for key in ("dg_mean_kcal", "dg_std_kcal"):
+            v = holder.get(key)
+            if _numeric(v) and not _bad_number(v):
+                block[key.replace("dg_", "").replace("_kcal", "")] = float(v)
+        ps = holder.get("frame_interval_ps")
+        if _numeric(ps) and not _bad_number(ps):
+            block["frame_interval_ps"] = float(ps)
+        out.append(block)
+        if dropped:
+            out.append({"type": "absent", "what": f"{here} (fotogramas sin numero)",
+                        "why": f"{dropped} de {len(raw)} no son un numero y no se dibujan: un hueco rellenado "
+                               f"con la media seria una muestra que nadie tomo"})
+        if bounds:
+            out.append(_text_block(
+                f"{len(bounds) + 1} replicas independientes, no una trayectoria seguida de "
+                f"{len(dgs)} fotogramas: las fronteras van marcadas y el eje es el fotograma, no el tiempo"))
+        if holder.get("stopped_early"):
+            out.append({"type": "absent", "what": f"{path or 'la simulacion'} (parada antes de tiempo)",
+                        "why": str(holder.get("stop_reason") or "el motor no dijo por que")[:400]})
+        note = holder.get("disclaimer")
+        if isinstance(note, str) and note.strip():
+            out.append(_text_block(note.strip()[:700], "lo que este numero NO es"))
+        consumed.add(here)
+    return out
+
+
 def _admet_blocks(payload: Any, consumed: set[str]) -> list[dict]:
     """BioQL's ADMET answer: `raw_predictions` is a flat object of TDC endpoints, and a missing endpoint is a null
     (or a `float("nan")`, which `bionics_bridge` writes) that must be DRAWN as absent with its reason."""
@@ -1002,6 +1081,7 @@ def card(payload: Any, tool: str | None = None, meta: dict | None = None) -> dic
         blocks += _chart_blocks(payload, consumed)
         blocks += _gates_blocks(payload, consumed)
         blocks += _radar_blocks(payload, consumed)
+        blocks += _md_ensemble_blocks(payload, consumed)
         blocks += _admet_blocks(payload, consumed)
         blocks += _catalogue_blocks(payload, consumed)
         blocks += _molecule_blocks(payload, consumed)

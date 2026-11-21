@@ -1978,6 +1978,80 @@ function seriesNode(b) {
   return box;
 }
 
+/** La convergencia de una MD corta. No es una película: `openmm_md_engine` no devuelve coordenadas, devuelve una
+ *  MM-GBSA por fotograma. Lo único que esos números pueden contestar es si convergió, y eso es lo que se dibuja.
+ *
+ *  Los puntos son los fotogramas; la línea es la MEDIA CORRIENTE, que es la señal de convergencia de verdad (si
+ *  se aplana, hay suficiente muestreo; si sigue derivando, no lo hay). La banda es media ± desviación. Y las
+ *  líneas de puntos verticales son las fronteras entre RÉPLICAS INDEPENDIENTES: unirlas en una sola línea de
+ *  tiempo diría que la simulación avanzó 30 ps cuando fueron tres de 10 ps que ni se conocen.
+ */
+function convergeNode(b) {
+  const pts = (b.points || []).filter((p) => p && isFinite(p[0]) && isFinite(p[1]));
+  const run = (b.running || []).filter((p) => p && isFinite(p[0]) && isFinite(p[1]));
+  const box = el("div", "chart");
+  const unit = b.unit || "";
+  box.appendChild(el("div", "chart-title",
+    (b.y_label || "ΔG") + (unit ? " (" + unit + ")" : "") + " / " + (b.x_label || "fotograma")));
+  if (pts.length < 2) {
+    box.appendChild(el("p", "fine", pts.length + " fotograma(s): hacen falta dos"));
+    return box;
+  }
+  const W = 560, H = 230, L = 58, R = 14, T = 14, B = 34;
+  const xs = pts.map((p) => p[0]);
+  const all = pts.map((p) => p[1]).concat(run.map((p) => p[1]));
+  const hasBand = isFinite(b.mean) && isFinite(b.std);
+  if (hasBand) { all.push(b.mean - b.std, b.mean + b.std); }
+  const x0 = Math.min(...xs), x1 = Math.max(...xs);
+  let y0 = Math.min(...all), y1 = Math.max(...all);
+  if (y0 === y1) { y0 -= 0.5; y1 += 0.5; }
+  const pad = (y1 - y0) * 0.08;
+  y0 -= pad; y1 += pad;
+  const sx = (v) => L + ((v - x0) / (x1 - x0 || 1)) * (W - L - R);
+  const sy = (v) => H - B - ((v - y0) / (y1 - y0)) * (H - T - B);
+
+  const svg = svgEl("svg", { class: "chart-svg", viewBox: `0 0 ${W} ${H}`, role: "img",
+    "aria-label": `convergencia de ${pts.length} fotogramas de ${b.y_label || "ΔG"}` });
+
+  if (hasBand) {
+    svg.appendChild(svgEl("rect", { class: "ch-band", x: L, y: sy(b.mean + b.std),
+      width: W - L - R, height: Math.max(1, sy(b.mean - b.std) - sy(b.mean + b.std)) }));
+    svg.appendChild(svgEl("line", { class: "ch-mean", x1: L, x2: W - R, y1: sy(b.mean), y2: sy(b.mean) }));
+  }
+  niceTicks(y0, y1, 4).forEach((v) => {
+    svg.appendChild(svgEl("line", { class: "ch-grid", x1: L, x2: W - R, y1: sy(v), y2: sy(v) }));
+    const tx = svgEl("text", { class: "ch-tick", x: L - 6, y: sy(v) + 4, "text-anchor": "end" });
+    tx.textContent = fmtNum(v);
+    svg.appendChild(tx);
+  });
+  // Las fronteras, antes que los datos, para que queden detrás.
+  (b.boundaries || []).forEach((k) => {
+    if (!isFinite(k)) return;
+    svg.appendChild(svgEl("line", { class: "ch-split", x1: sx(k - 0.5), x2: sx(k - 0.5), y1: T, y2: H - B }));
+  });
+  [x0, x1].forEach((v, i) => {
+    const tx = svgEl("text", { class: "ch-tick", x: sx(v), y: H - 12, "text-anchor": i ? "end" : "start" });
+    tx.textContent = fmtNum(v);
+    svg.appendChild(tx);
+  });
+  pts.slice(0, 400).forEach((p) =>
+    svg.appendChild(svgEl("circle", { class: "ch-dot frame", cx: sx(p[0]), cy: sy(p[1]), r: 2.2 })));
+  if (run.length > 1) {
+    svg.appendChild(svgEl("path", { class: "ch-line",
+      d: run.map((p, i) => (i ? "L" : "M") + sx(p[0]).toFixed(1) + " " + sy(p[1]).toFixed(1)).join(" "),
+      fill: "none" }));
+  }
+  box.appendChild(svg);
+
+  const bits = [`${pts.length} fotogramas`];
+  if (hasBand) bits.push(`media ${fmtNum(b.mean)} ± ${fmtNum(b.std)} ${unit}`.trim());
+  if ((b.boundaries || []).length) bits.push(`${b.boundaries.length + 1} réplicas (líneas de puntos)`);
+  if (isFinite(b.frame_interval_ps)) bits.push(`1 fotograma cada ${fmtNum(b.frame_interval_ps)} ps`);
+  bits.push("la línea es la media corriente: si se aplana, convergió");
+  box.appendChild(el("p", "fine", bits.join(" · ")));
+  return box;
+}
+
 /** El radar de ADMET, con los ejes y la escala 0..1 de `ADMETRadarChart.tsx` — su rama `radar_summary`, la que su
     propio comentario llama "quantum-computed, not heuristic". Un eje que BioQL no dio se dibuja como radio sin
     vertice: el poligono se cierra solo entre lo medido, porque una figura rellena con valores por defecto se lee
@@ -2137,6 +2211,8 @@ function cardNode(card) {
       body.appendChild(structureNode(b));
     } else if (b.type === "series") {
       body.appendChild(seriesNode(b));
+    } else if (b.type === "converge") {
+      body.appendChild(convergeNode(b));
     } else if (b.type === "radar") {
       body.appendChild(radarNode(b));
     } else if (b.type === "chart_image") {
