@@ -1,18 +1,24 @@
-"""Donde BioQL es flojo, Claude completa — y la costura se tiene que ver.
+"""Donde BioQL es flojo, se completa — y no se marca quién.
 
-El encargo es que la app dé un resultado que ninguna de las dos partes da sola. La línea está en un sitio que
-este proyecto ya cruzó una vez: envió **tres dosis distintas — 51,2, 49,3 y 48,8 mg — para la misma entrada**
-porque un valor plausible se puso donde se leía una medida (CLAUDE.md, trampas de 2026-09-18).
+El encargo es que la app dé un resultado que ninguna de las dos partes da sola, y que se lea como UNO. El dueño
+lo pidió así el 2026-11-21: «no quiero etiquetas de que hizo Claude, no hace falta que se muestren los resultados
+sin importar quién lo hizo». Así que de la pantalla se fue la marca de autor — y NO se fue la fuente.
 
-Así que los huecos de BioQL no son todos iguales, y la diferencia la dice el propio BioQL en su razón:
+Esa distinción es la que sostiene todo lo demás. Este proyecto envió una vez **tres dosis distintas — 51,2, 49,3
+y 48,8 mg — para la misma entrada** porque un valor plausible se puso donde se leía una medida (CLAUDE.md,
+trampas de 2026-09-18). Lo que separa esos dos casos no es una etiqueta que diga quién puso el número: es que el
+número diga DE DÓNDE SALE. `basis` sigue siendo obligatorio y sin él se refusa; lo que ya no existe es el cartel.
+
+Y los huecos de BioQL siguen sin ser todos iguales, porque la diferencia la dice el propio BioQL en su razón:
 
 - **le falta una ENTRADA** (`need receptor sequence to fold the complex`, `No module named ...`): BioQL sabe
   calcularlo. Eso no se rellena, se CIERRA — se consigue el dato y se vuelve a llamar, y el número que sale es
   suyo y medido. Es lo más valioso que Claude puede hacer aquí.
 - **no tiene MODELO** (`no validated per-molecule dose model`): BioQL se niega a propósito. Ahí cabe
-  conocimiento externo, en su propio bloque, con su base y con lo que NO es.
+  conocimiento externo, con su fuente, dentro de la misma respuesta.
 
-`basis` es obligatorio y sin él se refusa. Esa es la única regla que separa un aporte de un número inventado.
+El bloque sigue siendo un tipo PROPIO en los datos, y eso tampoco es decoración: así no puede caer en `facts` ni
+entrar en una puntuación. Esa separación es estructural y no se ve — que es justo lo que se pidió.
 """
 from __future__ import annotations
 
@@ -93,17 +99,29 @@ def test_un_aporte_con_base_queda_en_el_registro_firmado(studio_home):
     assert mia[-1]["by"] == "claude", "no se sabría de quién fue"
 
 
-def test_sin_not_a_se_pone_uno_que_no_miente(studio_home):
+def test_sin_alcance_declarado_la_app_no_escribe_una_frase(studio_home):
+    """El defecto anterior: a falta de `not_a` la app ponía «no es una medida de BioQL», que es a la vez una
+    frase que nadie escribió y una marca de autor. No hay defecto: si no se dice el alcance, no se dibuja nada."""
     args = {k: v for k, v in BUENO.items() if k != "not_a"}
     out = claude_tools.handle("studio_contribute", args, None)
     b = [x for x in out["card"]["blocks"] if x["type"] == "contributed"][0]
-    assert b["not_a"] == "no es una medida de BioQL"
+    assert "not_a" not in b
 
 
-def test_el_hueco_que_contesta_viaja_con_el(studio_home):
+def test_el_hueco_que_contesta_va_al_registro_y_no_encima_de_su_respuesta(studio_home):
+    """Repetir «BioQL no predice esto» justo encima del valor que lo contesta es contradecirse en dos líneas. El
+    hueco ya sale en la tarjeta del resultado; aquí vive en el registro, que es donde sirve para auditar."""
     out = claude_tools.handle("studio_contribute", dict(BUENO), None)
-    aus = [x for x in out["card"]["blocks"] if x["type"] == "absent"]
-    assert aus and "no validated per-molecule model" in aus[0]["why"]
+    assert not [x for x in out["card"]["blocks"] if x["type"] == "absent"]
+    filas = [json.loads(l) for l in ledger.path_file().read_text().splitlines() if l.strip()]
+    mio = [f for f in filas if f.get("tool") == "studio_contribute"][-1]
+    assert "no validated per-molecule model" in mio["contribution"]["about_gap"]
+
+
+def test_la_tarjeta_se_llama_por_lo_que_es(studio_home):
+    out = claude_tools.handle("studio_contribute", dict(BUENO), None)
+    assert out["card"]["title"] == BUENO["what"]
+    assert "Claude" not in json.dumps(out["card"], ensure_ascii=False)
 
 
 # ------------------------------------------------------------------ no puede confundirse con una medida
@@ -119,13 +137,24 @@ def test_un_aporte_es_su_propio_tipo_de_bloque_y_no_una_fila():
     assert "rows" not in b and "value" in b
 
 
-def test_la_ventana_lo_marca_y_dice_que_no_es():
+def test_la_ventana_no_dice_de_quien_es_pero_si_de_donde_sale():
+    """EL test del encargo nuevo. Integrado significa que no se pueda señalar: las mismas clases que una fila de
+    datos cualquiera, y debajo la fuente."""
     assert 'b.type === "contributed"' in JS
-    assert "aporta Claude" in JS
-    assert "no es una medida de BioQL" in JS
     i = JS.index('b.type === "contributed"')
-    cuerpo = JS[i:i + 1400]
-    assert "contrib-b" in cuerpo and "sobre: " in cuerpo, "no se dibuja de dónde sale"
+    cuerpo = JS[i:i + 1600]
+    assert '"crow-k"' in cuerpo and '"crow-v"' in cuerpo, "no se dibuja como una fila"
+    assert "fuente: " in cuerpo, "no se dibuja de dónde sale"
+
+
+def test_la_fila_no_lleva_borde_ni_cartel_propio():
+    """Un recuadro que sólo le toca a estos valores sigue siendo una marca, aunque no diga nada."""
+    css = (RAIZ / "app" / "web" / "app.css").read_text()
+    i = css.index(".crow {")
+    bloque = css[i:i + 500]
+    assert "border" not in bloque and "dashed" not in bloque
+    # y las medidas son las de `.fact`, no unas propias
+    assert "font-size: 10.5px" in bloque and "font-size: 14px" in bloque
 
 
 def test_un_hueco_cerrable_se_dibuja_distinto_del_que_no():
@@ -139,7 +168,8 @@ def test_el_prompt_distingue_cerrar_un_hueco_de_rellenarlo():
     plano = " ".join(brain.SYSTEM.split())
     assert "missing an INPUT is not a dead end: close it" in plano
     assert "CALL BIOQL AGAIN" in plano
-    assert "no MODEL behind it is where you contribute, labelled" in plano
+    assert "no MODEL behind it is where the rest of what you know belongs" in plano
+    assert "Do not announce it, do not frame it as yours" in plano
 
 
 def test_el_prompt_nombra_el_incidente_que_justifica_la_regla():
@@ -147,4 +177,5 @@ def test_el_prompt_nombra_el_incidente_que_justifica_la_regla():
     from studio import brain
     plano = " ".join(brain.SYSTEM.split())
     assert "51.2, 49.3 and 48.8 mg" in plano
-    assert "never let one read like a measurement" in plano
+    assert "Never overwrite a number BioQL computed" in plano
+    assert "a citation is what tells those apart" in plano

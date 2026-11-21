@@ -889,6 +889,88 @@ def _gates_blocks(payload: Any, consumed: set[str]) -> list[dict]:
             break
     return out
 
+# Cuánto se puede creer el plegado que se acaba de dibujar. BioQL lo dice y hasta ahora no se veía.
+#
+# Medido en las corridas reales de esta máquina: `.structure_3d` es
+# `{method, sequence, length_aa, plddt, pdb, boltz2_crosscheck, payload_pdb_esmfold, display_note}` — es decir, la
+# confianza es HERMANA del texto de la estructura — y los nodos `protenix_structure` traen `plddt`, `ptm` e `iptm`
+# sueltos y repetidos dentro de un `confidence`. Un payload de los grandes tiene 175 de estos escalares.
+#
+# Importa porque un pLDDT de 75 no es un detalle de catálogo: el esqueleto está bien y los bucles y las cadenas
+# laterales no, así que un acople dentro de un bucle de esa estructura no quiere decir nada. Quien mira una
+# proteína dibujada necesita ese número AL LADO, no en la fila 180.
+#
+# Las bandas son las publicadas, no unas inventadas aquí: pLDDT 90/70/50 es la escala de AlphaFold DB, e ipTM
+# 0,8/0,6 la de AlphaFold-Multimer. La palabra describe la banda; no dice nada de esta molécula en concreto.
+CONF_KEYS = {"plddt": "pLDDT", "mean_plddt": "pLDDT", "plddt_mean": "pLDDT",
+             "ptm": "pTM", "ptm_score": "pTM", "iptm": "ipTM", "iptm_score": "ipTM"}
+
+
+def _conf_band(kind: str, v: float) -> tuple[str, str] | None:
+    """(palabra, tono) para un valor en su escala, o None cuando la escala no está clara.
+
+    El `None` es la regla de los tres estados aplicada a una escala: un `plddt` de 0,75 puede ser 0,75 sobre 1
+    (bueno) o 0,75 sobre 100 (catastrófico) y el payload no lo dice. Entonces se enseña el número desnudo, que es
+    el dato, y no una palabra que puede estar del revés.
+    """
+    if kind == "pLDDT":
+        if v <= 1.0:
+            return None                                   # escala ambigua: 0-1 o un 0,75 sobre 100
+        if v >= 90:
+            return "muy alta", "clean"
+        if v >= 70:
+            # Verde sólo por encima de 90. Entre 70 y 90 AlphaFold dice "confident", que significa esqueleto
+            # correcto y bucles y cadenas laterales no: un acople en un bucle de aquí no quiere decir nada, así
+            # que la ventana no lo pinta de verde.
+            return "alta sólo en el esqueleto", "neutral"
+        if v >= 50:
+            return "baja: bucles no fiables", "concerns"
+        return "no fiable", "bad"
+    if kind == "ipTM":
+        if v > 1.0:
+            return None
+        if v >= 0.8:
+            return "interfaz fiable", "clean"
+        if v >= 0.6:
+            return "interfaz incierta", "concerns"
+        return "interfaz probablemente mal", "bad"
+    if kind == "pTM":
+        if v > 1.0:
+            return None
+        return ("plegado global correcto", "clean") if v >= 0.5 else ("plegado global dudoso", "concerns")
+    return None
+
+
+def _confidence_of(payload: Any, stem: str, consumed: set[str]) -> list[dict]:
+    """Lo que el payload dice sobre la estructura de `stem`: hermana directa, o dentro de su `confidence`.
+
+    Las dos rutas no se escriben igual y eso ya ha costado tiempo en este fichero: `_walk` (y por tanto
+    `consumed`) numera las listas como `candidates[0].x`, y `_at` las lee como `candidates.0.x`. Se marca
+    consumida la primera y se busca por la segunda.
+    """
+    if not stem:
+        # La estructura cuelga de la raíz, así que no tiene hermanas: un `iptm` suelto en el primer nivel del
+        # payload está en el mismo sitio, no es SOBRE ella. Medido: en la corrida 9a261d5c el `mol_3d` de la raíz
+        # se habría llevado un ipTM de 0,566 que es de un complejo de proteína — una etiqueta del revés.
+        return []
+    out: list[dict] = []
+    vistos: set[str] = set()
+    for sufijo in ("", ".confidence"):
+        for clave, kind in CONF_KEYS.items():
+            ruta = f"{stem}{sufijo}.{clave}" if stem else f"{clave}"
+            v = _at(payload, ruta.replace("[", ".").replace("]", ""))
+            if not isinstance(v, (int, float)) or isinstance(v, bool) or kind in vistos:
+                continue
+            vistos.add(kind)
+            consumed.add(ruta)
+            d: dict = {"kind": kind, "value": float(v), "where": ruta}
+            banda = _conf_band(kind, float(v))
+            if banda:
+                d["word"], d["tone"] = banda
+            out.append(d)
+    return out
+
+
 def _structure_blocks(payload: Any, consumed: set[str]) -> list[dict]:
     """The 3D structure, whole. One block, carrying every part of the SAME structure — a ligand and the protein it
     sits in are one picture, which is what BioQL's own viewer is given.
@@ -924,6 +1006,12 @@ def _structure_blocks(payload: Any, consumed: set[str]) -> list[dict]:
         carried.append({"role": role, "format": fmt, "data": text, "path": path, "bytes": len(text)})
     if carried:
         block: dict = {"type": "molecule3d", "parts": carried, "label": stem or first}
+        # pLDDT, pTM e ipTM son métricas de un PLEGADO. Una tabla de SDF no se pliega, así que sólo se buscan
+        # cuando lo que se dibuja incluye una macromolécula (el formato lo dice: pdb o cif).
+        macro = any(c["format"] in ("pdb", "cif") for c in carried)
+        conf = _confidence_of(payload, stem, consumed) if macro else []
+        if conf:
+            block["confidence"] = conf
         only = [c for c in carried if c["format"] == "sdf"]
         if len(carried) == 1 and only:
             block["sdf"] = only[0]["data"]          # the one-SDF shape this block had before it carried parts

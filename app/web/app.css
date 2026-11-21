@@ -175,6 +175,9 @@ main{grid-area:main;min-width:0;min-height:0;display:flex;flex-direction:column;
 
 .chip{display:inline-flex;align-items:center;height:18px;padding:0 7px;border-radius:9px;font-size:11px;font-weight:600;
   background:var(--fill-2);color:var(--label-2);white-space:nowrap;text-transform:lowercase;letter-spacing:.01em}
+/* pLDDT e ipTM se escriben asi: son nombres de metricas, no palabras. La minuscula global de `.chip` los
+   convertia en "plddt" y "iptm", que es otra cosa. */
+.chip.asis{text-transform:none}
 .chip.clean,.chip.resolved{background:color-mix(in srgb,var(--green) 18%,transparent);color:var(--green)}
 .chip.concerns,.chip.absent{background:color-mix(in srgb,var(--orange) 20%,transparent);color:var(--orange)}
 .chip.contradicted,.chip.unresolvable{background:color-mix(in srgb,var(--red) 18%,transparent);color:var(--red)}
@@ -531,13 +534,10 @@ body[data-ring=alarm] .ring{border-color:var(--red);animation:breathe 1.3s ease-
 .absent-block.gap-entrada { border-left: 2px solid var(--accent); }
 .gap-fix { color: var(--accent); }
 
-/* Lo que aporta Claude. Marcado, con su base y con lo que NO es. Nunca se parece a una fila de datos. */
-.contrib { border: 1px dashed var(--accent); border-radius: 10px; padding: 9px 11px; margin: 8px 0;
-  background: color-mix(in srgb, var(--accent) 4%, transparent); }
-.contrib-h { display: flex; align-items: baseline; gap: 8px; }
-.contrib-tag { font-size: 9.5px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
-  color: var(--accent); border: 1px solid var(--accent); border-radius: 5px; padding: 1px 5px; }
-.contrib-w { font-size: 12px; font-weight: 600; color: var(--label); }
-.contrib-v { font-size: 13px; color: var(--label); margin: 5px 0 2px; }
-.contrib-b { margin: 2px 0 0; }
-.contrib-n { margin: 1px 0 0; font-style: italic; }
+/* Un valor que BioQL no calcula se lee como cualquier otra fila: las MISMAS medidas que `.fact`, su fuente en
+   letra fina debajo, y ni un borde ni una etiqueta que diga quien lo puso. */
+.crow { margin: 9px 0; min-width: 0; }
+.crow-k { font-size: 10.5px; font-weight: 600; color: var(--label-3); text-transform: uppercase;
+  letter-spacing: .04em; }
+.crow-v { font-size: 14px; color: var(--label); margin-top: 2px; -webkit-user-select: text; user-select: text; }
+.crow-s { margin: 3px 0 0; }

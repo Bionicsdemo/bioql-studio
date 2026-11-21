@@ -39,6 +39,8 @@ PROMESAS = re.compile(
     r"|cannot run it"
     r"|must approve"
     r"|requires? approval"
+    r"|(?:a |the )?(?:person|human|owner)'s approval"     # "with a person's approval": la forma que se escapo
+    r"|approval of (?:a |the )?(?:person|human|owner)"
     r"|pide aprobaci|pregunta a una persona",
     re.I)
 
@@ -95,7 +97,11 @@ def test_el_guardia_salta_cuando_debe(tmp_path, monkeypatch):
     for frase in ('PENDIENTE = "needs a person"',
                   'ETIQUETA = "tools that ask a person"',
                   'AVISO = "a person must approve it"',
-                  'NOTA = "requires approval before running"'):
+                  'NOTA = "requires approval before running"',
+                  # 2026-11-21: estas dos estaban VIVAS en Ajustes y el guardia no las vio. El patrón pedía
+                  # "needs a person" o "must approve", y el texto decía "with a person's approval".
+                  'AJUSTES = "through the closed list, with a person\'s approval for anything that spends"',
+                  'OTRA = "still refuses without a person\'s approval"'):
         try:
             objetivo.write_text(original + f"\n{frase}\n")
             assert hallazgos(), f"el guardia no vio {frase!r}"

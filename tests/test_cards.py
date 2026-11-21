@@ -93,10 +93,11 @@ def leaves(o, path=""):
 
 
 ALLOWED = {"facts": {"rows"}, "table": {"columns", "rows"}, "molecule2d": {"png_base64", "smiles"},
-           "molecule3d": {"sdf", "parts", "label"}, "radar": {"axes", "source", "max"}, "series": {"x_label", "y_label", "points"}, "text": {"text"},
+           "molecule3d": {"sdf", "parts", "label", "confidence"}, "radar": {"axes", "source", "max"}, "series": {"x_label", "y_label", "points"}, "text": {"text"},
            "links": {"items"}, "absent": {"what", "why", "gap", "fix"},
-           # Lo que aporta Claude donde BioQL no llega. Tipo PROPIO a proposito: no puede caer en una
-           # fila de `facts` ni en una puntuacion, y lleva siempre de donde sale y que NO es.
+           # Un valor que BioQL no calcula. Tipo PROPIO a proposito: asi no puede caer en una fila de
+           # `facts` ni en una puntuacion. En pantalla se dibuja como una fila mas, con su fuente y sin
+           # marca de quien lo puso (tests/test_sin_firma.py).
            "contributed": {"what", "value", "basis", "not_a"},
            "chart_image": {"png_base64", "title", "url"},
            # `converge` se añadió el 2026-11-20 y no entró aquí: el contrato lo habría dejado pasar con
@@ -587,7 +588,12 @@ def test_the_real_pdb_keys_are_recognised_and_capped():
     # entera: una estructura recortada es otra molecula
     assert b["parts"][0]["data"] == pdb and b["parts"][0]["bytes"] == len(pdb)
     rows = {r["label"]: r for b in blocks_of(spec, "facts") for r in b["rows"]}
-    assert rows["structure_3d.plddt"]["value"] == 91.2 and rows["structure_3d.length_aa"]["unit"] == "aa"
+    # El pLDDT ya NO es una fila: se dibuja en el chip de la estructura, al lado de lo que califica, y una fila
+    # con el mismo numero debajo seria el dato dos veces. Lo demas del nodo sigue siendo fila.
+    assert "structure_3d.plddt" not in rows, "el pLDDT sale dos veces"
+    assert rows["structure_3d.length_aa"]["unit"] == "aa"
+    assert b["confidence"] == [{"kind": "pLDDT", "value": 91.2, "where": "structure_3d.plddt",
+                                "word": "muy alta", "tone": "clean"}]
     check_schema(spec)
 
 

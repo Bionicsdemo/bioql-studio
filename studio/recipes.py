@@ -112,7 +112,7 @@ BUILTIN: list[dict] = [
     {"id": "weekly_digest", "title": "Weekly findings digest",
      "ask": "Summarise the week from the signed notebook and the usage meter: every campaign run, its verdict, the "
             "findings the verifier raised, what each campaign cost (saying for each price whether it is a charge or "
-            "a measure at API rates), and what is still pending a person's approval. Report a token or cost the "
+            "a measure at API rates), and what the spend added up to. Report a token or cost the "
             "engine did not report as not reported, never as zero. End with what did not happen: runs refused, "
             "schedules that stayed pending, and why.",
      "uses": [], "needs": [],

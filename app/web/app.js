@@ -1566,10 +1566,14 @@ async function drawSettings(box) {
     "the allowlist, so nothing here can reach one."));
   box.appendChild(el("p", "fine", "Studio never writes inside BioQL's folders. The Guard section compares the " +
     "baseline this app took when it opened against a reading you take, and names every file that moved."));
+  // La puerta de aprobacion se quito del codigo el 2026-11-20 y esta frase seguia prometiendola, viva, en
+  // Ajustes. El guardia de test_nada_promete_una_puerta.py no la vio porque decia "with a person's approval" y
+  // su patron pedia "needs a person" o "must approve": el patron se amplio con esta forma y con la de abajo.
   box.appendChild(el("p", "fine", "Chat sends every turn to that brain, started with Studio's own MCP config, so " +
-    "Claude is what decides which of BioQL's entries to call — through the closed list, with a person's approval " +
-    "for anything that spends, and one line on the record per call. There is nothing to open and nothing to " +
-    "sign in to here: Claude Code owns that login and Studio holds no Anthropic credential."));
+    "the chat is what decides which of BioQL's entries to call — through the closed list, with what each entry " +
+    "costs written on it, and one line on the record per call. The spend limits live in BioQL's own server, not " +
+    "here. There is nothing to open and nothing to sign in to here: Claude Code owns that login and Studio " +
+    "holds no Anthropic credential."));
 
   // The same brain, reachable from the Claude clients already open on this Mac. This REPORTS; it does not
   // register — writing into a client's MCP config changes that client for every session its owner opens, which is
@@ -1582,10 +1586,11 @@ async function drawSettings(box) {
              c.state === "REGISTERED" ? "clean" : (c.state === "UNRESOLVABLE" ? "bad" : "plain")),
         c.detail])));
     box.appendChild(el("p", "fine", "Registered, BioQL is there in whatever Claude you already have open. What " +
-      "that widens: any Claude session running as you can call BioQL's read-only entries without this window. " +
-      "What it does NOT widen: anything that spends compute or could reach real hardware still refuses without a " +
-      "person's approval, and every call is still one line on the signed record. To change it, run this yourself " +
-      "— it edits those clients' own files, and copies each aside first. `--remove` undoes it."));
+      "that widens: any session running as you can call BioQL's read-only entries without this window. What it " +
+      "does NOT widen: an entry that spends compute or could reach real hardware is marked as such, every call " +
+      "is still one line on the signed record, and what it may spend is BioQL's own server's to limit. To " +
+      "change it, run this yourself — it edits those clients' own files, and copies each aside first. " +
+      "`--remove` undoes it."));
     box.appendChild(el("p", "cmd", conn.command || "python3 -m studio connect"));
   }
 
@@ -1782,6 +1787,22 @@ function structureNode(b) {
   const box = el("div", "mol3d");
   const head = el("div", "mol3d-head");
   parts.forEach((p) => head.appendChild(chip(p.role + " · " + p.format, "neutral")));
+  // Cuánto se puede creer este plegado. Es el número de BioQL y hasta ahora se quedaba en la fila 180.
+  //
+  // Importa más que casi cualquier otra cosa de esta tarjeta: con pLDDT 75 el esqueleto está bien y los bucles y
+  // las cadenas laterales no, así que un acople metido en un bucle de esta estructura no dice nada. Y con ipTM
+  // 0,57 la interfaz que se está mirando probablemente no es la real. La palabra es la de la banda publicada
+  // (AlphaFold DB para pLDDT, AlphaFold-Multimer para ipTM); el número es el que trajo el motor.
+  (b.confidence || []).forEach((c) => {
+    if (!c || !isFinite(c.value)) return;
+    const n = c.kind === "pLDDT" ? c.value.toFixed(1) : c.value.toFixed(3);
+    const ch = chip(c.kind + " " + n + (c.word ? " · " + c.word : " · escala no declarada"),
+                    c.tone || "neutral");
+    ch.classList.add("asis");                   // pLDDT, no "plddt": es el nombre de la métrica
+    ch.title = "BioQL lo trae en " + (c.where || "el resultado")
+             + (c.word ? "" : " — el payload no dice en qué escala, así que va el número desnudo");
+    head.appendChild(ch);
+  });
   box.appendChild(head);
   if (!parts.length) return box;
 
@@ -1987,9 +2008,45 @@ function structureNode(b) {
             return;
           }
           const bolsillo = { model: prot, resi: [...resi] };
-          viewer.addSurface($.SurfaceType.SAS, { opacity: 0.85, color: "wheat" }, bolsillo);
+          // 0,55 y no 0,85: con la superficie casi opaca los contactos quedan DENTRO y no se ven — comprobado
+          // en una captura del motor real. Una medida que se dibuja y no se puede mirar no está dibujada.
+          viewer.addSurface($.SurfaceType.SAS, { opacity: 0.55, color: "wheat" }, bolsillo);
           viewer.zoomTo(bolsillo);
-          note.textContent = `${resi.size} residuo(s) a 8 Å del ligando`;
+
+          // Los contactos polares, de la misma geometría. Una superficie dice si el ligando ENTRA; esto dice si
+          // además TOCA algo — que es la pregunta siguiente de cualquiera que mire un acople.
+          //
+          // Se llaman contactos polares y no puentes de hidrógeno a propósito: sin hidrógenos no hay ángulo
+          // donante-aceptor que medir, y llamarlo puente sería afirmar más de lo que estas coordenadas sostienen.
+          // El corte son 3,5 Å entre N/O y N/O, que es el que usa PyMOL para su `polar_contacts`.
+          const pol = (a) => a.elem === "N" || a.elem === "O" || a.elem === "n" || a.elem === "o";
+          const PN = P.filter(pol), LN = L.filter(pol);
+          let pares = [];
+          for (const a of PN) {
+            for (const c of LN) {
+              const dx = a.x - c.x, dy = a.y - c.y, dz = a.z - c.z;
+              const d2 = dx * dx + dy * dy + dz * dz;
+              if (d2 < 12.25) pares.push([a, c, Math.sqrt(d2)]);
+            }
+          }
+          pares.sort((u, v) => u[2] - v[2]);
+          const DIBUJA = 24;                 // más que esto es una maraña y deja de informar
+          pares.slice(0, DIBUJA).forEach(([a, c]) => {
+            viewer.addCylinder({ start: { x: a.x, y: a.y, z: a.z }, end: { x: c.x, y: c.y, z: c.z },
+                                 radius: 0.045, dashed: true, fromCap: 1, toCap: 1, color: "#1e6fd9" });
+          });
+          // Los residuos que de verdad tocan, en varillas. Sólo ésos: las 51 del bolsillo entero serían una
+          // maraña, y lo que se quiere ver es qué toca el ligando.
+          const tocan = [...new Set(pares.slice(0, DIBUJA).map(([a]) => a.resi))];
+          if (tocan.length) viewer.setStyle({ model: prot, resi: tocan },
+                                            { cartoon: { color: "spectrum" }, stick: { radius: 0.12 } });
+          const corto = pares.length ? " · el más corto " + pares[0][2].toFixed(2) + " Å" : "";
+          note.textContent = `${resi.size} residuo(s) a 8 Å del ligando · `
+            + (pares.length
+                ? `${pares.length} contacto(s) polar(es) N/O a ≤3,5 Å${corto}`
+                  + (pares.length > DIBUJA ? ` (dibujados los ${DIBUJA} más cortos)` : "")
+                  + " — sin hidrógenos: no son puentes de hidrógeno medidos"
+                : "ningún N/O a 3,5 Å: el ligando entra y no toca nada polar");
         });
       }
       if (modos.children.length > 1) head.appendChild(modos);
@@ -2460,20 +2517,18 @@ function cardNode(card) {
       }
       body.appendChild(p);
     } else if (b.type === "contributed") {
-      // Lo que aporta Claude donde BioQL no llega.
+      // Un valor que BioQL no calcula, dentro de la MISMA respuesta: se dibuja con las clases de una fila de
+      // datos cualquiera, y lo unico que lleva debajo es su fuente.
       //
-      // Va en su propio bloque y con su propia marca, y eso NO es decoración: este proyecto ya envió una vez
-      // tres dosis distintas (51,2 / 49,3 / 48,8 mg) para la misma molécula porque un número inventado se
-      // coló donde se leía una medida. Un aporte lleva siempre de dónde sale y qué NO es, y no puede caer en
-      // una fila de datos ni en una puntuación: es otro tipo de bloque.
-      const c = el("div", "contrib");
-      const h = el("div", "contrib-h");
-      h.appendChild(el("span", "contrib-tag", "aporta Claude"));
-      h.appendChild(el("span", "contrib-w", b.what || ""));
-      c.appendChild(h);
-      if (b.value) c.appendChild(el("div", "contrib-v", String(b.value)));
-      if (b.basis) c.appendChild(el("p", "fine contrib-b", "sobre: " + b.basis));
-      c.appendChild(el("p", "fine contrib-n", b.not_a || "no es una medida de BioQL"));
+      // El tipo de bloque sigue siendo propio, y eso no es decoracion: asi no puede caer en `facts` ni entrar en
+      // una puntuacion, que es exactamente como este proyecto envio una vez tres dosis distintas (51,2 / 49,3 /
+      // 48,8 mg) para la misma molecula. Lo que NO lleva es marca de quien lo puso: lo que hace fiable un numero
+      // es decir de donde sale, no de quien.
+      const c = el("div", "crow");
+      if (b.what) c.appendChild(el("div", "crow-k", b.what));
+      if (b.value) c.appendChild(el("div", "crow-v", String(b.value)));
+      const pie = [b.basis ? "fuente: " + b.basis : "", b.not_a || ""].filter(Boolean).join(" · ");
+      if (pie) c.appendChild(el("p", "fine crow-s", pie));
       body.appendChild(c);
     } else if (b.type === "links") {
       const d = el("div", "row-head");
