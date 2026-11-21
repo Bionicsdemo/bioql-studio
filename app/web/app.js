@@ -335,9 +335,9 @@ async function drawState() {
     : "");
   $("stVer").className = "st" + (upState === "UNRESOLVABLE" ? " warn" : "");
   syncChips();
-  $("chatSub").textContent = `${body.calls} call(s) · ${body.refusals} refused · ${body.approvals} approved`;
+  $("chatSub").textContent = `${body.calls} call(s) · ${body.refusals} refused · ${body.spends} spent compute`;
   $("stateLine").textContent = `${body.calls} call(s) on the record · ${body.refusals} refused · ` +
-    `${body.approvals} approved` + (corriendo ? ` · ${corriendo} corriendo` : "");
+    `${body.spends} spent compute` + (corriendo ? ` · ${corriendo} corriendo` : "");
   if (corriendo) ring("busy");
   return body;
 }
@@ -375,8 +375,11 @@ async function loadTools() {
   const { code, body } = await api("/api/tools");
   if (code === 200) TOOLS = body.tools || [];
   const n = TOOLS.length;
-  const approval = TOOLS.filter((t) => t.approval).length;
-  $("stTools").querySelector("span").textContent = n ? `${n} tools · ${approval} ask first` : "";
+  // Decia "335 ask first". La puerta se quito el 2026-11-20 y la frase se quedo: la ventana anunciaba en el pie
+  // una negativa que ya no existia, en la pantalla del dueño. `approval` es ahora una ETIQUETA DE COSTE, asi que
+  // el pie dice lo que de verdad marca.
+  const costly = TOOLS.filter((t) => t.approval || t.kind === "compute" || t.kind === "hardware").length;
+  $("stTools").querySelector("span").textContent = n ? `${n} tools · ${costly} cost compute` : "";
   const em = document.querySelector('nav button[data-v=tools] em');
   if (em) em.textContent = n ? String(n) : "";
   return TOOLS;
@@ -1407,7 +1410,7 @@ async function drawUsage(box) {
   const st = lastState || {};
 
   const tiles = el("div", "tiles");
-  [["calls", st.calls], ["refused", st.refusals], ["approved", st.approvals],
+  [["calls", st.calls], ["refused", st.refusals], ["spent compute", st.spends],
    ["lines read", rows.length]].forEach(([k, v]) => {
     const t = el("div", "tile");
     t.appendChild(el("div", "tile-n", v === undefined || v === null ? "—" : String(v)));

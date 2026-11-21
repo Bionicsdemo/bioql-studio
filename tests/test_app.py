@@ -1150,3 +1150,49 @@ def test_the_window_shows_both_readings_where_they_disagree(studio_home):
     # and it must not poll: the only reading is the one a person presses
     assert "/api/manifest" in js
     assert js.count("/api/manifest") == 1
+
+
+# ------------------------------------------------------------------ el pie no anuncia una puerta que no existe
+def test_la_ventana_no_dice_ask_first_ni_cuenta_aprobaciones():
+    """El pie decía "502 tools · 335 ask first" DESPUÉS de quitar la puerta: la ventana anunciaba en la pantalla
+    del dueño una negativa que ya no existía. Es el mismo defecto que las descripciones MCP, en otro sitio.
+
+    Y "0 approved" era peor: `self.approvals` se inicializaba a 0 y no se incrementaba en NINGÚN sitio, así que
+    la cabecera del chat enseñaba un contador de un mecanismo retirado, congelado en cero para siempre.
+    """
+    js = (Path(__file__).resolve().parent.parent / "app" / "web" / "app.js").read_text()
+    for muerto in ("ask first", "approvals"):
+        vivas = [ln for ln in js.splitlines()
+                 if muerto in ln and not ln.strip().startswith("//")]
+        assert not vivas, f"la ventana vuelve a decir {muerto!r}: {vivas[:2]}"
+    assert "cost compute" in js, "el pie ya no dice qué marca el campo"
+
+
+def test_el_contador_de_gasto_se_mueve_de_verdad(studio_home, fake_bioql):
+    """Un contador que nunca cambia es un adorno. Éste sube cuando una entrada de CÓMPUTO corre, y la prueba es
+    que su valor cambia entre dos lecturas del mismo /api/state."""
+    caro = {"method": "POST", "path": "/api/slow", "kind": "compute", "approval": True, "why": "dos segundos"}
+    s = Svc(studio_home, fake_bioql, ents=entries(caro=caro))
+    try:
+        code, antes, _ = s.j("/api/state")
+        assert code == 200
+        assert "spends" in antes and "approvals" not in antes, "el estado sigue publicando el contador muerto"
+        assert antes["spends"] == 0
+
+        code, body, _ = s.j("/api/call", {"name": "caro", "args": {}})
+        assert code == 202, body                    # lo caro va al hilo y devuelve su id, como :3000
+        for _ in range(200):                        # `_run` corre en su propio hilo
+            time.sleep(0.05)
+            if s.j("/api/state")[1]["spends"]:
+                break
+        assert s.j("/api/state")[1]["spends"] == 1, "una llamada de cómputo no movió el contador"
+    finally:
+        s.stop()
+
+
+def test_una_lectura_barata_no_cuenta_como_gasto(svc):
+    """Si contara cualquier llamada sería un contador de llamadas con otro nombre."""
+    code, body, _ = svc.j("/api/call", {"name": "backend_health", "args": {}})
+    assert code == 200, body
+    st = svc.j("/api/state")[1]
+    assert st["calls"] >= 1 and st["spends"] == 0

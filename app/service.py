@@ -208,7 +208,11 @@ class Studio:
         self.runs: dict[str, Run] = {}
         self.calls = 0
         self.refusals = 0
-        self.approvals = 0
+        # `approvals` vivio aqui hasta 2026-11-20 y NUNCA se incremento en ningun sitio: la ventana enseñaba
+        # "0 approved" para siempre, que es un contador de un mecanismo que ya no existe. Lo que si se puede
+        # contar, desde que el registro lleva `kind`, es lo que de verdad cuesta: cuantas llamadas de esta
+        # sesion fueron a una entrada de computo. Un numero que se mueve o no se enseña.
+        self.spends = 0
         self.turns: dict[str, dict] = {}            # the chat: one entry per turn, read back by polling
         self._lock = threading.Lock()
         # The guard's baseline for THIS run of the app. Its whole purpose is "did BioQL change while Studio was
@@ -256,7 +260,7 @@ class Studio:
         return {"name": PING_NAME, "version": VERSION, "port": self.port, "home": str(self.home),
                 "bioql": self.adapter.base,
                 "up_seconds": round(time.time() - self.started, 1),
-                "calls": self.calls, "refusals": self.refusals, "approvals": self.approvals,
+                "calls": self.calls, "refusals": self.refusals, "spends": self.spends,
                 # Whether Settings is in the menu. It HIDES a page and locks nothing: this very route answers the
                 # same with it off, which is why it is reported here rather than withheld. See studio/advanced.py.
                 "advanced": advanced.is_on(self.home),
@@ -325,6 +329,8 @@ class Studio:
         except Refused as why:
             self._refused(name, args, str(why), event="call")
             return {"state": "REFUSED", "detail": str(why)}, 403
+        # Aqui NO se cuenta un gasto: todo lo que cuesta ya se fue a `_run` unas lineas arriba. Una comprobacion
+        # de `kind` en este punto seria una rama que no se ejecuta nunca, que es como se acumula codigo muerto.
         self.calls += 1
         out = self._shape(res)
         if res.resolved:
@@ -359,6 +365,7 @@ class Studio:
             run.state = "UNRESOLVABLE"
             return
         self.calls += 1
+        self.spends += 1          # `_run` solo recibe lo caro: `call()` manda aqui compute, hardware y submit
         run.detail = (res.detail or "")[:300]
         run.verdict = res.meta.get("verdict")
         run.findings = res.meta.get("findings") or []

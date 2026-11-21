@@ -26,7 +26,7 @@ PING_NAME = "bioql-studio"                  # Agtr answers "agtr-desktop" (servi
 BUNDLE_ID = "com.molevera.bioqlstudio"      # a guess: no bundle id was prescribed. Not "com.agtr.*", not "com.bioql.*"
                                             # (BioQL's own LaunchAgents are com.bioql.localstack / .watchdog /
                                             # .llm-watchdog; Studio installs no LaunchAgent at all).
-VERSION = "0.1.11"
+VERSION = "0.1.12"
 
 
 def log_path() -> Path:
