@@ -153,7 +153,7 @@ const SECTIONS = {
   findings: { group: "Record", label: "Findings", icon: "check", kind: "findings",
               lead: "Every verdict the verifier recorded, newest first. A row whose line recorded no verdict says " +
                     "not recorded — it is never read as clean." },
-  board:    { group: "Record", label: "Whiteboard", icon: "board", kind: "board",
+  board:    { group: "Work", label: "Whiteboard", icon: "board", kind: "board",
               lead: "The plan drawn before anything is spent, and the evidence hung on it afterwards." },
   ledger:   { group: "Record", label: "Notebook", icon: "book", kind: "ledger",
               lead: "The hash-chained, Ed25519-signed record: one line per call to BioQL." },
@@ -172,6 +172,16 @@ const SECTIONS = {
 };
 
 const GROUPS = ["Iris", "Work", "Record"];
+
+// El orden del menu, dicho aqui y no por el orden en que se escribio `SECTIONS`.
+//
+// Antes salia: Trabajos, Resultados, SAR, Candidatos, Informe — es decir, la fontaneria primero y el entregable
+// cuarto. Quien busca un farmaco abre la app por los CANDIDATOS; los trabajos son como llegaron, y se miran
+// cuando algo falla. Un menu es una afirmacion sobre que importa.
+const ORDER = ["chat", "chats",
+               "cands", "results", "sar", "board", "report", "jobs",
+               "findings", "ledger", "guard", "usage", "servers", "keys", "settings"];
+const rank = (k) => { const i = ORDER.indexOf(k); return i < 0 ? ORDER.length : i; };
 
 // ------------------------------------------------------------------ the state line and the status bar
 // Studio keeps no address for BioQL's own window or for TargetRadar. It used to hold both, to put their pages in
@@ -1981,6 +1991,61 @@ function seriesNode(b) {
   return box;
 }
 
+// ------------------------------------------------------------------ dibujar una molécula
+//
+// BioQL dibuja con RDKit en esta Mac (`render_2d` -> /api/render/2d, kind `local`) y devuelve **SVG**, que escala
+// sin pixelarse. Entra como `data:image/svg+xml` en un <img>: `img-src 'self' data:` ya lo permite, y en un <img>
+// un SVG es una imagen y no puede ejecutar nada — por eso nunca va por innerHTML.
+//
+// Una petición por SMILES, no por sitio donde aparezca: una tabla de 20 candidatos con el mismo esqueleto pedía
+// el mismo dibujo veinte veces, y cada petición es una línea del registro firmado. Se guarda la PROMESA, para que
+// dos bloques que piden a la vez compartan una sola llamada.
+const DEPICTIONS = new Map();
+
+function depict(smiles) {
+  if (DEPICTIONS.has(smiles)) return DEPICTIONS.get(smiles);
+  const p = (async () => {
+    try {
+      const got = await api("/api/call", { name: "render_2d", args: { smiles, width: 520, height: 400 } });
+      const r = got.body;
+      if (r && r.state === "RESOLVED" && r.value && typeof r.value.svg === "string" && r.value.svg.trim()) {
+        return { svg: r.value.svg };
+      }
+      // ABSENT y UNRESOLVABLE son respuestas distintas y se dicen distintas, como en todo lo demás.
+      return { why: (r && r.detail) || "BioQL no devolvió un dibujo" };
+    } catch (e) {
+      return { why: String((e && e.message) || e) };
+    }
+  })();
+  DEPICTIONS.set(smiles, p);
+  return p;
+}
+
+/** La molécula dibujada, con su SMILES debajo. Mientras llega, la cadena — nunca un hueco ni un marcador. */
+function depictionNode(smiles) {
+  const fig = el("figure", "depict");
+  const slot = el("div", "depict-slot");
+  slot.appendChild(el("span", "fine", "dibujando…"));
+  fig.appendChild(slot);
+  const cap = el("figcaption", "depict-smiles hash", smiles);
+  cap.title = smiles;
+  fig.appendChild(cap);
+  depict(smiles).then((got) => {
+    clear(slot);
+    if (got && got.svg) {
+      const img = el("img", "depict-img");
+      img.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(got.svg);
+      img.alt = "estructura de " + smiles;
+      img.loading = "lazy";
+      slot.appendChild(img);
+      return;
+    }
+    // Sin dibujo: se dice por qué y se queda la cadena, que es el dato que BioQL sí dio.
+    slot.appendChild(el("span", "fine", "sin dibujo — " + ((got && got.why) || "sin respuesta")));
+  });
+  return fig;
+}
+
 /** La convergencia de una MD corta. No es una película: `openmm_md_engine` no devuelve coordenadas, devuelve una
  *  MM-GBSA por fotograma. Lo único que esos números pueden contestar es si convergió, y eso es lo que se dibuja.
  *
@@ -2203,12 +2268,11 @@ function cardNode(card) {
         img.alt = b.smiles || "molecule";
         body.appendChild(img);
       } else if (b.smiles) {
-        // No depiction in the answer, only the SMILES. Showing the string is honest; drawing something would be
-        // this window inventing a structure the engine did not return.
-        const f = el("div", "fact");
-        f.appendChild(el("div", "fact-k", "smiles"));
-        f.appendChild(el("div", "fact-v hash", b.smiles));
-        body.appendChild(f);
+        // Antes aquí sólo se imprimía la cadena. Era honesto y era inútil: un químico lee una estructura, no un
+        // SMILES, y la tabla de candidatos de BioQL existe precisamente porque nadie dibujaba una. Ahora se le
+        // PIDE el dibujo a BioQL (`render_2d`, que es RDKit en esta Mac) y se enseña el suyo. Studio sigue sin
+        // inventar una estructura: si BioQL no la dibuja, queda la cadena y el motivo.
+        body.appendChild(depictionNode(b.smiles));
       }
     } else if (b.type === "molecule3d") {
       body.appendChild(structureNode(b));
@@ -2358,13 +2422,20 @@ const openTabs = ["chat"];
 // guardarla (ventana privada, datos bloqueados) el menu abre entero, que es el estado util.
 const SHUT_KEY = "bioql-studio.nav.shut";
 
+// Siete de las quince entradas del menu eran contabilidad — el cuaderno firmado, la guardia, el uso, la salud
+// del servidor, las claves. Nada de eso descubre un farmaco, y estaba todo desplegado delante de quien si lo
+// busca. Llega PLEGADO la primera vez. No se borra ninguna: el registro es lo que hace creible un resultado, y
+// quitarlo seria cambiar un defecto por otro peor. Se quita de delante, y basta un clic para traerlo.
+const SHUT_BY_DEFAULT = ["Record"];
+
 function shutGroups() {
   try {
     const raw = localStorage.getItem(SHUT_KEY);
-    const v = raw ? JSON.parse(raw) : [];
+    if (raw === null) return new Set(SHUT_BY_DEFAULT);   // nunca se ha tocado: el reparto de fabrica
+    const v = JSON.parse(raw);
     return new Set(Array.isArray(v) ? v.filter((x) => typeof x === "string") : []);
   } catch (e) {
-    return new Set();
+    return new Set(SHUT_BY_DEFAULT);
   }
 }
 
@@ -2379,7 +2450,8 @@ function buildNav() {
   clear(nav);
   const shut = shutGroups();
   GROUPS.forEach((g) => {
-    const keys = Object.keys(SECTIONS).filter((k) => SECTIONS[k].group === g && shown(k));
+    const keys = Object.keys(SECTIONS).filter((k) => SECTIONS[k].group === g && shown(k))
+      .sort((a, b) => rank(a) - rank(b));
     if (!keys.length) return;
     const box = el("div", "side-g" + (shut.has(g) ? " shut" : ""));
     const head = el("button", "side-h");

@@ -493,3 +493,14 @@ body[data-ring=alarm] .ring{border-color:var(--red);animation:breathe 1.3s ease-
 .ch-mean { stroke: var(--accent); stroke-width: 1; stroke-dasharray: 5 4; opacity: .55; }
 .ch-split { stroke: var(--label-2); stroke-width: 1; stroke-dasharray: 2 4; opacity: .7; }
 .ch-dot.frame { fill: var(--label-2); opacity: .55; }
+
+/* La molécula dibujada. La imagen manda; el SMILES va debajo, en pequeño, porque es la referencia y no el dato
+   que se lee. El hueco reserva altura para que una tabla de candidatos no salte mientras llegan los dibujos. */
+.depict { margin: 8px 0; display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
+.depict-slot {
+  min-height: 150px; width: 100%; max-width: 420px; display: flex; align-items: center;
+  justify-content: center; border: 1px solid var(--sep); border-radius: 10px; background: #fff;
+}
+.depict-img { width: 100%; height: auto; display: block; border-radius: 10px; }
+.depict-smiles { font-size: 10.5px; color: var(--label-2); max-width: 420px; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }

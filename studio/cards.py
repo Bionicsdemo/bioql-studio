@@ -62,6 +62,8 @@ import math
 import re
 from typing import Any
 
+from . import cards_admet, cards_viz
+
 KINDS = ("molecule", "admet", "docking", "structure", "screening", "pipeline", "job", "catalogue", "table", "text")
 BLOCK_TYPES = ("facts", "table", "molecule2d", "molecule3d", "chart_image", "status", "gates", "radar",
                "converge",
@@ -1077,6 +1079,10 @@ def card(payload: Any, tool: str | None = None, meta: dict | None = None) -> dic
     if isinstance(payload, (dict, list)):
         # Every detector runs, whatever the kind says. They are guarded by the shapes they read, and gating them on
         # one kind is what let a pipeline carrying `mol_3d` be drawn as an ADMET card with no structure in it.
+        # El sobre universal de BioQL va PRIMERO: es lo que el propio motor decidio enseñar de esta corrida,
+        # y trae la estructura y los graficos dentro. Lo demas de esta cadena rellena lo que el sobre no cubre.
+        blocks += cards_viz.viz_blocks(payload, consumed)
+        blocks += cards_admet.admet_blocks(payload, consumed)
         blocks += _status_blocks(payload, consumed)
         blocks += _chart_blocks(payload, consumed)
         blocks += _gates_blocks(payload, consumed)

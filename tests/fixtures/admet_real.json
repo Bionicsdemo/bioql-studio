@@ -1,0 +1,538 @@
+{
+ "results": [
+  {
+   "smiles": "CC(=O)Oc1ccccc1C(=O)O",
+   "ran_quantum": false,
+   "admet_classical": {
+    "quantum_engine": "classical LightGBM ensemble (no quantum hardware in this prediction)",
+    "absorption": {
+     "hia": {
+      "interpretation": "high",
+      "label": "Human Intestinal Absorption",
+      "validation": {
+       "conformal": {
+        "ambiguous": false,
+        "calibration_source": "TDC scaffold TEST-calib partition (provably disjoint from training)",
+        "empirical_coverage_test": 0.9153,
+        "interpretation": "confident-positive",
+        "method": "split-conformal LAC (TDC scaffold TEST-calib partition (provably disjoint from training))",
+        "p_positive": 0.9905,
+        "prediction_set": [
+         1
+        ],
+        "q_hat": 0.6848,
+        "target_coverage": 0.9,
+        "type": "prediction_set"
+       },
+       "endpoint": "hia_hou",
+       "measured": {
+        "all_metrics": {
+         "accuracy": 0.8803,
+         "conformal_empirical_coverage": 0.9153,
+         "conformal_q_hat": 0.6848,
+         "conformal_target_coverage": 0.9,
+         "pr_auc": 0.9861,
+         "roc_auc": 0.9551
+        },
+        "badge": "validated vs ADME:HIA_Hou [scaffold/seed=42, tdc.single_pred generic loader; NOT verified == TDC BenchmarkGroup split]: AUC=0.96, n=117",
+        "computed_at": "2026-06-27T17:06:31.100880+00:00",
+        "dataset": "ADME:HIA_Hou [scaffold/seed=42, tdc.single_pred generic loader; NOT verified == TDC BenchmarkGroup split]",
+        "is_real": true,
+        "metric": "roc_auc",
+        "n": 117,
+        "partial": false,
+        "source": "Therapeutics Data Commons (tdcommons.ai)",
+        "value": 0.9551
+       },
+       "source_of_truth": "validation_registry",
+       "validated": true
+      },
+      "value": 0.9905
+     },
+     "solubility": {
+      "label": "Aqueous Solubility (AqSolDB)",
+      "unit": "logS",
+      "validation": {
+       "conformal": {
+        "calibration_source": "TDC scaffold TEST-calib partition (provably disjoint from training)",
+        "empirical_coverage_test": 0.8949,
+        "half_width": 1.7526,
+        "lower": -3.4899,
+        "method": "split-conformal absolute-residual (TDC scaffold TEST-calib partition (provably disjoint from training))",
+        "target_coverage": 0.9,
+        "type": "interval",
+        "upper": 0.0153
+       },
+       "endpoint": "solubility_aqsoldb",
+       "measured": {
+        "all_metrics": {
+         "conformal_empirical_coverage": 0.8949,
+         "conformal_q_hat": 1.7526,
+         "conformal_target_coverage": 0.9,
+         "mae": 0.8572,
+         "pearson": 0.8657,
+         "r2": 0.7444,
+         "rmse": 1.1601,
+         "spearman": 0.8534
+        },
+        "badge": "validated vs ADME:Solubility_AqSolDB [scaffold/seed=42, tdc.single_pred generic loader; NOT verified == TDC BenchmarkGroup split]: ρ=0.85, n=1997",
+        "computed_at": "2026-06-27T17:06:31.107659+00:00",
+        "dataset": "ADME:Solubility_AqSolDB [scaffold/seed=42, tdc.single_pred generic loader; NOT verified == TDC BenchmarkGroup split]",
+        "is_real": true,
+        "metric": "spearman",
+        "n": 1997,
+        "partial": false,
+        "source": "Therapeutics Data Commons (tdcommons.ai)",
+        "value": 0.8534
+       },
+       "source_of_truth": "validation_registry",
+       "validated": true
+      },
+      "value": -1.7373
+     }
+    },
+    "distribution": {
+     "bbb": {
+      "interpretation": "penetrant",
+      "label": "Blood-Brain Barrier (Martins)",
+      "validation": {
+       "conformal": {
+        "ambiguous": true,
+        "calibration_source": "TDC scaffold TEST-calib partition (provably disjoint from training)",
+        "empirical_coverage_test": 0.8768,
+        "interpretation": "uncertain (set={0,1})",
+        "method": "split-conformal LAC (TDC scaffold TEST-calib partition (provably disjoint from training))",
+        "p_positive": 0.5122,
+        "prediction_set": [
+         1,
+         0
+        ],
+        "q_hat": 0.5373,
+        "target_coverage": 0.9,
+        "type": "prediction_set"
+       },
+       "endpoint": "bbb_martins",
+       "measured": {
+        "all_metrics": {
+         "accuracy": 0.8892,
+         "conformal_empirical_coverage": 0.8768,
+         "conformal_q_hat": 0.5373,
+         "conformal_target_coverage": 0.9,
+         "pr_auc": 0.9679,
+         "roc_auc": 0.9031
+        },
+        "badge": "validated vs ADME:BBB_Martins [scaffold/seed=42, tdc.single_pred generic loader; NOT verified == TDC BenchmarkGroup split]: AUC=0.90, n=406",
+        "computed_at": "2026-06-27T17:06:31.072049+00:00",
+        "dataset": "ADME:BBB_Martins [scaffold/seed=42, tdc.single_pred generic loader; NOT verified == TDC BenchmarkGroup split]",
+        "is_real": true,
+        "metric": "roc_auc",
+        "n": 406,
+        "partial": false,
+        "source": "Therapeutics Data Commons (tdcommons.ai)",
+        "value": 0.9031
+       },
+       "source_of_truth": "validation_registry",
+       "validated": true
+      },
+      "value": 0.5122
+     },
+     "ppb": {
+      "label": "Plasma Protein Binding (AZ)",
+      "unit": "%",
+      "validation": {
+       "conformal": {
+        "calibration_source": "TDC scaffold TEST-calib partition (provably disjoint from training)",
+        "empirical_coverage_test": 0.858,
+        "half_width": 16.5402,
+        "lower": 51.9544,
+        "method": "split-conformal absolute-residual (TDC scaffold TEST-calib partition (provably disjoint from training))",
+        "target_coverage": 0.9,
+        "type": "interval",
+        "upper": 85.0348
+       },
+       "endpoint": "ppbr_az",
+       "measured": {
+        "all_metrics": {
+         "conformal_empirical_coverage": 0.858,
+         "conformal_q_hat": 16.5402,
+         "conformal_target_coverage": 0.9,
+         "mae": 7.9411,
+         "pearson": 0.6313,
+         "r2": 0.3889,
+         "rmse": 11.8563,
+         "spearman": 0.5933
+        },
+        "badge": "validated vs ADME:PPBR_AZ [scaffold/seed=42, tdc.single_pred generic loader; NOT verified == TDC BenchmarkGroup split]: ρ=0.59, n=324",
+        "computed_at": "2026-06-27T17:06:31.104249+00:00",
+        "dataset": "ADME:PPBR_AZ [scaffold/seed=42, tdc.single_pred generic loader; NOT verified == TDC BenchmarkGroup split]",
+        "is_real": true,
+        "metric": "spearman",
+        "n": 324,
+        "partial": false,
+        "source": "Therapeutics Data Commons (tdcommons.ai)",
+        "value": 0.5933
+       },
+       "source_of_truth": "validation_registry",
+       "validated": true
+      },
+      "value": 68.4946
+     }
+    },
+    "toxicity": {
+     "ames": {
+      "interpretation": "non-mutagenic",
+      "label": "Ames Mutagenicity",
+      "validation": {
+       "conformal": {
+        "ambiguous": false,
+        "calibration_source": "TDC scaffold TEST-calib partition (provably disjoint from training)",
+        "empirical_coverage_test": 0.9067,
+        "interpretation": "confident-negative",
+        "method": "split-conformal LAC (TDC scaffold TEST-calib partition (provably disjoint from training))",
+        "p_positive": 0.0331,
+        "prediction_set": [
+         0
+        ],
+        "q_hat": 0.77,
+        "target_coverage": 0.9,
+        "type": "prediction_set"
+       },
+       "endpoint": "ames",
+       "measured": {
+        "all_metrics": {
+         "accuracy": 0.7632,
+         "conformal_empirical_coverage": 0.9067,
+         "conformal_q_hat": 0.77,
+         "conformal_target_coverage": 0.9,
+         "pr_auc": 0.8851,
+         "roc_auc": 0.8335
+        },
+        "badge": "validated vs Tox:AMES [scaffold/seed=42, tdc.single_pred generic loader; NOT verified == TDC BenchmarkGroup split]: AUC=0.83, n=1457",
+        "computed_at": "2026-06-27T17:06:31.065235+00:00",
+        "dataset": "Tox:AMES [scaffold/seed=42, tdc.single_pred generic loader; NOT verified == TDC BenchmarkGroup split]",
+        "is_real": true,
+        "metric": "roc_auc",
+        "n": 1457,
+        "partial": false,
+        "source": "Therapeutics Data Commons (tdcommons.ai)",
+        "value": 0.8335
+       },
+       "source_of_truth": "validation_registry",
+       "validated": true
+      },
+      "value": 0.0331
+     },
+     "dili": {
+      "interpretation": "non-toxic",
+      "label": "Drug-Induced Liver Injury",
+      "validation": {
+       "conformal": {
+        "ambiguous": true,
+        "calibration_source": "TDC scaffold TEST-calib partition (provably disjoint from training)",
+        "empirical_coverage_test": 0.9583,
+        "interpretation": "uncertain (set={0,1})",
+        "method": "split-conformal LAC (TDC scaffold TEST-calib partition (provably disjoint from training))",
+        "p_positive": 0.091,
+        "prediction_set": [
+         1,
+         0
+        ],
+        "q_hat": 0.9683,
+        "target_coverage": 0.9,
+        "type": "prediction_set"
+       },
+       "endpoint": "dili",
+       "measured": {
+        "all_metrics": {
+         "accuracy": 0.8646,
+         "conformal_empirical_coverage": 0.9583,
+         "conformal_q_hat": 0.9683,
+         "conformal_target_coverage": 0.9,
+         "pr_auc": 0.9248,
+         "roc_auc": 0.9265
+        },
+        "badge": "validated vs Tox:DILI [scaffold/seed=42, tdc.single_pred generic loader; NOT verified == TDC BenchmarkGroup split]: AUC=0.93, n=96",
+        "computed_at": "2026-06-27T17:06:31.094303+00:00",
+        "dataset": "Tox:DILI [scaffold/seed=42, tdc.single_pred generic loader; NOT verified == TDC BenchmarkGroup split]",
+        "is_real": true,
+        "metric": "roc_auc",
+        "n": 96,
+        "partial": false,
+        "source": "Therapeutics Data Commons (tdcommons.ai)",
+        "value": 0.9265
+       },
+       "source_of_truth": "validation_registry",
+       "validated": true
+      },
+      "value": 0.091
+     }
+    }
+   },
+   "admet_quantum": {
+    "quantum_engine": "classical LightGBM ensemble (no quantum hardware in this prediction)",
+    "absorption": {
+     "hia": {
+      "interpretation": "high",
+      "label": "Human Intestinal Absorption",
+      "validation": {
+       "conformal": {
+        "ambiguous": false,
+        "calibration_source": "TDC scaffold TEST-calib partition (provably disjoint from training)",
+        "empirical_coverage_test": 0.9153,
+        "interpretation": "confident-positive",
+        "method": "split-conformal LAC (TDC scaffold TEST-calib partition (provably disjoint from training))",
+        "p_positive": 0.9905,
+        "prediction_set": [
+         1
+        ],
+        "q_hat": 0.6848,
+        "target_coverage": 0.9,
+        "type": "prediction_set"
+       },
+       "endpoint": "hia_hou",
+       "measured": {
+        "all_metrics": {
+         "accuracy": 0.8803,
+         "conformal_empirical_coverage": 0.9153,
+         "conformal_q_hat": 0.6848,
+         "conformal_target_coverage": 0.9,
+         "pr_auc": 0.9861,
+         "roc_auc": 0.9551
+        },
+        "badge": "validated vs ADME:HIA_Hou [scaffold/seed=42, tdc.single_pred generic loader; NOT verified == TDC BenchmarkGroup split]: AUC=0.96, n=117",
+        "computed_at": "2026-06-27T17:06:31.100880+00:00",
+        "dataset": "ADME:HIA_Hou [scaffold/seed=42, tdc.single_pred generic loader; NOT verified == TDC BenchmarkGroup split]",
+        "is_real": true,
+        "metric": "roc_auc",
+        "n": 117,
+        "partial": false,
+        "source": "Therapeutics Data Commons (tdcommons.ai)",
+        "value": 0.9551
+       },
+       "source_of_truth": "validation_registry",
+       "validated": true
+      },
+      "value": 0.9905
+     },
+     "solubility": {
+      "label": "Aqueous Solubility (AqSolDB)",
+      "unit": "logS",
+      "validation": {
+       "conformal": {
+        "calibration_source": "TDC scaffold TEST-calib partition (provably disjoint from training)",
+        "empirical_coverage_test": 0.8949,
+        "half_width": 1.7526,
+        "lower": -3.4899,
+        "method": "split-conformal absolute-residual (TDC scaffold TEST-calib partition (provably disjoint from training))",
+        "target_coverage": 0.9,
+        "type": "interval",
+        "upper": 0.0153
+       },
+       "endpoint": "solubility_aqsoldb",
+       "measured": {
+        "all_metrics": {
+         "conformal_empirical_coverage": 0.8949,
+         "conformal_q_hat": 1.7526,
+         "conformal_target_coverage": 0.9,
+         "mae": 0.8572,
+         "pearson": 0.8657,
+         "r2": 0.7444,
+         "rmse": 1.1601,
+         "spearman": 0.8534
+        },
+        "badge": "validated vs ADME:Solubility_AqSolDB [scaffold/seed=42, tdc.single_pred generic loader; NOT verified == TDC BenchmarkGroup split]: ρ=0.85, n=1997",
+        "computed_at": "2026-06-27T17:06:31.107659+00:00",
+        "dataset": "ADME:Solubility_AqSolDB [scaffold/seed=42, tdc.single_pred generic loader; NOT verified == TDC BenchmarkGroup split]",
+        "is_real": true,
+        "metric": "spearman",
+        "n": 1997,
+        "partial": false,
+        "source": "Therapeutics Data Commons (tdcommons.ai)",
+        "value": 0.8534
+       },
+       "source_of_truth": "validation_registry",
+       "validated": true
+      },
+      "value": -1.7373
+     }
+    },
+    "distribution": {
+     "bbb": {
+      "interpretation": "penetrant",
+      "label": "Blood-Brain Barrier (Martins)",
+      "validation": {
+       "conformal": {
+        "ambiguous": true,
+        "calibration_source": "TDC scaffold TEST-calib partition (provably disjoint from training)",
+        "empirical_coverage_test": 0.8768,
+        "interpretation": "uncertain (set={0,1})",
+        "method": "split-conformal LAC (TDC scaffold TEST-calib partition (provably disjoint from training))",
+        "p_positive": 0.5122,
+        "prediction_set": [
+         1,
+         0
+        ],
+        "q_hat": 0.5373,
+        "target_coverage": 0.9,
+        "type": "prediction_set"
+       },
+       "endpoint": "bbb_martins",
+       "measured": {
+        "all_metrics": {
+         "accuracy": 0.8892,
+         "conformal_empirical_coverage": 0.8768,
+         "conformal_q_hat": 0.5373,
+         "conformal_target_coverage": 0.9,
+         "pr_auc": 0.9679,
+         "roc_auc": 0.9031
+        },
+        "badge": "validated vs ADME:BBB_Martins [scaffold/seed=42, tdc.single_pred generic loader; NOT verified == TDC BenchmarkGroup split]: AUC=0.90, n=406",
+        "computed_at": "2026-06-27T17:06:31.072049+00:00",
+        "dataset": "ADME:BBB_Martins [scaffold/seed=42, tdc.single_pred generic loader; NOT verified == TDC BenchmarkGroup split]",
+        "is_real": true,
+        "metric": "roc_auc",
+        "n": 406,
+        "partial": false,
+        "source": "Therapeutics Data Commons (tdcommons.ai)",
+        "value": 0.9031
+       },
+       "source_of_truth": "validation_registry",
+       "validated": true
+      },
+      "value": 0.5122
+     },
+     "ppb": {
+      "label": "Plasma Protein Binding (AZ)",
+      "unit": "%",
+      "validation": {
+       "conformal": {
+        "calibration_source": "TDC scaffold TEST-calib partition (provably disjoint from training)",
+        "empirical_coverage_test": 0.858,
+        "half_width": 16.5402,
+        "lower": 51.9544,
+        "method": "split-conformal absolute-residual (TDC scaffold TEST-calib partition (provably disjoint from training))",
+        "target_coverage": 0.9,
+        "type": "interval",
+        "upper": 85.0348
+       },
+       "endpoint": "ppbr_az",
+       "measured": {
+        "all_metrics": {
+         "conformal_empirical_coverage": 0.858,
+         "conformal_q_hat": 16.5402,
+         "conformal_target_coverage": 0.9,
+         "mae": 7.9411,
+         "pearson": 0.6313,
+         "r2": 0.3889,
+         "rmse": 11.8563,
+         "spearman": 0.5933
+        },
+        "badge": "validated vs ADME:PPBR_AZ [scaffold/seed=42, tdc.single_pred generic loader; NOT verified == TDC BenchmarkGroup split]: ρ=0.59, n=324",
+        "computed_at": "2026-06-27T17:06:31.104249+00:00",
+        "dataset": "ADME:PPBR_AZ [scaffold/seed=42, tdc.single_pred generic loader; NOT verified == TDC BenchmarkGroup split]",
+        "is_real": true,
+        "metric": "spearman",
+        "n": 324,
+        "partial": false,
+        "source": "Therapeutics Data Commons (tdcommons.ai)",
+        "value": 0.5933
+       },
+       "source_of_truth": "validation_registry",
+       "validated": true
+      },
+      "value": 68.4946
+     }
+    },
+    "toxicity": {
+     "ames": {
+      "interpretation": "non-mutagenic",
+      "label": "Ames Mutagenicity",
+      "validation": {
+       "conformal": {
+        "ambiguous": false,
+        "calibration_source": "TDC scaffold TEST-calib partition (provably disjoint from training)",
+        "empirical_coverage_test": 0.9067,
+        "interpretation": "confident-negative",
+        "method": "split-conformal LAC (TDC scaffold TEST-calib partition (provably disjoint from training))",
+        "p_positive": 0.0331,
+        "prediction_set": [
+         0
+        ],
+        "q_hat": 0.77,
+        "target_coverage": 0.9,
+        "type": "prediction_set"
+       },
+       "endpoint": "ames",
+       "measured": {
+        "all_metrics": {
+         "accuracy": 0.7632,
+         "conformal_empirical_coverage": 0.9067,
+         "conformal_q_hat": 0.77,
+         "conformal_target_coverage": 0.9,
+         "pr_auc": 0.8851,
+         "roc_auc": 0.8335
+        },
+        "badge": "validated vs Tox:AMES [scaffold/seed=42, tdc.single_pred generic loader; NOT verified == TDC BenchmarkGroup split]: AUC=0.83, n=1457",
+        "computed_at": "2026-06-27T17:06:31.065235+00:00",
+        "dataset": "Tox:AMES [scaffold/seed=42, tdc.single_pred generic loader; NOT verified == TDC BenchmarkGroup split]",
+        "is_real": true,
+        "metric": "roc_auc",
+        "n": 1457,
+        "partial": false,
+        "source": "Therapeutics Data Commons (tdcommons.ai)",
+        "value": 0.8335
+       },
+       "source_of_truth": "validation_registry",
+       "validated": true
+      },
+      "value": 0.0331
+     },
+     "dili": {
+      "interpretation": "non-toxic",
+      "label": "Drug-Induced Liver Injury",
+      "validation": {
+       "conformal": {
+        "ambiguous": true,
+        "calibration_source": "TDC scaffold TEST-calib partition (provably disjoint from training)",
+        "empirical_coverage_test": 0.9583,
+        "interpretation": "uncertain (set={0,1})",
+        "method": "split-conformal LAC (TDC scaffold TEST-calib partition (provably disjoint from training))",
+        "p_positive": 0.091,
+        "prediction_set": [
+         1,
+         0
+        ],
+        "q_hat": 0.9683,
+        "target_coverage": 0.9,
+        "type": "prediction_set"
+       },
+       "endpoint": "dili",
+       "measured": {
+        "all_metrics": {
+         "accuracy": 0.8646,
+         "conformal_empirical_coverage": 0.9583,
+         "conformal_q_hat": 0.9683,
+         "conformal_target_coverage": 0.9,
+         "pr_auc": 0.9248,
+         "roc_auc": 0.9265
+        },
+        "badge": "validated vs Tox:DILI [scaffold/seed=42, tdc.single_pred generic loader; NOT verified == TDC BenchmarkGroup split]: AUC=0.93, n=96",
+        "computed_at": "2026-06-27T17:06:31.094303+00:00",
+        "dataset": "Tox:DILI [scaffold/seed=42, tdc.single_pred generic loader; NOT verified == TDC BenchmarkGroup split]",
+        "is_real": true,
+        "metric": "roc_auc",
+        "n": 96,
+        "partial": false,
+        "source": "Therapeutics Data Commons (tdcommons.ai)",
+        "value": 0.9265
+       },
+       "source_of_truth": "validation_registry",
+       "validated": true
+      },
+      "value": 0.091
+     }
+    }
+   }
+  }
+ ]
+}

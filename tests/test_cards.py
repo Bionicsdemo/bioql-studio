@@ -96,6 +96,10 @@ ALLOWED = {"facts": {"rows"}, "table": {"columns", "rows"}, "molecule2d": {"png_
            "molecule3d": {"sdf", "parts", "label"}, "radar": {"axes", "source", "max"}, "series": {"x_label", "y_label", "points"}, "text": {"text"},
            "links": {"items"}, "absent": {"what", "why"},
            "chart_image": {"png_base64", "title", "url"},
+           # `converge` se añadió el 2026-11-20 y no entró aquí: el contrato lo habría dejado pasar con
+           # cualquier clave hasta que una tarjeta real lo produjera.
+           "converge": {"points", "running", "boundaries", "mean", "std", "unit", "x_label", "y_label",
+                        "frame_interval_ps", "source"},
            "status": {"word", "tone", "where", "counts", "issues", "issues_total"},
            "gates": {"rows", "where"}}
 
