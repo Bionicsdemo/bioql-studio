@@ -194,3 +194,62 @@ def test_la_ruta_de_la_pelicula_no_entra_en_el_registro_firmado():
     trozo = src[i:i + 900]
     assert "registro firmado" in trozo and "no toca el 5035" in trozo
     assert "dock_film" in trozo
+
+
+# ------------------------------------------------------------------ el fichero, si se puede
+def test_sin_PIL_no_hay_gif_pero_si_pelicula(monkeypatch):
+    """Studio no tiene dependencias: ni un `requirements.txt` ni un import fuera de la biblioteca estándar, y eso
+    es una propiedad. Un GIF animado necesita cuantizar a paleta, así que PIL se importa DENTRO y en un try. Si
+    no está, la película sigue entera y se dice por qué no hay fichero — una ausencia conocida no se convierte
+    en un error."""
+    import builtins
+    real = builtins.__import__
+
+    def sin_pil(name, *a, **k):
+        if name.startswith("PIL"):
+            raise ImportError("no PIL")
+        return real(name, *a, **k)
+
+    monkeypatch.setattr(builtins, "__import__", sin_pil)
+    monkeypatch.setattr(dock_film, "binary", lambda: "/bin/echo")
+    monkeypatch.setattr(dock_film.subprocess, "run", _fake_pymol(4))
+    monkeypatch.setattr(dock_film, "version", lambda exe=None: __import__(
+        "studio.resolution", fromlist=["resolved"]).resolved("3.1.0", "pymol", "x"))
+    r = dock_film.film(TINY, "pdb", n_frames=4)
+    assert r.state == RESOLVED
+    assert r.value["gif_path"] is None
+    assert "PIL" in r.value["gif_why"] and "se recorre igual" in r.value["gif_why"]
+    assert len(r.value["frames"]) == 4, "la película se perdió por culpa del GIF"
+
+
+def test_un_gif_que_falla_no_tumba_la_pelicula(monkeypatch):
+    monkeypatch.setattr(dock_film, "binary", lambda: "/bin/echo")
+    monkeypatch.setattr(dock_film.subprocess, "run", _fake_pymol(3))
+    monkeypatch.setattr(dock_film, "version", lambda exe=None: __import__(
+        "studio.resolution", fromlist=["resolved"]).resolved("3.1.0", "pymol", "x"))
+    # los PNG falsos de `_fake_pymol` no son imágenes válidas: PIL va a protestar, y eso es el caso de prueba
+    r = dock_film.film(TINY, "pdb", n_frames=3)
+    assert r.state == RESOLVED and len(r.value["frames"]) == 3
+    assert r.value["gif_path"] is None and r.value["gif_why"]
+
+
+@pytest.mark.skipif(dock_film.binary() is None, reason="no hay PyMOL en este Mac")
+def test_con_pymol_de_verdad_sale_un_gif_animado():
+    r = dock_film.film(TINY, "pdb", n_frames=3, width=200, height=150)
+    assert r.state == RESOLVED, r.detail
+    ruta = r.value.get("gif_path")
+    if ruta is None:
+        pytest.skip("este Python no tiene PIL: " + str(r.value.get("gif_why")))
+    datos = Path(ruta).read_bytes()
+    assert datos[:6] == b"GIF89a"
+    assert b"NETSCAPE2.0" in datos, "no da la vuelta"
+    # Un control por fotograma, PERO al menos uno: con `optimize=True` PIL colapsa los fotogramas identicos, y
+    # tres atomos a 200x150 girando sesenta grados dan la misma imagen tres veces. Sobre una proteina de verdad
+    # salen los seis (medido). Exigir exactamente N aqui seria exigir que el optimizador no optimice.
+    controles = datos.count(b"\x00\x21\xF9\x04")
+    assert 1 <= controles <= 3, controles
+
+
+def test_la_ventana_dice_donde_quedo_el_fichero_o_por_que_no():
+    assert "GIF guardado en" in JS
+    assert "sin fichero GIF" in JS

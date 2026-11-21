@@ -1727,6 +1727,15 @@ function filmPlayer(box, v) {
   fig.appendChild(el("figcaption", "fine",
     `PyMOL ${v.pymol || "?"} · ${n} fotogramas · ${v.per_frame}s cada uno (${v.seconds}s en total) · `
     + `${v.width}x${v.height} · ${v.has_ligand ? "acercamiento del ligando" : "órbita (sin ligando aparte)"}`));
+  // El fichero, para enseñárselo a alguien. Si este Python no tiene PIL no hay GIF y se dice por qué: la
+  // película sigue entera y recorrible, que es lo que importa.
+  if (v.gif_path) {
+    const g = el("p", "fine film-gif", "GIF guardado en " + v.gif_path);
+    g.title = v.gif_path;
+    fig.appendChild(g);
+  } else if (v.gif_why) {
+    fig.appendChild(el("p", "fine", "sin fichero GIF — " + v.gif_why));
+  }
 
   const show = (k) => {
     i = Math.max(0, Math.min(n - 1, k | 0));

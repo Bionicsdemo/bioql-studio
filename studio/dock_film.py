@@ -38,6 +38,7 @@ import tempfile
 import time
 from pathlib import Path
 
+from . import home
 from .render3d import EXT, MAX_BYTES, binary, version
 from .resolution import Resolution, absent, resolved, unresolvable
 
@@ -200,6 +201,36 @@ print("FILMDONE %d" % n_frames)
 '''
 
 
+def _save_gif(files: list[Path], work: Path) -> tuple[str | None, str | None]:
+    """La pelicula como un fichero que se puede enseñar a alguien. (ruta, por_que_no).
+
+    **Studio no tiene dependencias**: ni un `requirements.txt` ni un solo import fuera de la biblioteca estandar,
+    y eso es una propiedad, no un descuido -- la app viaja como un bundle y no depende de lo que haya en el
+    Python de cada Mac. Un GIF animado necesita cuantizar a paleta, que a mano son doscientas lineas y un
+    algoritmo que haria peor trabajo que el de siempre.
+
+    Asi que PIL se importa AQUI DENTRO y en un try. Si esta, hay GIF; si no, la pelicula sigue entera y
+    recorrible y se dice por que no hay fichero. Una funcion que fallara por una dependencia ausente seria
+    convertir una ausencia conocida en un error.
+    """
+    try:
+        from PIL import Image                                   # noqa: PLC0415 -- a proposito, ver arriba
+    except ImportError:
+        return None, ("este Python no tiene PIL, asi que no se genera el fichero; los fotogramas estan todos "
+                      "y la pelicula se recorre igual")
+    try:
+        imgs = [Image.open(f).convert("P", palette=Image.ADAPTIVE, colors=128) for f in files]
+        if not imgs:
+            return None, "no habia fotogramas que juntar"
+        destino = home() / "films"
+        destino.mkdir(parents=True, exist_ok=True, mode=0o700)
+        out = destino / f"acercamiento-{int(time.time())}.gif"
+        imgs[0].save(out, save_all=True, append_images=imgs[1:], duration=90, loop=0, optimize=True)
+        return str(out), None
+    except Exception as err:                                    # un GIF que no sale no tumba la pelicula
+        return None, f"{type(err).__name__}: {str(err)[:140]}"
+
+
 def _write(work: Path, name: str, data: str, fmt: str) -> tuple[Path | None, Resolution | None]:
     """One structure onto disk, with the extension PyMOL reads its format from."""
     ext = EXT.get(str(fmt).strip().lower())
@@ -276,7 +307,9 @@ def film(receptor: str, receptor_fmt: str, ligand: str = "", ligand_fmt: str = "
                                          f"(exit {r.returncode}){': ' + tail if tail else ''}")
         frames = [base64.b64encode(f.read_bytes()).decode("ascii") for f in files]
         ver = version(exe)
+        guardado, gif_why = _save_gif(files, work)
         return resolved({"frames": frames, "n_frames": len(frames), "seconds": seconds,
+                         "gif_path": guardado, "gif_why": gif_why,
                          "per_frame": round(seconds / len(frames), 2), "width": w, "height": h,
                          "has_ligand": bool(lig), "pymol": ver.value if ver.resolved else None},
                         "pymol", f"{exe} · {len(frames)} frames ray {w}x{h} · {seconds}s "
