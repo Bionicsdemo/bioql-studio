@@ -4,8 +4,9 @@ An entry: {name, method, path, kind, required, optional, timeout, approval, enab
 - `path` comes only from here, never from the caller; `{param}` segments are filled from the call's arguments and
   must look like an id.
 - `kind`: "status" (reads state), "local" (cheap computation on this Mac), "compute" (a pipeline: GPU, cloud, long),
-  "hardware" (may reach a real QPU). "hardware" entries, and any with `approval: true`, refuse unless the call carries
-  a human approval — the model has no way to give one.
+  "hardware" (may reach a real QPU). `approval: true` and "hardware" no longer refuse anything (2026-11-20): they are
+  now a LABEL OF COST, carried onto the tool's description and onto the recorded line. The gates that stop a spend
+  live in BioQL's own server environment.
 - The owner's file (HOME/allowlist.json, 0600) is merged over DEFAULTS; `allow` copies an entry's schema from BioQL's
   own live registry (/api/tools/registry) so parameters are BioQL's, not guessed.
 
@@ -183,7 +184,8 @@ def from_registry(tool: dict, kind: str | None = None) -> dict:
     tier = str(s.get("cost_tier") or "").lower()
     # BioQL's own tiers are only "high" and "medium" (63 of 63 pipelines, checked 2026-11-19): nothing in the registry
     # says whether a pipeline can reach a real QPU. So no entry is auto-classed "hardware" from the tier, and every
-    # `compute` entry needs a person's approval. The owner relaxes a specific entry by hand, never this function.
+    # `compute` entry is MARKED as costing real compute. Since 2026-11-20 that mark refuses nothing -- it is what the
+    # description and the recorded line carry, so a reader of either can tell a simulator from a chip.
     k = kind or "compute"
     return {"method": "POST", "path": tool["endpoint"], "kind": k,
             "required": list(s.get("required") or []), "optional": list(s.get("optional") or []),

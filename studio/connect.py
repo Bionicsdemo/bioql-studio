@@ -1,12 +1,12 @@
 """Plugging BioQL into every Claude on this Mac, behind the scenes.
 
-Studio is already an MCP server — `python3 -m studio mcp` answers 510 tools over stdio: BioQL's 502 pipelines with
-the approval gate on them, `run_many`, and the seven that read Studio's own record. Any Claude client that speaks
+Studio is already an MCP server — `python3 -m studio mcp` answers 510 tools over stdio: BioQL's 502 pipelines,
+`run_many`, and the seven that read Studio's own record. Any Claude client that speaks
 MCP can use it. What was missing was the registration, so BioQL only existed inside Studio's own window.
 
 This writes that registration into the clients it finds, so BioQL is there in whatever Claude you already have
-open, with nothing new to launch. The gate travels with the server: a `compute` entry refuses without a person's
-approval wherever it is called from, and every call lands on the same signed record.
+open, with nothing new to launch. What travels with the server is the record: wherever a call is made from, it
+lands on the same hash-chained, signed line, carrying what kind of thing it was.
 
 **What it will and will not touch.** It adds, updates or removes ONE key — `bioql` — under `mcpServers`, and
 copies the file aside first. Every other server in that file, and every other setting, is left exactly as it was;
@@ -15,9 +15,9 @@ whole Claude setup.
 
 **What this widens, said plainly.** Once registered, any Claude session running as this user can call BioQL's
 read-only entries without going through Studio's window. That is the point of it — and it is also the cost, so it
-is a command somebody runs, never something an app does to a machine on its own. What it does NOT widen: anything
-that spends compute or could reach real quantum hardware still refuses without an approval, which this door cannot
-give; and every call is still one line on the hash-chained record.
+is a command somebody runs, never something an app does to a machine on its own. Said just as plainly: since
+2026-11-20 a registered client CAN start a pipeline that spends real compute, and Studio will not ask first. What
+this door does not widen is the closed list or the route, and every call is still one line on the signed record.
 """
 from __future__ import annotations
 
@@ -196,8 +196,9 @@ def apply(remove: bool = False) -> Resolution:
                      "detail": "unregistered" if remove else "registered"})
     out = {"changed": done, "skipped": skipped, "failed": failed, "entry": want,
            "note": ("BioQL is no longer offered to these clients." if remove else
-                    "Restart the client to pick it up. Anything that spends compute still refuses without a "
-                    "person's approval, wherever it is called from, and every call is one line on the record.")}
+                    "QUIT the client and open it again — a closed window is not a restart, and a client only reads "
+                    "this file at startup. From then on it can start pipelines that spend real compute without "
+                    "asking; every call is one line on the signed record.")}
     if failed and not done:
         return unresolvable("connect", "; ".join(f"{f['client']}: {f['detail']}" for f in failed), **out)
     if not done:

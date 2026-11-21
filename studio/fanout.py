@@ -40,6 +40,14 @@ def workers_for(n: int, cap: int = MAX_WORKERS) -> int:
 def _one(ad: Adapter, i: int, call: dict, group: str) -> dict:
     name = str((call or {}).get("name") or "")
     args = (call or {}).get("args") or {}
+    if not name:
+        # Said plainly, because the old wording blamed the wrong thing. A call that arrives with no `name` -- the
+        # key misspelled `tool`, say -- used to come back "'' is not in Studio's allowlist", which sends the reader
+        # to the allowlist to look for a tool that was never named. Misdirected refusals are what cost the owner an
+        # afternoon on 2026-11-20; this one says what is actually wrong.
+        return {"i": i, "name": name, "args": args if isinstance(args, dict) else {}, "state": "REFUSED",
+                "detail": "this call has no `name`: each entry of `calls` is {name, args}, and `name` is a tool "
+                          "of this server (prefixed as your client shows it, or bare)", "value": None}
     if not isinstance(args, dict):
         return {"i": i, "name": name, "state": "REFUSED", "detail": "`args` must be an object", "value": None}
     began = time.time()

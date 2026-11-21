@@ -283,3 +283,27 @@ def test_the_loop_answers_one_call_while_another_is_still_running(fake_bioql, mo
     assert json.loads(slow["result"]["content"][0]["text"])["state"] == "RESOLVED"
     pipe.close()
     loop.join(timeout=10)
+
+
+# ------------------------------------------------------------------ a refusal must blame the right thing
+def test_a_call_with_no_name_says_so_instead_of_blaming_the_allowlist(fake_bioql):
+    """`{"tool": ...}` instead of `{"name": ...}` used to come back "'' is not in Studio's allowlist" — which sends
+    the reader hunting the allowlist for a tool that was never named. The owner lost an afternoon to a refusal that
+    pointed at the wrong thing on 2026-11-20; a batch entry missing its key now says which key."""
+    out = fanout.run_many(ad(fake_bioql), [{"tool": "backend_health", "args": {}},
+                                           {"name": "backend_health", "args": {}}], workers=2)
+    first, second = out["runs"]
+    assert first["state"] == "REFUSED"
+    assert "no `name`" in first["detail"] and "allowlist" not in first["detail"].lower()
+    assert "{name, args}" in first["detail"]
+    assert second["state"] == "RESOLVED", "the well-formed call in the same batch must still run"
+
+
+def test_the_batch_takes_the_name_the_client_shows(fake_bioql):
+    """The whole fan-out path, with the prefix a client puts on every tool it displays. This is the shape of the
+    call that came back REFUSED in the owner's own transcript."""
+    out = fanout.run_many(ad(fake_bioql), [{"name": "mcp__bioql__backend_health", "args": {}}], workers=1)
+    run = out["runs"][0]
+    assert run["state"] == "RESOLVED", run.get("detail")
+    assert run["name"] == "mcp__bioql__backend_health", "the record keeps what the caller said"
+    assert run["meta"]["tool"] == "backend_health", "and resolves it to the allowlist's own name"

@@ -1,8 +1,10 @@
 """The adapter as an MCP server (stdio, JSON-RPC 2.0): how Claude Code sees BioQL.
 
 Claude gets one tool per enabled allowlist entry, with BioQL's parameters, and nothing else: no code, no files, no
-route it can name. A call goes through Adapter.call with `by="claude"` and no approval, so anything that could reach a
-real QPU, or that the owner marked for approval, is refused here by construction.
+route it can name. A call goes through Adapter.call with `by="claude"`, and since 2026-11-20 nothing is refused for
+being expensive: the spend gates live in BioQL's own server environment, which is where a real QPU submission is
+actually decided. What Studio still owns is the closed list, the route (never the caller's) and one signed line per
+call, now carrying `kind` and `wanted_hardware` -- because with no gate the record is the only control left.
 
 Two things make a run of independent work take the time of its slowest step instead of the sum of all of them:
 
@@ -32,7 +34,8 @@ RUN_MANY = {
     "name": "run_many",
     "description": ("[batch] Run several BioQL tools AT THE SAME TIME. Use it whenever the next calls do not need "
                     "each other's answers — a depiction, a conformer, a health read and a descriptor are four "
-                    "independent questions and take one wait, not four. Each call keeps its own approval gate, its "
+                    "independent questions and take one wait, not four. Name each tool as your client shows it "
+                    "(`mcp__bioql__quantum_conformer_search`) or bare -- both are accepted. Each call keeps its "
                     "own state (RESOLVED / ABSENT / UNRESOLVABLE / REFUSED), its own verdict and its own line on "
                     f"the record; one failing does not touch the others. At most {MAX_CALLS} per batch. A call that "
                     "needs an earlier answer goes in a LATER batch — this never reorders or waits for you."),
@@ -91,8 +94,16 @@ def _describe(e: dict) -> str:
                     + ": take them from the person, word for word, or ask.")
     if m.get("mutually_exclusive"):
         bits.append("Not together with: " + ", ".join(m["mutually_exclusive"]) + ".")
-    if e["approval"] or e["kind"] == "hardware":
-        bits.append("Needs a person's approval; Claude cannot run it.")
+    # This said "Needs a person's approval; Claude cannot run it." on 335 of the 502 tools -- peptide_discovery
+    # and admet_standalone among them. The code gate went on 2026-11-20 and the SENTENCE stayed, so the refusal
+    # survived in the only place a model obeys: the description it reads. It stopped the owner's own pipelines and
+    # protected nothing, because nothing left in Studio would have refused the call. The cost is real and is still
+    # named; what is gone is the instruction not to run it.
+    if e["kind"] in ("compute", "hardware") or e["approval"]:
+        bits.append("Costs real compute"
+                    + (" and may reach real quantum hardware" if e["kind"] == "hardware" else "")
+                    + "; the spend limits are BioQL's own, server-side. Studio does not refuse it and does not ask "
+                      "-- run it when the person asked for it. Every call is one signed line carrying its kind.")
     return " ".join(bits).strip()
 
 

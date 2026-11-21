@@ -9,8 +9,9 @@ What this module owns is the order and the brakes:
   never trimmed into something callable;
 - a person confirms the plan; nothing runs before `confirm()`;
 - each run goes to its OWN results folder, so no run can write into another's (the moral equivalent of a worktree);
-- approval is not laundered: the approver `execute` is given is what each run carries, and a run whose entry demands
-  approval without one is refused like any other call and recorded as refused;
+- a person confirms, and that is the whole of it: `confirm()` is what lets a campaign run. The second gate -- a
+  per-run approval that `execute` had to carry -- is gone (2026-11-20); `needs_approval` survives as the COST LABEL
+  the report prints, so a reader can see which runs spend real compute. It refuses nothing;
 - a REFUSED or UNRESOLVABLE run is recorded as such and never becomes a result (the three states, CLAUDE.md
   2026-11-18);
 - the auditor did not run the work and is given only the criteria, the raw numbers and the provenance — never a
@@ -43,9 +44,9 @@ PLANNED, REFUSED, STOPPED_RUN = "PLANNED", "REFUSED", "STOPPED"
 MAX_WORKERS = 8                 # the plan says start small: two by default, eight at the very most
 MAX_NUMBERS = 400               # how many raw numbers the auditor is handed
 
-# At plan time the route and the arguments are checked; WHO approves is a question for `execute`, which passes the real
-# approver to every call. So the approval gate is satisfied here by a sentinel and nowhere else: a plan can never make
-# a call, and `execute` asks the gate again with the person's own name (or refuses).
+# At plan time the route and the arguments are checked, and nothing else: a plan can never make a call. The sentinel
+# is what `check` is given for the `approved_by` slot, which since 2026-11-20 gates nothing -- it stays because the
+# slot is still recorded, and because a plan must never be able to look like something a person signed.
 _PLAN_CHECK = "plan validation only, no call is made"
 
 _STOPS: dict[str, threading.Event] = {}
@@ -264,8 +265,9 @@ def execute(c: Campaign, approved_by: str | None = None, adapter: Adapter | None
             workers: int = 2) -> Campaign:
     """Run every planned call through the adapter, each into its own results folder.
 
-    `approved_by` is the person who approved THIS campaign, and it is what every run records. A run whose entry demands
-    approval and has none is refused like any other call: a campaign is not a way to launder approval.
+    `approved_by` is the person who stands behind THIS campaign, and it is what every run records. It no longer
+    gates anything -- `confirm()` is the gate -- so a campaign confirmed with no approver still runs, and the record
+    says so rather than pretending somebody signed it.
     """
     if c.state == STOPPED or _stopped(c):
         raise Refused("this campaign was stopped")
@@ -539,8 +541,8 @@ def render(rep: dict) -> str:
         L += [f"### Run {r['n']} — `{r['tool']}` · {r['state']}",
               f"- why: {r['why'] or '—'}",
               f"- parameters: `{json.dumps(r['args'], sort_keys=True, ensure_ascii=False)}`",
-              f"- approval: {'required' if r['needs_approval'] else 'not required'}"
-              f" · approved by: {r['approved_by'] or '—'}",
+              f"- cost: {'spends real compute' if r['needs_approval'] else 'cheap or read-only'}"
+              f" · stood behind by: {r['approved_by'] or '—'}",
               f"- result sha256: `{r['result_sha256'] or '— (no result)'}`",
               f"- real hardware: {'not stated by BioQL' if real is None else real}"
               f" · IBM job ids: {', '.join(p.get('ibm_job_ids') or []) or '—'}"

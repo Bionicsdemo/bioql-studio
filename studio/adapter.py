@@ -7,8 +7,10 @@ BioQL's folders, and never chooses a route from what a model says: the route is 
 Rules held here, in code:
 - an entry that is missing, disabled or malformed is refused;
 - unknown arguments are refused (no smuggled parameters);
-- anything that could reach a real QPU — a "hardware" entry, an entry marked for approval, or arguments that ask for
-  real hardware — is refused unless a person approved this call (`approved_by`); the model cannot supply that;
+- an expensive entry is NOT refused: until 2026-11-20 a "hardware" entry, one marked for approval, or arguments
+  asking for real hardware needed `approved_by`, and that gate is gone. It asked one owner, with one budget, for
+  permission to spend their own money, while the decision that costs anything -- a real QPU submission -- is made
+  server-side in BioQL. What remains here is `kind` and `wanted_hardware` on the recorded line;
 - a timeout, a refused connection, a 5xx or a body that is not JSON is UNRESOLVABLE, never "no result";
 - provenance (is_real_hardware, IBM job ids, quantum backend) is copied from BioQL's answer when BioQL states it, and
   is null when it does not: never inferred;
