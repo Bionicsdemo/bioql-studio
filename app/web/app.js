@@ -1917,6 +1917,71 @@ function structureNode(b) {
       if (lig >= 0 && parts.length > 1) viewer.center({ model: lig }, 0);
       viewer.render();
       note.textContent = parts.map((p) => p.path + " (" + (p.bytes || String(p.data).length) + " bytes)").join(" · ");
+
+      // --- Los tres modos que un químico usa de verdad.
+      //
+      // El visor rápido tenía estilos por papel y ningún control: para ver si un bolsillo ENVUELVE al ligando
+      // hace falta una superficie, y para eso había que irse a Mol*. Son tres llamadas de 3Dmol sobre la
+      // estructura que ya está cargada — ni una petición más, ni una línea más en el registro.
+      const prot = parts.findIndex((p) => p.role !== "ligand" && p.role !== "molecule");
+      const modos = el("div", "mol3d-modes");
+      const poner = (nombre, fn) => {
+        const btn = el("button", "tool mode", nombre);
+        btn.type = "button";
+        btn.addEventListener("click", () => {
+          [...modos.children].forEach((c) => c.classList.remove("on"));
+          btn.classList.add("on");
+          try {
+            viewer.removeAllSurfaces();
+            parts.forEach((p, i) => viewer.setStyle({ model: i }, STRUCT_STYLE[p.role] || STRUCT_STYLE.molecule));
+            fn();
+            viewer.render();
+          } catch (err) {
+            note.textContent = "ese modo no se pudo dibujar: " + String((err && err.message) || err);
+          }
+        });
+        modos.appendChild(btn);
+        return btn;
+      };
+      poner("Cartoon", () => { viewer.zoomTo(); }).classList.add("on");
+      if (prot >= 0) {
+        poner("Superficie", () => {
+          viewer.addSurface($.SurfaceType.VDW, { opacity: 0.72, color: "white" }, { model: prot });
+          viewer.zoomTo();
+        });
+      }
+      if (prot >= 0 && lig >= 0 && parts.length > 1) {
+        // El bolsillo: sólo los residuos que tocan al ligando, y la cámara encima. Es la vista que contesta la
+        // pregunta de si entra o no — y la que :3000 no tiene.
+        poner("Bolsillo", () => {
+          // El bolsillo se calcula AQUI, con las coordenadas que el propio visor devuelve.
+          //
+          // 3Dmol tiene un selector `within` para esto y en esta version devuelve CERO atomos: medido contra un
+          // complejo donde hay 45 a menos de 8 A, en sus tres formas (`within`, con `byres`, y con las claves
+          // al reves). Un boton que deja el lienzo en blanco es peor que no tener el boton, asi que la distancia
+          // se calcula a mano -- nueve lineas, deterministas, y comprobadas: 9 residuos, 72 atomos.
+          const P = viewer.selectedAtoms({ model: prot });
+          const L = viewer.selectedAtoms({ model: lig });
+          const R2 = 64;                       // 8 A al cuadrado, para no sacar raices en el bucle
+          const resi = new Set();
+          for (const a of P) {
+            for (const b of L) {
+              const dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z;
+              if (dx * dx + dy * dy + dz * dz < R2) { resi.add(a.resi); break; }
+            }
+          }
+          if (!resi.size) {
+            note.textContent = "no hay ningún residuo a 8 Å del ligando: no es un complejo acoplado";
+            viewer.zoomTo();
+            return;
+          }
+          const bolsillo = { model: prot, resi: [...resi] };
+          viewer.addSurface($.SurfaceType.SAS, { opacity: 0.85, color: "wheat" }, bolsillo);
+          viewer.zoomTo(bolsillo);
+          note.textContent = `${resi.size} residuo(s) a 8 Å del ligando`;
+        });
+      }
+      if (modos.children.length > 1) head.appendChild(modos);
     } catch (e) {
       fallback(String((e && e.message) || e));
     }

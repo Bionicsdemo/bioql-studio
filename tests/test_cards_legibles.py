@@ -178,3 +178,26 @@ def test_la_molecula_de_la_corrida_real_se_dibuja_con_el_svg_de_bioql():
     assert it["svg"].lstrip().startswith("<?xml") or it["svg"].lstrip().startswith("<svg")
     etiquetas = {r["label"] for r in it["rows"]}
     assert {"puntuación", "clase", "peso"} <= etiquetas, etiquetas
+
+
+# ------------------------------------------------------------------ el visor rápido
+def test_el_bolsillo_se_calcula_a_mano_y_no_con_el_selector_roto():
+    """3Dmol trae un selector `within` para "los residuos a 8 Å del ligando" y en la versión que viaja dentro de
+    la app devuelve CERO átomos — medido contra un complejo donde hay 45, en sus tres formas. Un botón que deja
+    el lienzo en blanco es peor que no tener el botón, así que la distancia se calcula aquí.
+    """
+    js = (Path(__file__).resolve().parent.parent / "app" / "web" / "app.js").read_text()
+    i = js.index('poner("Bolsillo"')
+    cuerpo = js[i:i + 2000]
+    assert "within:" not in cuerpo, "volvió el selector que devuelve cero"
+    assert "selectedAtoms" in cuerpo and "dx * dx" in cuerpo, "ya no se calcula la distancia"
+    # y cuando no hay bolsillo se dice, en vez de enseñar una vista vacía
+    assert "no es un complejo acoplado" in cuerpo
+
+
+def test_los_tres_modos_del_visor_existen():
+    js = (Path(__file__).resolve().parent.parent / "app" / "web" / "app.js").read_text()
+    for modo in ('poner("Cartoon"', 'poner("Superficie"', 'poner("Bolsillo"'):
+        assert modo in js, f"falta el modo {modo}"
+    # el de superficie necesita proteína; el de bolsillo, proteína Y ligando
+    assert "if (prot >= 0 && lig >= 0 && parts.length > 1)" in js

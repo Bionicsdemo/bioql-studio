@@ -521,3 +521,8 @@ body[data-ring=alarm] .ring{border-color:var(--red);animation:breathe 1.3s ease-
 .gal-kk { font-size: 10.5px; color: var(--label-2); }
 .gal-kn { font-size: 10.5px; color: var(--label); font-variant-numeric: tabular-nums; text-align: right; }
 .gal-gap { font-size: 10px; color: var(--orange); margin: 0; padding: 0 10px 8px; line-height: 1.35; }
+
+/* Los tres modos del visor rápido. Botones pequeños, pegados a la derecha de la cabecera: la molécula manda. */
+.mol3d-modes { display: inline-flex; gap: 4px; margin-left: auto; }
+.mol3d-modes .mode { padding: 2px 9px; font-size: 11px; }
+.mol3d-modes .mode.on { background: var(--accent); color: #fff; border-color: var(--accent); }
