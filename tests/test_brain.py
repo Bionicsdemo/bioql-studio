@@ -232,9 +232,29 @@ def test_once_runs_cold_and_reports_silence(studio_home, monkeypatch):
 
 
 def test_the_system_prompt_states_the_three_states_and_real_or_null():
-    for words in ("UNRESOLVABLE", "ABSENT", "is_real_hardware", "contradicted", "a person must approve"):
+    for words in ("UNRESOLVABLE", "ABSENT", "is_real_hardware", "contradicted"):
         assert words in brain.SYSTEM, words
     assert "never claim a run reached quantum hardware" in " ".join(brain.SYSTEM.lower().split())
+
+
+def test_the_system_prompt_does_not_teach_the_brain_to_expect_an_approval():
+    """Esta prueba exigia la frase "a person must approve" EN el prompt -- es decir, defendia que Studio le
+    enseñara a Claude a esperar negativas por aprobacion despues de que la puerta se hubiera quitado. Es el peor
+    sitio donde ese texto podia quedarse: no describe el sistema, lo CONDUCE, y produce exactamente la conducta
+    que el dueño no queria (anunciar el coste y quedarse esperando) sin que nada lo rechazara."""
+    assert "a person must approve" not in brain.SYSTEM
+    assert "Nothing is refused for being expensive" in brain.SYSTEM
+    # y las tres negativas que SI existen siguen nombradas, para que no las trate como un obstaculo
+    for real in ("not in the closed allowlist", "an argument the entry does not take", "does not look"):
+        assert real in brain.SYSTEM, real
+
+
+def test_the_system_prompt_points_at_the_parameters_read_from_bioqls_source():
+    """254 herramientas llevan los nombres que el handler de BioQL lee. Si el cerebro no sabe que estan ahi, no
+    los usa, y la mejora no llega a ninguna llamada."""
+    plano = " ".join(brain.SYSTEM.split())          # el prompt va envuelto a 118 columnas
+    assert "Su handler en BioQL lee" in plano
+    assert "a reading, not a declaration" in plano
 
 
 def test_a_config_never_outlives_its_session(studio_home):

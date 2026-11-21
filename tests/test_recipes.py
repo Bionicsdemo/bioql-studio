@@ -229,7 +229,8 @@ def test_a_runner_that_says_approval_is_needed_is_pending_not_failed_and_is_not_
     got = s.tick(now=item["next"] + 1)
     assert got["pending"] == [item["id"]]
     assert len(run.calls) == 1                                  # called once, never retried
-    assert s.pending()[0]["why"] == ["the runner reported that this needs a person's approval"]
+    assert "Claude Code (el runner)" in s.pending()[0]["why"][0]
+    assert "no de Studio" in s.pending()[0]["why"][0]   # la puerta es del runner, no de aqui
     assert s.get(item["id"])["result"]["state"] == "PENDING_APPROVAL"
 
 

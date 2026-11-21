@@ -46,12 +46,14 @@ AREAS = [
 ]
 AREA_ORDER = [a for a, _ in AREAS] + ["other"]
 
-READ, LOCAL, PERSON, UNKNOWN_TOOL = "read", "local computation", "needs a person", "not in the allowlist"
+# El vocabulario era "quien tiene que decir que si". Desde que la puerta se fue (2026-11-20) nadie lo dice, y
+# lo que queda que SI es verdad de esas entradas es lo que cuestan.
+READ, LOCAL, COSTS, UNKNOWN_TOOL = "read", "local computation", "costs real compute", "not in the allowlist"
 # Hardware, in words, never as a probability. BioQL's registry has no field that says whether a route reaches a QPU.
 HW_NO = "no: a read, or a computation classified local in the allowlist"
-HW_PERSON = "a person decides: nothing in BioQL's registry says whether this route reaches a QPU"
-HW_DECLARED = "declared `hardware` in the allowlist: a person must approve it"
-HW_ASKED = "the arguments ask for real hardware: a person must approve it"
+HW_UNKNOWN = "unknown: nothing in BioQL's registry says whether this route reaches a QPU"
+HW_DECLARED = "declared `hardware` in the allowlist: it can reach a real QPU"
+HW_ASKED = "the arguments ask for real hardware"
 NOT_PRICED = "not estimated: Studio does not price or time a BioQL run, and BioQL's registry does not either"
 
 # `Adapter.check` wants an approver for every `compute` entry, and a plan makes no call at all — so the gate is
@@ -133,15 +135,15 @@ def family_of(path: str) -> str:
 def _hardware(e: dict) -> str:
     if e["kind"] == "hardware":
         return HW_DECLARED
-    return HW_NO if e["kind"] in ("status", "local") else HW_PERSON
+    return HW_NO if e["kind"] in ("status", "local") else HW_UNKNOWN
 
 
 def _klass(e: dict) -> str:
-    return {"status": READ, "local": LOCAL}.get(e["kind"], PERSON) if not e["approval"] else PERSON
+    return {"status": READ, "local": LOCAL}.get(e["kind"], COSTS) if not e["approval"] else COSTS
 
 
 def card(name: str, e: dict) -> dict:
-    """One catalogue line for one entry: what it does, what it takes, who has to say yes, where the route came from."""
+    """One catalogue line for one entry: what it does, what it takes, what it costs, where the route came from."""
     area, src = area_of(e)
     reg = e.get("from_registry") or {}
     confirmed = reg.get("route_confirmed_by_bioql")
@@ -152,7 +154,9 @@ def card(name: str, e: dict) -> dict:
             "required": list(e["required"]), "optional": list(e["optional"]),
             # Empty is UNKNOWN here, not "takes nothing": see NO_PARAMS.
             "parameters_recorded": bool(e["required"] or e["optional"]),
-            "needs_person": bool(e["approval"] or e["kind"] == "hardware"),
+            # Se llamaba `needs_person`. Nadie aprueba nada desde 2026-11-20; lo que esa marca
+            # dice de verdad -- y lo unico que sigue siendo cierto de esas entradas -- es el coste.
+            "costs_compute": bool(e["approval"] or e["kind"] == "hardware"),
             "class": _klass(e), "could_reach_real_hardware": _hardware(e),
             # True when BioQL itself answered for this route; None when nobody asked. Never False by absence.
             "route_confirmed_by_bioql": True if confirmed is True else None,
@@ -183,7 +187,7 @@ def catalogue(entries: dict[str, dict] | None = None) -> dict:
     by_route: dict[tuple, list[str]] = {}
     for c in cards:
         by_route.setdefault((c["method"], c["path"]), []).append(c["name"])
-    rules = {k: {(x["kind"], x["needs_person"]) for x in cards if (x["method"], x["path"]) == k} for k in by_route}
+    rules = {k: {(x["kind"], x["costs_compute"]) for x in cards if (x["method"], x["path"]) == k} for k in by_route}
     for c in cards:
         same = [n for n in by_route[(c["method"], c["path"])] if n != c["name"]]
         c["same_route_as"] = same
@@ -209,14 +213,14 @@ def catalogue(entries: dict[str, dict] | None = None) -> dict:
         for c in mine:
             gs.setdefault(c["group"], []).append(c)
         areas.append({"area": a, "count": len(mine),
-                      "needs_person": sum(1 for c in mine if c["needs_person"]),
+                      "costs_compute": sum(1 for c in mine if c["costs_compute"]),
                       "reads": sum(1 for c in mine if c["class"] == READ),
                       "not_callable": sum(1 for c in mine if not c["callable"]),
                       "group_source": "derived from the route path by Studio, not stated by BioQL",
                       "groups": [{"group": g, "count": len(gs[g]), "entries": gs[g]} for g in sorted(gs)]})
     return {"total": len(cards), "counts": {g["area"]: g["count"] for g in areas},
             "group_counts": {g["area"]: {x["group"]: x["count"] for x in g["groups"]} for g in areas},
-            "needs_person": sum(1 for c in cards if c["needs_person"]),
+            "costs_compute": sum(1 for c in cards if c["costs_compute"]),
             "reads": sum(1 for c in cards if c["class"] == READ),
             "local": sum(1 for c in cards if c["class"] == LOCAL),
             "not_callable": sum(1 for c in cards if not c["callable"]),
@@ -274,7 +278,7 @@ def search(q: str, entries: dict[str, dict] | None = None, limit: int | None = N
             continue
         # No `group` here on purpose: the catalogue folds a lone sub-group into its head, so a group printed from
         # one entry alone would not be the group the catalogue shows.
-        out.append({"name": name, "area": area, "kind": e["kind"], "class": _klass(e), "needs_person": bool(e["approval"] or e["kind"] == "hardware"),
+        out.append({"name": name, "area": area, "kind": e["kind"], "class": _klass(e), "costs_compute": bool(e["approval"] or e["kind"] == "hardware"),
                     "purpose": purpose, "purpose_recorded": recorded,
                     "matched_on": sorted(hit), "score": score})
     out.sort(key=lambda r: (-r["score"], r["name"]))
@@ -504,7 +508,7 @@ def cost(plan_dict: dict, entries: dict[str, dict] | None = None) -> dict:
         e = ents.get(tool)
         mine = [x for x in refs if x["step"] == n]
         if e is None:
-            steps.append({"n": n, "tool": tool, "class": UNKNOWN_TOOL, "needs_person": True,
+            steps.append({"n": n, "tool": tool, "class": UNKNOWN_TOOL, "costs_compute": True,
                           "could_reach_real_hardware": "unknown: the entry is not in the allowlist",
                           "registry_cost_tier": None, "unresolved": mine,
                           "blocked_until_resolved": bool(mine), "parameters_recorded": None})
@@ -513,7 +517,7 @@ def cost(plan_dict: dict, entries: dict[str, dict] | None = None) -> dict:
         hw = HW_ASKED if wants_hardware(args) else _hardware(e)
         reg = e.get("from_registry") or {}
         steps.append({"n": n, "tool": tool, "class": _klass(e),
-                      "needs_person": bool(e["approval"] or e["kind"] == "hardware" or wants_hardware(args)),
+                      "costs_compute": bool(e["approval"] or e["kind"] == "hardware" or wants_hardware(args)),
                       "could_reach_real_hardware": hw,
                       # BioQL's own word, quoted, never turned into a number.
                       "registry_cost_tier": reg.get("cost_tier"),
@@ -524,7 +528,7 @@ def cost(plan_dict: dict, entries: dict[str, dict] | None = None) -> dict:
                       "unresolved": mine, "blocked_until_resolved": bool(mine)})
     return {"money": NOT_PRICED, "time": NOT_PRICED,
             "steps": steps, "total_steps": len(steps),
-            "needs_person": sum(1 for s in steps if s["needs_person"]),
+            "costs_compute": sum(1 for s in steps if s["costs_compute"]),
             "reads": sum(1 for s in steps if s["class"] == READ),
             "local": sum(1 for s in steps if s["class"] == LOCAL),
             "unknown_tools": sum(1 for s in steps if s["class"] == UNKNOWN_TOOL),

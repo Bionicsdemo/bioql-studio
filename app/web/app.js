@@ -1551,7 +1551,9 @@ async function drawSettings(box) {
   [["version", st.version], ["service", "127.0.0.1:" + st.port], ["data", st.home],
    ["BioQL's engine", st.bioql], ["BioQL's window", "not reached from here"],
    ["tools in the allowlist", TOOLS.length ? String(TOOLS.length) : "—"],
-   ["tools that ask a person", String(TOOLS.filter((t) => t.approval).length)],
+   // Decia "tools that ask a person". No desde que se quito la puerta: ese campo es una etiqueta de coste.
+   ["tools that cost compute",
+    String(TOOLS.filter((t) => t.approval || t.kind === "compute" || t.kind === "hardware").length)],
    ["the brain", brainSays]]
     .forEach(([k, v]) => {
       const row = el("div", "row pair");

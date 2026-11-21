@@ -93,8 +93,8 @@ def test_a_card_carries_parameters_person_provenance_and_one_line():
     by_name = {e["name"]: e for e in wf.cards(c)}
     admet = by_name["admet_standalone"]
     assert admet["required"] == ["smiles"] and admet["optional"] == ["target", "indication"]
-    assert admet["needs_person"] is True and admet["class"] == wf.PERSON
-    assert admet["could_reach_real_hardware"] == wf.HW_PERSON
+    assert admet["costs_compute"] is True and admet["class"] == wf.COSTS
+    assert admet["could_reach_real_hardware"] == wf.HW_UNKNOWN
     assert admet["registry"]["cost_tier"] == "medium"
     assert admet["purpose"] and "\n" not in admet["purpose"]
     # a route BioQL itself answered for says so; one nobody asked about is None, never False
@@ -121,13 +121,13 @@ def test_an_entry_with_no_recorded_parameters_is_unknown_not_empty():
     assert c["parameters_not_recorded"] >= 1
 
 
-def test_a_read_is_a_read_and_a_compute_asks_a_person():
+def test_a_read_is_a_read_y_un_computo_dice_que_cuesta():
     c = wf.catalogue(entries())
     by_name = {e["name"]: e for e in wf.cards(c)}
     assert by_name["backend_health"]["class"] == wf.READ
     assert by_name["backend_health"]["could_reach_real_hardware"] == wf.HW_NO
     assert by_name["render_2d"]["class"] == wf.LOCAL
-    assert by_name["screening_chembl"]["class"] == wf.PERSON
+    assert by_name["screening_chembl"]["class"] == wf.COSTS
 
 
 def test_catalogue_of_the_real_defaults_without_the_owners_file():
@@ -311,11 +311,11 @@ def test_cost_says_what_each_step_is_and_never_a_number():
     ents = entries()
     p = wf.plan("due diligence pack", {"target_or_product": "GLP-1R", "jurisdiction": "US"}, ad())
     c = wf.cost(p, ents)
-    assert [s["class"] for s in c["steps"]] == [wf.READ, wf.READ, wf.PERSON, wf.PERSON]
-    assert c["reads"] == 2 and c["needs_person"] == 2
+    assert [s["class"] for s in c["steps"]] == [wf.READ, wf.READ, wf.COSTS, wf.COSTS]
+    assert c["reads"] == 2 and c["costs_compute"] == 2
     assert c["money"] == c["time"] == wf.NOT_PRICED
     assert c["steps"][0]["could_reach_real_hardware"] == wf.HW_NO
-    assert c["steps"][2]["could_reach_real_hardware"] == wf.HW_PERSON
+    assert c["steps"][2]["could_reach_real_hardware"] == wf.HW_UNKNOWN
     assert c["steps"][2]["registry_cost_tier"] == "high"      # BioQL's own word, quoted
     assert c["no_unresolved_references"] is True
     assert c["order_enforced"] is False and "neither orders" in c["order_note"]
@@ -336,19 +336,19 @@ def test_cost_says_a_person_decides_about_hardware_when_the_arguments_ask_for_it
          "runs": [{"tool": "target_quantum_design", "args": {"target": "GLP-1R", "real_qpu": True}, "why": "w"}]}
     c = wf.cost(p, entries())
     assert c["steps"][0]["could_reach_real_hardware"] == wf.HW_ASKED
-    assert c["steps"][0]["needs_person"] is True
+    assert c["steps"][0]["costs_compute"] is True
     assert "a person decides" in c["hardware"]
 
 
 def test_cost_declares_a_declared_hardware_entry_as_such():
     ents = entries(qpu_run={"method": "POST", "path": "/api/quantum/qpu_run", "kind": "hardware"})
     c = wf.cost({"title": "T", "criteria": ["c"], "runs": [{"tool": "qpu_run", "args": {}, "why": "w"}]}, ents)
-    assert c["steps"][0]["could_reach_real_hardware"] == wf.HW_DECLARED and c["steps"][0]["needs_person"] is True
+    assert c["steps"][0]["could_reach_real_hardware"] == wf.HW_DECLARED and c["steps"][0]["costs_compute"] is True
 
 
 def test_cost_of_a_tool_that_is_not_in_the_list_says_unknown_not_cheap():
     c = wf.cost({"title": "T", "criteria": ["c"], "runs": [{"tool": "ghost", "args": {}, "why": "w"}]}, entries())
-    assert c["steps"][0]["class"] == wf.UNKNOWN_TOOL and c["steps"][0]["needs_person"] is True
+    assert c["steps"][0]["class"] == wf.UNKNOWN_TOOL and c["steps"][0]["costs_compute"] is True
     assert c["unknown_tools"] == 1
     assert "unknown" in c["steps"][0]["could_reach_real_hardware"]
 

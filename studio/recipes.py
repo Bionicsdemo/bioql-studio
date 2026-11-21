@@ -527,9 +527,12 @@ class Schedules:
                                                        "schedule": x.get("id"), "by": by,
                                                        "approved_by": approved_by})})
         if _asks_for_approval(said):
-            # The runner itself says a person is needed. That is pending, not failed, and it is never retried
-            # automatically: a retry is how a refusal turns into a run nobody approved.
-            return self._pend(x, ["the runner reported that this needs a person's approval"], r, said=said)
+            # El RUNNER -- Claude Code, con su propio sistema de permisos -- dice que hace falta una persona.
+            # Esa puerta es suya y sigue existiendo; la de Studio se quito el 2026-11-20. Queda PENDIENTE, no
+            # fallida, y no se reintenta sola: un reintento es como una negativa se convierte en una corrida que
+            # nadie aprobo.
+            return self._pend(x, ["Claude Code (el runner) pidio la aprobacion de una persona; "
+                                  "esa puerta es suya, no de Studio"], r, said=said)
         return self._result(x, {"state": "RAN", "by": by, "approved_by": approved_by, "said": _small(said),
                                 "record": _record({"tool": "schedule_run", "state": "RAN", "detail": "",
                                                    "recipe": req["recipe"], "schedule": x.get("id"),
