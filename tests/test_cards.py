@@ -94,7 +94,10 @@ def leaves(o, path=""):
 
 ALLOWED = {"facts": {"rows"}, "table": {"columns", "rows"}, "molecule2d": {"png_base64", "smiles"},
            "molecule3d": {"sdf", "parts", "label"}, "radar": {"axes", "source", "max"}, "series": {"x_label", "y_label", "points"}, "text": {"text"},
-           "links": {"items"}, "absent": {"what", "why"},
+           "links": {"items"}, "absent": {"what", "why", "gap", "fix"},
+           # Lo que aporta Claude donde BioQL no llega. Tipo PROPIO a proposito: no puede caer en una
+           # fila de `facts` ni en una puntuacion, y lleva siempre de donde sale y que NO es.
+           "contributed": {"what", "value", "basis", "not_a"},
            "chart_image": {"png_base64", "title", "url"},
            # `converge` se añadió el 2026-11-20 y no entró aquí: el contrato lo habría dejado pasar con
            # cualquier clave hasta que una tarjeta real lo produjera.

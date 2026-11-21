@@ -2450,7 +2450,31 @@ function cardNode(card) {
       });
       body.appendChild(g);
     } else if (b.type === "absent") {
-      body.appendChild(el("p", "absent-block", (b.what || "this") + " — " + (b.why || "not computed")));
+      // Un hueco con `gap: "entrada"` NO es un punto final: BioQL sabe calcularlo y le falta un dato, y dice
+      // cuál. Se dibuja distinto del que no tiene modelo, porque uno se puede cerrar y el otro no.
+      const p = el("p", "absent-block" + (b.gap ? " gap-" + b.gap : ""),
+                   (b.what || "this") + " — " + (b.why || "not computed"));
+      if (b.fix) {
+        const f = el("span", "gap-fix", " · falta: " + b.fix);
+        p.appendChild(f);
+      }
+      body.appendChild(p);
+    } else if (b.type === "contributed") {
+      // Lo que aporta Claude donde BioQL no llega.
+      //
+      // Va en su propio bloque y con su propia marca, y eso NO es decoración: este proyecto ya envió una vez
+      // tres dosis distintas (51,2 / 49,3 / 48,8 mg) para la misma molécula porque un número inventado se
+      // coló donde se leía una medida. Un aporte lleva siempre de dónde sale y qué NO es, y no puede caer en
+      // una fila de datos ni en una puntuación: es otro tipo de bloque.
+      const c = el("div", "contrib");
+      const h = el("div", "contrib-h");
+      h.appendChild(el("span", "contrib-tag", "aporta Claude"));
+      h.appendChild(el("span", "contrib-w", b.what || ""));
+      c.appendChild(h);
+      if (b.value) c.appendChild(el("div", "contrib-v", String(b.value)));
+      if (b.basis) c.appendChild(el("p", "fine contrib-b", "sobre: " + b.basis));
+      c.appendChild(el("p", "fine contrib-n", b.not_a || "no es una medida de BioQL"));
+      body.appendChild(c);
     } else if (b.type === "links") {
       const d = el("div", "row-head");
       // The card already refuses a bad scheme, and so does this: a link is an anchor, and `javascript:` or a

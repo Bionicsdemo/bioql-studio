@@ -137,6 +137,28 @@ TOOLS: list[dict] = [
             "contradicts": {"type": "boolean"},
         }, "required": ["act"], "additionalProperties": False},
     },
+    {
+        "name": "studio_contribute",
+        "description": (
+            "[aporte] Donde BioQL dice que NO puede calcular algo y tu si sabes algo util, ponlo aqui -- "
+            "nunca en una frase que se lea como una medida. BioQL declara sus huecos con su razon: unos le "
+            "faltan una ENTRADA (\"need receptor sequence to fold the complex\") y esos NO se rellenan, se "
+            "cierran: consigue el dato y vuelve a llamar, y el numero sera suyo y medido. Otros no tienen "
+            "MODELO (\"no validated per-molecule dose model\") y ahi no hay numero que BioQL pueda dar: lo "
+            "que cabe es conocimiento externo, dicho como lo que es. "
+            "`basis` es OBLIGATORIO y se refusa sin el: un aporte sin de donde sale es exactamente el defecto "
+            "que este proyecto ya envio una vez, tres dosis distintas para la misma molecula. Una tasa base de "
+            "una clase de farmacos NO es una prediccion para esta molecula: dilo en `not_a`. "
+            "Queda en el registro firmado, asi que manana se puede saber que numero fue de BioQL y cual tuyo."),
+        "inputSchema": {"type": "object", "properties": {
+            "what": {"type": "string", "description": "sobre que es: 'probabilidad de exito clinico', 'riesgo de agregacion'"},
+            "value": {"type": "string", "description": "lo que aportas, en palabras. Si es un numero, con su unidad y su rango"},
+            "basis": {"type": "string", "description": "de donde sale: un articulo con su cita, una guia, una tasa de clase. "
+                                                       "'mi criterio, sin fuente' es una base valida -- pero dila asi"},
+            "not_a": {"type": "string", "description": "que NO es: 'no es una prediccion para esta molecula'"},
+            "about_gap": {"type": "string", "description": "el hueco que contesta, citado de BioQL"},
+        }, "required": ["what", "value", "basis"], "additionalProperties": False},
+    },
 ]
 
 NAMES = {t["name"] for t in TOOLS}
@@ -257,6 +279,34 @@ def handle(name: str, args: dict, ad) -> dict:
             return {"state": r.state, "detail": r.detail}
         b = r.value
         return {"board": b, "report": board.report(b), "markdown": board.markdown(b)}
+
+    if name == "studio_contribute":
+        what = str(args.get("what") or "").strip()
+        value = str(args.get("value") or "").strip()
+        basis = str(args.get("basis") or "").strip()
+        if not (what and value and basis):
+            # La base es la unica regla que hace esto seguro. Sin ella, un aporte es indistinguible de un
+            # numero inventado, que es el defecto que esta app existe para no repetir.
+            return {"state": "REFUSED",
+                    "detail": "un aporte necesita `what`, `value` y `basis`. Sin decir de donde sale no se "
+                              "distingue de un numero inventado, y eso ya paso una vez en este proyecto"}
+        not_a = str(args.get("not_a") or "").strip() or "no es una medida de BioQL"
+        gap = str(args.get("about_gap") or "").strip()
+        linea = ledger.append({"tool": "studio_contribute", "state": "RESOLVED", "by": "claude",
+                               "verdict": None, "detail": what[:200],
+                               "args": {"what": what, "basis": basis, "about_gap": gap},
+                               "contribution": {"what": what, "value": value, "basis": basis,
+                                                "not_a": not_a, "about_gap": gap}})
+        return {"state": "RESOLVED", "recorded": True,
+                "ledger_hash": (linea or {}).get("hash") if isinstance(linea, dict) else None,
+                "card": {"kind": "contribution", "title": "Aporte de Claude", "subtitle": what,
+                         "provenance": {"is_real_hardware": None, "ibm_job_ids": [], "backends": []},
+                         "verdict": None, "findings": [],
+                         "blocks": [{"type": "contributed", "what": what, "value": value,
+                                     "basis": basis, "not_a": not_a}]
+                                   + ([{"type": "absent", "what": "el hueco que contesta", "why": gap}] if gap else [])},
+                "note": "queda en el registro firmado: manana se puede separar lo que midio BioQL de lo que "
+                        "aportaste tu"}
 
     if name == "studio_board_write":
         act = str(args.get("act") or "")

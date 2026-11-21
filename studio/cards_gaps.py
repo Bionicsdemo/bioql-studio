@@ -20,6 +20,7 @@ sí" es ruido. Pero la clave se marca consumida igual, para que no vuelva a sali
 """
 from __future__ import annotations
 
+import re
 from typing import Any
 
 # El orden del frontend: la razón primero, la nota después. `reason_en` y `note_en` existen porque BioQL escribe
@@ -28,6 +29,41 @@ WHY_KEYS = ("reason", "reason_en", "reason_es", "error", "why", "note", "note_en
             "honest_note", "caveat", "disclaimer", "detail")
 MAX_GAPS = 14
 MAX_DEPTH = 7
+
+# ---------------------------------------------------------------- de que clase es el hueco
+#
+# Un hueco declarado no es un punto final: es una frase que dice POR QUE no hay numero, y de esa frase se deduce
+# que haria falta para que lo hubiera. Clasificado sobre las 26 razones distintas de una corrida PD-L1 real:
+#
+#   ENTRADA  BioQL sabe calcularlo y le falta un dato -- "need receptor sequence to fold the complex",
+#            "promoted checkpoint not found", "No module named 'geneformer_validator'". Son CINCO de las 26, y
+#            son las valiosas: conseguir ese dato y volver a llamar devuelve un numero DE BIOQL, medido.
+#   MODELO   BioQL se niega a predecir porque no tiene con que -- "no validated per-molecule dose model",
+#            "clinical probability-of-success not predicted here". Aqui un numero inventado es exactamente el
+#            defecto que este proyecto ya envio una vez (51,2 / 49,3 / 48,8 mg para la misma entrada). Lo que
+#            cabe es conocimiento EXTERNO y ETIQUETADO, nunca una prediccion por molecula.
+#   OTRO     el resto.
+#
+# La clase se deduce del texto de BioQL y de nada mas. No se adivina que dato falta: si BioQL dice "need X", se
+# cita "X" tal cual; si no lo dice, no se inventa.
+NEEDS_INPUT = re.compile(
+    r"\bneed(?:s)? (?:a |an |the )?(?P<que>[^.;,]{3,80})"
+    r"|No module named '(?P<mod>[^']+)'"
+    r"|(?P<ckpt>checkpoint not found[^.;]*)"
+    r"|requires? (?:a |an |the )?(?P<req>[^.;,]{3,80})", re.I)
+NO_MODEL = re.compile(r"no validated|no quantitative|not predicted here|no [a-z/ -]{0,24}model\b", re.I)
+
+
+def classify(why: str) -> tuple[str, str | None]:
+    """(clase, lo que falta segun BioQL). La segunda es None cuando BioQL no lo dice."""
+    w = str(why or "")
+    m = NEEDS_INPUT.search(w)
+    if m:
+        falta = m.group("que") or m.group("mod") or m.group("ckpt") or m.group("req")
+        return "entrada", (falta.strip() if falta else None)
+    if NO_MODEL.search(w):
+        return "modelo", None
+    return "otro", None
 
 
 def _why(d: dict) -> str:
@@ -74,7 +110,15 @@ def gap_blocks(payload: Any, consumed: set[str]) -> list[dict]:
 
     if not gaps:
         return []
-    out = [{"type": "absent", "what": p, "why": w} for p, w in gaps[:MAX_GAPS]]
+    out = []
+    for p, w in gaps[:MAX_GAPS]:
+        b = {"type": "absent", "what": p, "why": w}
+        clase, falta = classify(w)
+        if clase != "otro":
+            b["gap"] = clase
+        if falta:
+            b["fix"] = falta
+        out.append(b)
     if len(gaps) > MAX_GAPS:
         out.append({"type": "text",
                     "text": f"{len(gaps) - MAX_GAPS} hueco(s) declarado(s) más, no mostrados aquí"})

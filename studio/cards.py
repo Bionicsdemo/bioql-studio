@@ -66,7 +66,7 @@ from . import cards_admet, cards_candidates, cards_gaps, cards_viz
 
 KINDS = ("molecule", "admet", "docking", "structure", "screening", "pipeline", "job", "catalogue", "table", "text")
 BLOCK_TYPES = ("facts", "table", "molecule2d", "molecule3d", "chart_image", "status", "gates", "radar",
-               "converge", "gallery",
+               "converge", "gallery", "contributed",
                "series", "text", "links", "absent")
 
 MAX_TABLE_ROWS = 200
