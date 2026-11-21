@@ -84,11 +84,18 @@ def _norm(name: str, e: dict) -> dict:
            "optional": list(e.get("optional") or []), "timeout": float(e.get("timeout") or 43200),
            "approval": bool(e.get("approval", False)), "enabled": bool(e.get("enabled", True)),
            "absent_on_404": bool(e.get("absent_on_404", False)), "why": str(e.get("why", "")),
+           # Los parametros que el handler de BioQL LEE, sacados de su codigo (`tools/discover_params.py`).
+           # Campo propio a proposito: NO entra en `required` ni en `optional`, que son los que deciden a quien
+           # se le rechaza una llamada. Una lectura en el codigo no es una declaracion -- marcar obligatorio algo
+           # que no lo es romperia llamadas que hoy funcionan -- asi que esto solo sirve para DECIR en la
+           # descripcion que nombres espera la ruta, que era lo que Claude tenia que adivinar en 386 de 502.
+           "params_seen": sorted(set(e.get("params_seen") or [])),
            "from_registry": e.get("from_registry")}
     if out["kind"] in ("compute", "hardware"):
-        # Not a default the file can override: BioQL's registry never says whether a pipeline reaches a QPU, so
-        # anything heavier than a local computation asks a person. To make one cheap, the owner changes its KIND to
-        # "local" — a deliberate statement about that entry, not a forgotten field.
+        # No es un defecto que el fichero pueda sobreescribir: el registro de BioQL nunca dice si una pipeline
+        # llega a un QPU, asi que todo lo mas pesado que un calculo local queda MARCADO COMO CARO. Desde
+        # 2026-11-20 esa marca no rechaza nada -- es la etiqueta de coste que viaja a la descripcion y a la linea
+        # del registro. Para abaratar una, el dueño le cambia el KIND a "local".
         out["approval"] = True
     return out
 

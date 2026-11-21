@@ -99,6 +99,17 @@ def _describe(e: dict) -> str:
     # survived in the only place a model obeys: the description it reads. It stopped the owner's own pipelines and
     # protected nothing, because nothing left in Studio would have refused the call. The cost is real and is still
     # named; what is gone is the instruction not to run it.
+    # Los nombres que el handler de BioQL lee de verdad. De las 502 entradas, 386 no declaraban un solo
+    # parametro -- el registro de BioQL publica 63 -- asi que para esas Claude tenia la ruta y ninguna pista del
+    # contrato, y una llamada con `target=` donde el codigo lee `protein=` vuelve con un 400 que se lee como que
+    # BioQL esta roto. Estos salen de SU PROPIO CODIGO (`tools/discover_params.py`), y se dice de donde salen:
+    # una lectura en el fuente no es una declaracion, y el modelo merece saber la diferencia.
+    vistos = [p for p in (e.get("params_seen") or [])
+              if p not in set(e["required"]) | set(e["optional"])]
+    if vistos:
+        bits.append("Su handler en BioQL lee: " + ", ".join(vistos[:14])
+                    + (f" (+{len(vistos) - 14})" if len(vistos) > 14 else "")
+                    + ". Leidos de su codigo, no declarados en su registro.")
     if e["kind"] in ("compute", "hardware") or e["approval"]:
         bits.append("Costs real compute"
                     + (" and may reach real quantum hardware" if e["kind"] == "hardware" else "")
