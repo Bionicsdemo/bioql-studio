@@ -1670,6 +1670,87 @@ const STRUCT_STYLE = {
   structure: { cartoon: { color: "spectrum" } },
 };
 
+/** El reproductor: fotogramas trazados, con linea de tiempo.
+ *
+ * Por que no un GIF, que es lo que devuelve la ruta de BioQL: un GIF se reproduce y punto. No se para en el
+ * fotograma 14, no se recorre hacia atras y no se mide. Lo que uno mira de un acercamiento es justamente UN
+ * instante — donde entra, donde toca — asi que la pelicula llega como fotogramas y el recorrido es la interfaz.
+ *
+ * Las imagenes son `data:image/png`, que `img-src 'self' data:` ya permite; no hace falta tocar la politica. Se
+ * precargan todas antes de dejar recorrer, porque un raspador que parpadea mientras carga es peor que ninguno.
+ */
+function filmPlayer(box, v) {
+  const fig = el("figure", "film");
+  const img = el("img", "film-frame");
+  img.alt = "fotograma trazado con PyMOL";
+  img.decoding = "sync";
+  fig.appendChild(img);
+
+  const src = v.frames.map((f) => "data:image/png;base64," + f);
+  const n = src.length;
+  let i = 0;
+  let timer = null;
+
+  const bar = el("div", "film-bar");
+  const play = el("button", "tool film-play", "▶");
+  play.type = "button";
+  play.title = "Reproducir / pausar (espacio)";
+  const time = document.createElement("input");
+  time.type = "range";
+  time.className = "film-time";
+  time.min = "0";
+  time.max = String(n - 1);
+  time.step = "1";
+  time.value = "0";
+  time.title = "Recorrer los fotogramas (← →)";
+  const count = el("span", "film-count", "1 / " + n);
+  bar.appendChild(play);
+  bar.appendChild(time);
+  bar.appendChild(count);
+  fig.appendChild(bar);
+
+  fig.appendChild(el("figcaption", "fine",
+    `PyMOL ${v.pymol || "?"} · ${n} fotogramas · ${v.per_frame}s cada uno (${v.seconds}s en total) · `
+    + `${v.width}x${v.height} · ${v.has_ligand ? "acercamiento del ligando" : "órbita (sin ligando aparte)"}`));
+
+  const show = (k) => {
+    i = Math.max(0, Math.min(n - 1, k | 0));
+    img.src = src[i];
+    time.value = String(i);
+    count.textContent = (i + 1) + " / " + n;
+  };
+  const stop = () => {
+    if (timer) clearInterval(timer);
+    timer = null;
+    play.textContent = "▶";
+  };
+  const start = () => {
+    if (timer) return;
+    play.textContent = "❚❚";
+    timer = setInterval(() => show((i + 1) % n), 90);   // ~11 fps, el paso con el que se trazó el acercamiento
+  };
+
+  play.addEventListener("click", () => (timer ? stop() : start()));
+  time.addEventListener("input", () => { stop(); show(Number(time.value)); });
+  fig.tabIndex = 0;
+  fig.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowRight") { stop(); show(i + 1); e.preventDefault(); }
+    else if (e.key === "ArrowLeft") { stop(); show(i - 1); e.preventDefault(); }
+    else if (e.key === " ") { timer ? stop() : start(); e.preventDefault(); }
+  });
+
+  box.appendChild(fig);
+  // Precarga: hasta que no estan todas en el decodificador del navegador, recorrer parpadea.
+  let left = n;
+  src.forEach((s) => {
+    const pre = new Image();
+    pre.onload = pre.onerror = () => { if (--left === 0) show(0); };
+    pre.src = s;
+  });
+  show(0);
+  return fig;
+}
+
 function structureNode(b) {
   const parts = Array.isArray(b.parts) && b.parts.length
     ? b.parts
@@ -1691,6 +1772,12 @@ function structureNode(b) {
   ray.type = "button";
   ray.title = "Trazar esta estructura con PyMOL (imagen fija, calidad de publicacion)";
   head.appendChild(ray);
+  // La pelicula: el acercamiento, fotograma a fotograma, con linea de tiempo. No es un GIF — un GIF da vueltas y
+  // no se puede parar en el fotograma que interesa, que es justo lo que uno quiere mirar de un acople.
+  const film = el("button", "tool mol3d-film", "Película");
+  film.type = "button";
+  film.title = "Trazar el acercamiento del ligando con PyMOL y recorrerlo fotograma a fotograma";
+  head.appendChild(film);
   const stage = el("div", "mol3d-stage");
   box.appendChild(stage);
   const note = el("p", "fine");
@@ -1749,6 +1836,40 @@ function structureNode(b) {
     } finally {
       ray.disabled = false;
       ray.textContent = was;
+    }
+  });
+
+  film.addEventListener("click", async () => {
+    // El receptor es la parte grande; el ligando, la pequeña. Si solo hay una, PyMOL filma una órbita y lo dice:
+    // una aproximación que nadie calculó no se anima como si existiera.
+    const rec = parts.find((p) => p.role === "protein" || p.role === "complex" || p.role === "pocket"
+                                  || p.role === "structure") || parts[0];
+    const lig = parts.find((p) => p !== rec && (p.role === "ligand" || p.role === "molecule"));
+    film.disabled = true;
+    const was = film.textContent;
+    film.textContent = "trazando…";
+    note.textContent = "PyMOL está trazando los fotogramas (≈1 s cada uno); la ventana sigue viva mientras tanto.";
+    try {
+      const got = await api("/api/dockfilm", {
+        receptor: rec.data, receptor_format: rec.format,
+        ligand: lig ? lig.data : "", ligand_format: lig ? lig.format : "",
+        n_frames: 24, width: 900, height: 640,
+      });
+      const r = got.body;
+      if (r && r.state === "RESOLVED" && r.value && Array.isArray(r.value.frames) && r.value.frames.length) {
+        filmPlayer(box, r.value);
+        note.textContent = "";
+        film.remove();
+        return;
+      }
+      // ABSENT (no hay PyMOL en este Mac) y UNRESOLVABLE (lo hay y no entregó) se dicen distinto, como en render3d.
+      note.textContent = (r && r.state === "ABSENT" ? "PyMOL: " : "la película no se pudo trazar: ")
+        + ((r && r.detail) || "sin respuesta");
+    } catch (e) {
+      note.textContent = "la película no se pudo trazar: " + String((e && e.message) || e);
+    } finally {
+      film.disabled = false;
+      film.textContent = was;
     }
   });
 

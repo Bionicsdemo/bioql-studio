@@ -1038,6 +1038,21 @@ def make_handler(s: Studio):
                         return self._json({"state": "RESOLVED", "source": "pymol", "detail": r.detail,
                                            "value": r.value})
                     return self._json({"state": r.state, "source": "pymol", "detail": r.detail}, 200)
+                if p == "/api/dockfilm":
+                    # El acercamiento, fotograma a fotograma. Como /api/render3d: PyMOL local sobre una estructura
+                    # que esta ventana YA tiene, no una llamada a BioQL — no gasta su motor, no toca el 5035 y no
+                    # entra en el registro firmado, que es de llamadas a BioQL. BioQL tiene su propia ruta de
+                    # animacion y no puede correr en esta Mac (su interprete no tiene `pymol2`), asi que la pelicula
+                    # se hace aqui, por el camino que render3d ya demostro.
+                    from studio import dock_film
+                    r = dock_film.film(str(b.get("receptor") or ""), str(b.get("receptor_format") or ""),
+                                       str(b.get("ligand") or ""), str(b.get("ligand_format") or ""),
+                                       n_frames=int(b.get("n_frames") or dock_film.FRAMES_DEFAULT),
+                                       width=int(b.get("width") or 900), height=int(b.get("height") or 640))
+                    if r.resolved:
+                        return self._json({"state": "RESOLVED", "source": "pymol", "detail": r.detail,
+                                           "value": r.value})
+                    return self._json({"state": r.state, "source": "pymol", "detail": r.detail}, 200)
                 if p == "/api/chat":
                     out, code = s.chat(str(b.get("text") or ""))
                     return self._json(out, code)

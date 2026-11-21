@@ -473,3 +473,16 @@ body[data-ring=alarm] .ring{border-color:var(--red);animation:breathe 1.3s ease-
 .mol3d-ray{margin-left:auto}
 .mol3d-stage.mstar{height:520px;background:#fff}
 .mol3d-stage.mstar .msp-plugin{position:absolute;inset:0}
+
+/* La película: fotogramas trazados con PyMOL, recorribles. La imagen manda y los mandos son una barra fina
+   debajo — lo que se mira es la molécula, no la interfaz. */
+.film { margin: 10px 0; display: flex; flex-direction: column; gap: 6px; }
+.film:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 11px; }
+.film-frame {
+  width: 100%; height: auto; display: block; border-radius: 10px;
+  border: 1px solid var(--sep); background: #fff;
+}
+.film-bar { display: flex; align-items: center; gap: 10px; }
+.film-play { flex: 0 0 auto; min-width: 38px; font-variant-numeric: tabular-nums; }
+.film-time { flex: 1 1 auto; accent-color: var(--accent); height: 20px; }
+.film-count { flex: 0 0 auto; font-size: 11px; color: var(--label-2); font-variant-numeric: tabular-nums; }
